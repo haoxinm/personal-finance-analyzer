@@ -1,6 +1,7 @@
 """Shared pytest fixtures (§0.3, P0-1).
 
 - `home`: a temporary `SPEND_ANALYZER_HOME`, isolated per test.
+- Process-wide isolation from the real HOME, data directory and keychain (import time + autouse).
 - `engine` / `session`: a migrated temporary SQLite database with the taxonomy synced.
 - An autouse guard that fails any test opening a network socket to anything other than
   `127.0.0.1`/`::1`/`localhost` (§6.5: zero network calls in CI).
@@ -8,10 +9,17 @@
 
 from __future__ import annotations
 
+import atexit
+import os
+import shutil
 import socket
+import tempfile
 from collections.abc import Generator, Iterator
 from pathlib import Path
 
+import keyring
+import keyring.backend
+import keyring.errors
 import pytest
 from sqlalchemy import Engine
 from sqlalchemy.orm import Session
@@ -23,6 +31,34 @@ from spend_analyzer.db.migrate import upgrade_head
 from spend_analyzer.db.session import make_engine_for_path, make_session_factory
 
 _LOCAL_HOSTS = {"127.0.0.1", "::1", "localhost", ""}
+
+
+def _isolate_process_from_the_real_user_profile() -> None:
+    """Point `HOME`, `SPEND_ANALYZER_HOME` and the keyring at scratch values for the whole test
+    process, at conftest import.
+
+    The per-test autouse fixtures below do the same per test, but module- and session-scoped
+    fixtures (and collection) run before them: `tests/ingest/test_layout_c.py` generates fixtures
+    at module setup, which reads the tax parameters from the data directory. With no override set
+    that resolves the platform default under the *real* home, so a test run could read, or (for
+    any code that creates or moves things there) change, a developer's own data directory or
+    pop a dialog from the real OS keychain.
+    """
+    scratch = Path(tempfile.mkdtemp(prefix="spend-analyzer-tests-"))
+    atexit.register(shutil.rmtree, scratch, ignore_errors=True)
+    for name in [n for n in os.environ if n.startswith("SPEND_ANALYZER_")]:
+        del os.environ[name]
+    user_home = str(scratch / "user_home")
+    os.environ["SPEND_ANALYZER_HOME"] = str(scratch / "data_home")
+    os.environ["HOME"] = user_home
+    os.environ["USERPROFILE"] = user_home
+    os.environ["LOCALAPPDATA"] = str(scratch / "user_home" / "AppData" / "Local")
+    os.environ["APPDATA"] = str(scratch / "user_home" / "AppData" / "Roaming")
+    os.environ.pop("XDG_DATA_HOME", None)
+    os.environ["PYTHON_KEYRING_BACKEND"] = "keyring.backends.null.Keyring"
+
+
+_isolate_process_from_the_real_user_profile()
 
 
 @pytest.fixture
@@ -39,6 +75,49 @@ def _isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Every test gets its own data directory, so code that reads optional local files (the
     tax-parameter cache and override) never sees a real user's data. `home` replaces it."""
     monkeypatch.setenv(SPEND_ANALYZER_HOME_ENV, str(tmp_path / "auto_home"))
+    # Belt and braces: even a test that clears the override must resolve the platform default
+    # under a scratch home, never the developer's own.
+    fake_user_home = str(tmp_path / "fake_user_home")
+    monkeypatch.setenv("HOME", fake_user_home)
+    monkeypatch.setenv("USERPROFILE", fake_user_home)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "fake_user_home" / "AppData" / "Local"))
+    monkeypatch.setenv("APPDATA", str(tmp_path / "fake_user_home" / "AppData" / "Roaming"))
+    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+
+
+class _MemoryKeyring(keyring.backend.KeyringBackend):
+    """An in-process keychain: nothing a test stores ever reaches the developer's real one."""
+
+    priority = 1  # type: ignore[assignment]
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._store: dict[tuple[str, str], str] = {}
+
+    def get_password(self, service: str, username: str) -> str | None:
+        return self._store.get((service, username))
+
+    def set_password(self, service: str, username: str, password: str) -> None:
+        self._store[(service, username)] = password
+
+    def delete_password(self, service: str, username: str) -> None:
+        if (service, username) not in self._store:
+            raise keyring.errors.PasswordDeleteError("not found")
+        del self._store[(service, username)]
+
+
+@pytest.fixture(autouse=True)
+def _in_memory_keyring() -> Iterator[None]:
+    """Every test runs against an in-memory keyring backend, so a test that reaches the keychain
+    without its own fake (for instance `doctor`, which round-trips a probe entry) can never touch,
+    or pop a dialog from, the real OS keychain. Tests with their own fakes patch the `keyring`
+    functions on top of this."""
+    previous = keyring.get_keyring()
+    keyring.set_keyring(_MemoryKeyring())
+    try:
+        yield
+    finally:
+        keyring.set_keyring(previous)
 
 
 @pytest.fixture
