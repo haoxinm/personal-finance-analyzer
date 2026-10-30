@@ -234,8 +234,10 @@ build is missing or stale).
   (which first shows how many rows it will change, and whether that spans several users or changes
   kinds, then offers an Undo), and it never changes one you edited by hand. Undoing a Review accept
   or a rule application never reverts something you edited afterwards. Precedence: one-time edits > your rules > built-in
-  rules > issuer category and merchant cache > LLM. The Review screen can re-run the cascade over
-  everything uncategorized.
+  rules > issuer category and merchant cache > LLM. Older versions silently pinned a merchant on
+  every single-transaction edit; on upgrade those pins become ordinary rules you can see, edit and
+  delete on the Rules screen (ranked after your other rules). The Review screen can re-run the
+  cascade over everything uncategorized.
 - **Reconciles every import** against the statement's own printed totals (section subtotals,
   running balance, or the opening/closing balance equation, whichever the layout provides), and
   banners a warning rather than silently accepting numbers that don't add up.
