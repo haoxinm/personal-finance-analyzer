@@ -52,7 +52,7 @@ describe("Breakdown", () => {
           ...SNAPSHOT,
           accounts: [
             ...SNAPSHOT.accounts,
-            { user_id: 2, category: "checking", account_name: "Wells", balance_minor: 1, signed_minor: 1, as_of: "2025-03", carried: false },
+            { user_id: 2, category: "checking", account_name: "Wells", balance_minor: 1, signed_minor: 1, as_of: "2025-03", carried: false, stale: false, months_old: 0 },
           ],
         }}
         users={USERS}

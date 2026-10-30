@@ -57,10 +57,10 @@ export const SNAPSHOT: Snapshot = {
     { category: "credit_card", balance_minor: 30000, signed_minor: -30000 },
   ],
   accounts: [
-    { user_id: 1, category: "checking", account_name: "Chase checking", balance_minor: 100000, signed_minor: 100000, as_of: "2025-03", carried: false },
-    { user_id: 1, category: "savings", account_name: "Ally", balance_minor: 250000, signed_minor: 250000, as_of: "2025-02", carried: true },
-    { user_id: 1, category: "investment", account_name: "Fidelity", balance_minor: 500000, signed_minor: 500000, as_of: "2025-03", carried: false },
-    { user_id: 1, category: "credit_card", account_name: "Visa", balance_minor: 30000, signed_minor: -30000, as_of: "2025-03", carried: false },
+    { user_id: 1, category: "checking", account_name: "Chase checking", balance_minor: 100000, signed_minor: 100000, as_of: "2025-03", carried: false, stale: false, months_old: 0 },
+    { user_id: 1, category: "savings", account_name: "Ally", balance_minor: 250000, signed_minor: 250000, as_of: "2025-02", carried: true, stale: false, months_old: 1 },
+    { user_id: 1, category: "investment", account_name: "Fidelity", balance_minor: 500000, signed_minor: 500000, as_of: "2025-03", carried: false, stale: false, months_old: 0 },
+    { user_id: 1, category: "credit_card", account_name: "Visa", balance_minor: 30000, signed_minor: -30000, as_of: "2025-03", carried: false, stale: false, months_old: 0 },
   ],
 };
 
