@@ -14,9 +14,15 @@ every pattern used to resolve a `Kind`:
   the checking side — then interest charge, then fee, then a generic transfer pattern, then (on
   a credit account only) a generic payment pattern for an inflow, then the sign default.
 
-  The card-payment rule is deliberately narrow: a bare PAYMENT/PMT/EPAY on a bank statement is
-  just as likely rent, a utility or a loan, which is real spend, so it needs card-specific words
-  (`CARD_PAYMENT_RE`) or a configured issuer's name next to a payment word. For the same reason
+  The card-payment rule is deliberately narrow, but not so narrow that it misses the wording banks
+  actually print: a bare PAYMENT/PMT/EPAY on a bank statement is just as likely rent, a utility or a
+  loan, which is real spend, so it needs card-specific words (`CARD_PAYMENT_RE`: "CRD AUTOPAY",
+  "CARD ENDING 1234", ...), a well-known card brand or issuer next to a payment word ("CHASE
+  AUTOPAY", "DISCOVER E-PAYMENT", "AMEX EPAYMENT ACH PMT"), or a configured issuer's name next to
+  one (`looks_like_card_payment`). A loan/mortgage/rent/insurance word vetoes the brand and issuer
+  matches ("CHASE MORTGAGE PAYMENT" stays spend). The same test overrides a concrete `purchase`
+  hint on a bank account (Layout D emits one for every row it does not itself recognise), so the
+  issuer fallback is never skipped. For the same reason
   the sign default on a checking/savings account differs from a card's: an unexplained deposit is
   far more likely a paycheck or a transfer in than a merchant refund, and netting it against
   spend would silently shrink the dashboard's totals, so it is a `transfer` unless the
@@ -42,13 +48,40 @@ _PAYMENT_RE = re.compile(r"\b(PAYMENT|AUTOPAY|PMT)\b", re.IGNORECASE)
 #: A card payment specifically — the same phrasing Layout D resolves itself (§2c), kept here so
 #: the generic (hint-less) fallback path applies the identical rule (A26). Every alternative names
 #: a *card*: a bare PAYMENT, PMT, EPAY or AUTOPAY is as likely rent or a utility as a card, and
-#: calling those `transfer` would hide real spend. An issuer-named payment (`ACME BANK PAYMENT`) is
-#: caught separately by `_issuer_payment_match`, which has the user's configured issuers to go on.
+#: calling those `transfer` would hide real spend. "DEBIT CARD ..." / "CHECK CARD ..." are
+#: purchases made with a card, not payments to one. Brand- and issuer-named payments
+#: ("CHASE AUTOPAY", `ACME BANK PAYMENT`) are caught by `looks_like_card_payment` instead.
 CARD_PAYMENT_RE = re.compile(
-    r"\b(CRD\s*PMT|CC\s*(?:PMT|PAYMENT|AUTOPAY)|CREDIT\s*CARD\s*(?:PAYMENT|PMT|AUTOPAY)"
-    r"|(?<!DEBIT )CARD\s*(?:AUTOPAY|EPAY|PAYMENT|PMT))\b",
+    r"\b(?:CRD\s*(?:PMT|PAYMENT|AUTOPAY|AUTO\s*PAY|EPAY|E-PAYMENT)"
+    r"|CC\s*(?:PMT|PAYMENT|AUTOPAY|AUTO\s*PAY|EPAY)"
+    r"|CREDIT\s*CARD\s*(?:BILL\s*)?(?:PAYMENT|PMT|AUTOPAY|AUTO\s*PAY|EPAY)"
+    r"|(?<!DEBIT )(?<!CHECK )CARD\s*(?:AUTOPAY|AUTO\s*PAY|EPAY|PAYMENT|PMT)"
+    r"|(?<!DEBIT )(?<!CHECK )CARD\s+ENDING)\b",
     re.IGNORECASE,
 )
+
+#: Words for "a payment" as printed on a bank statement, used next to a card brand: PAYMENT, PMT,
+#: AUTOPAY / AUTO PAY, EPAY / EPAYMENT / E-PAYMENT.
+_PAY_WORD_RE = re.compile(r"\b(?:E-?PAY(?:MENT)?|AUTO\s*PAY(?:MENT)?|PAYMENT|PMT)\b", re.IGNORECASE)
+
+#: Names that are (almost) only ever a credit-card issuer or network.
+_CARD_BRAND_RE = re.compile(
+    r"\b(?:CHASE|CITI(?:BANK|\s*CARDS?)?|AMEX|AMERICAN\s+EXPRESS|DISCOVER|CAPITAL\s*ONE"
+    r"|BARCLAYS?(?:\s*CARD)?|SYNCHRONY|GOLDMAN\s+SACHS|GS\s+BANK|APPLE\s+CARD)\b",
+    re.IGNORECASE,
+)
+
+#: Banks that also hold checking, mortgage and auto accounts: only a card payment when the
+#: description also says it is about a card (and has a payment word, anywhere in the line).
+_GENERIC_BANK_RE = re.compile(
+    r"\b(?:WELLS\s*FARGO|BANK\s+OF\s+AMERICA|BOFA|BOA|BK\s+OF\s+AMER(?:ICA)?|U\.?S\.?\s*BANK"
+    r"|PNC|TD\s+BANK|TRUIST|USAA|CITIZENS|REGIONS|FIFTH\s+THIRD)\b",
+    re.IGNORECASE,
+)
+_CARD_WORD_RE = re.compile(r"(?<!DEBIT )(?<!CHECK )\b(?:CARD|CRD|VISA|MASTERCARD)\b", re.IGNORECASE)
+
+#: How close (characters) a brand must be to a payment word.
+_BRAND_PAYMENT_PROXIMITY_CHARS = 25
 
 #: A merchant refund/return/reversal credit — on a bank account this is the only inflow wording
 #: that is treated as spend coming back (mirrors Layout D's own section-level refund pattern).
@@ -72,7 +105,9 @@ _PAYMENT_TOKEN_RE = re.compile(r"\b(?:PAYMENT|PMT|AUTOPAY|EPAY)\b", re.IGNORECAS
 #: A lender, landlord or insurer that happens to share a configured issuer's name ("ACME BANK
 #: MORTGAGE PAYMENT") is a bill, not a card payment; these words veto the issuer-proximity match.
 _NOT_A_CARD_RE = re.compile(
-    r"\b(LOAN|MORTGAGE|LEASE|RENT|INSURANCE|STUDENT|TUITION|HELOC)\b", re.IGNORECASE
+    r"\b(LOAN|MORTGAGE|LEASE|RENT|INSURANCE|STUDENT|TUITION|HELOC|LENDING|FINANCE|FINANCING"
+    r"|ZELLE|QUICKPAY|VENMO|PAYPAL)\b",
+    re.IGNORECASE,
 )
 
 
@@ -107,16 +142,21 @@ def resolve_kind(
     Returns:
         The resolved `Kind`. Never raises.
     """
+    is_bank = account_type in ("checking", "savings")
     if kind_hint is not None:
         if kind_hint == "payment_or_refund":
             return "payment" if _PAYMENT_RE.search(description_clean) else "refund"
+        if (
+            kind_hint == "purchase"
+            and is_bank
+            and looks_like_card_payment(description_clean, issuer_match_terms)
+        ):
+            # A parser that sees only a bank statement's section ("Electronic Withdrawals") hints
+            # `purchase`; the card issuer's name in the description is what says otherwise (B1).
+            return "transfer"
         return kind_hint
 
-    is_bank = account_type in ("checking", "savings")
-    if is_bank and (
-        CARD_PAYMENT_RE.search(description_clean)
-        or _issuer_payment_match(description_clean, issuer_match_terms)
-    ):
+    if is_bank and looks_like_card_payment(description_clean, issuer_match_terms):
         return "transfer"
     if _INTEREST_RE.search(description_clean):
         # Interest *earned* (an inflow on a bank account) is income, not spend: as `interest` it
@@ -138,6 +178,30 @@ def resolve_kind(
 def is_spend(kind: Kind) -> bool:
     """`transactions.is_spend` (§3.2): true for `purchase`, `fee`, and `interest` only."""
     return kind in ("purchase", "fee", "interest")
+
+
+def looks_like_card_payment(description: str, issuer_match_terms: Sequence[str] = ()) -> bool:
+    """True if a bank-account line is a payment *to a credit card* (A26/I11): explicit card
+    wording (`CARD_PAYMENT_RE`), a well-known card brand next to a payment word, a bank that also
+    issues cards next to both a card word and a payment word, or a configured issuer's name next
+    to one. A loan/mortgage/rent/insurance word (or a P2P service) vetoes everything but the
+    explicit card wording."""
+    if CARD_PAYMENT_RE.search(description):
+        return True
+    if _NOT_A_CARD_RE.search(description):
+        return False
+    pay_positions = [m.start() for m in _PAY_WORD_RE.finditer(description)]
+    if not pay_positions:
+        return False
+
+    def near_payment(match: re.Match[str]) -> bool:
+        return any(abs(match.start() - p) <= _BRAND_PAYMENT_PROXIMITY_CHARS for p in pay_positions)
+
+    if any(near_payment(m) for m in _CARD_BRAND_RE.finditer(description)):
+        return True
+    if _CARD_WORD_RE.search(description) and _GENERIC_BANK_RE.search(description):
+        return True
+    return _issuer_payment_match(description, issuer_match_terms)
 
 
 def _issuer_payment_match(description: str, issuer_match_terms: Sequence[str]) -> bool:

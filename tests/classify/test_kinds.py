@@ -202,6 +202,110 @@ def test_no_hint_checking_bills_with_payment_words_stay_purchases() -> None:
             ), description
 
 
+#: Realistic checking-side wording for a payment to a credit card (B1: these must never count as
+#: spend, because the purchases were already counted on the card statement).
+_BANK_CARD_PAYMENTS = (
+    "CHASE CREDIT CRD AUTOPAY",
+    "Payment To Chase Card Ending IN 1234",
+    "DISCOVER E-PAYMENT",
+    "CITI AUTOPAY PAYMENT",
+    "AMEX EPAYMENT ACH PMT",
+    "AMERICAN EXPRESS ACH PMT",
+    "CAPITAL ONE AUTOPAY",
+    "BARCLAYCARD US PAYMENT",
+    "SYNCHRONY BANK PAYMENT",
+    "WELLS FARGO CARD PAYMENT",
+    "WELLS FARGO CARD ONLINE PMT",
+    "BANK OF AMERICA CREDIT CARD BILL PAYMENT",
+    "BOA CARD AUTO PAY",
+    "BK OF AMER CRD PMT",
+    "US BANK CARD PAYMENT",
+    "APPLE CARD PAYMENT",
+    "GS BANK PAYMENT",
+    "GOLDMAN SACHS BANK USA PAYMENT",
+)
+
+_BANK_BILLS = (
+    "CHASE MORTGAGE PAYMENT",
+    "CITI LOAN PMT",
+    "VENMO PAYMENT",
+    "ATT PAYMENT",
+    "WELLS FARGO HOME MORTGAGE PAYMENT",
+    "WELLS FARGO AUTO PAYMENT",
+    "BANK OF AMERICA MORTGAGE PMT",
+    "US BANK STUDENT LOAN PAYMENT",
+    "CHASE AUTO LOAN PAYMENT",
+    "DISCOVER STUDENT LOANS PAYMENT",
+    "ZELLE PAYMENT TO CHASE QUICKPAY",
+    "DEBIT CARD PAYMENT CORNER CAFE",
+    "DEBIT CARD PURCHASE CHASE FARMERS MARKET",
+    "CHECK CARD PAYMENT GROCER",
+    "PAYMENT TO DEBIT CARD ENDING 4455",
+    "CITIZENS PROPANE PAYMENT",
+)
+
+
+def test_checking_card_payments_with_realistic_wording_are_transfers() -> None:
+    for description in _BANK_CARD_PAYMENTS:
+        for account_type in ("checking", "savings"):
+            assert (
+                resolve_kind(
+                    kind_hint=None,
+                    description_clean=description,
+                    amount_minor=80000,
+                    account_type=account_type,
+                )
+                == "transfer"
+            ), description
+
+
+def test_purchase_hint_on_a_bank_account_is_overridden_by_card_wording() -> None:
+    # Layout D emits `purchase` for any withdrawal it does not itself recognise; the issuer or
+    # brand wording must still win so the payment is not double counted.
+    for description in _BANK_CARD_PAYMENTS:
+        assert (
+            resolve_kind(
+                kind_hint="purchase",
+                description_clean=description,
+                amount_minor=80000,
+                account_type="checking",
+            )
+            == "transfer"
+        ), description
+
+
+def test_purchase_hint_with_configured_issuer_name_is_overridden_on_a_bank_account() -> None:
+    terms = ("Acme Bank",)
+
+    def kind(description: str, account_type: str) -> str:
+        return resolve_kind(
+            kind_hint="purchase",
+            description_clean=description,
+            amount_minor=15000,
+            account_type=account_type,
+            issuer_match_terms=terms,
+        )
+
+    assert kind("ACME BANK PAYMENT", "checking") == "transfer"
+    # ... but a lender sharing the name is still a bill, and a credit account is never affected.
+    assert kind("ACME BANK AUTO LOAN PAYMENT", "checking") == "purchase"
+    assert kind("ACME BANK PAYMENT", "credit") == "purchase"
+
+
+def test_bills_and_debit_card_spend_stay_purchases_with_or_without_a_hint() -> None:
+    for description in _BANK_BILLS:
+        for hint in (None, "purchase"):
+            assert (
+                resolve_kind(
+                    kind_hint=hint,
+                    description_clean=description,
+                    amount_minor=120000,
+                    account_type="checking",
+                )
+                == "purchase"
+            ), (hint, description)
+
+
 def test_no_hint_checking_unexplained_inflow_is_a_transfer_not_a_refund() -> None:
     # Regression: a paycheck from a generic-parsed bank statement must not be netted against spend.
     for description in (
