@@ -1392,6 +1392,47 @@ export interface paths {
         patch: operations["patch_tax_item_api_tax_tax_items__item_id__patch"];
         trace?: never;
     };
+    "/backup/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Export Backup
+         * @description Build a backup of the current data and return it as a download.
+         */
+        post: operations["export_backup_api_backup_export_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/backup/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Restore Backup
+         * @description Replace all current data with the uploaded backup (the old data directory is kept beside
+         *     it, see `previous_dir`).
+         */
+        post: operations["restore_backup_api_backup_restore_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1495,6 +1536,33 @@ export interface components {
              */
             base_url: string;
         };
+        /**
+         * BackupExportRequest
+         * @description `passphrase` encrypts the archive (at least 8 characters). Sending no passphrase is only
+         *     accepted with an explicit `encrypt: false`.
+         */
+        BackupExportRequest: {
+            /** Passphrase */
+            passphrase?: string | null;
+            /**
+             * Encrypt
+             * @default true
+             */
+            encrypt: boolean;
+        };
+        /** BackupRestoreResponse */
+        BackupRestoreResponse: {
+            /** Created At */
+            created_at: string;
+            /** Counts */
+            counts: {
+                [key: string]: number;
+            };
+            /** Migrated */
+            migrated: boolean;
+            /** Previous Dir */
+            previous_dir: string | null;
+        };
         /** BalanceEntry */
         BalanceEntry: {
             /** Id */
@@ -1560,6 +1628,13 @@ export interface components {
         Body_provide_document_source_api_tax_documents__document_id__source_post: {
             /** File */
             file: string;
+        };
+        /** Body_restore_backup_api_backup_restore_post */
+        Body_restore_backup_api_backup_restore_post: {
+            /** File */
+            file: string;
+            /** Passphrase */
+            passphrase?: string | null;
         };
         /** Body_upload_statement_api_statements_post */
         Body_upload_statement_api_statements_post: {
@@ -6507,6 +6582,72 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["TaxItemOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    export_backup_api_backup_export_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BackupExportRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    restore_backup_api_backup_restore_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["Body_restore_backup_api_backup_restore_post"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BackupRestoreResponse"];
                 };
             };
             /** @description Validation Error */

@@ -6251,6 +6251,88 @@
           }
         }
       }
+    },
+    "/backup/export": {
+      "post": {
+        "tags": [
+          "backup"
+        ],
+        "summary": "Export Backup",
+        "description": "Build a backup of the current data and return it as a download.",
+        "operationId": "export_backup_api_backup_export_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BackupExportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/backup/restore": {
+      "post": {
+        "tags": [
+          "backup"
+        ],
+        "summary": "Restore Backup",
+        "description": "Replace all current data with the uploaded backup (the old data directory is kept beside\nit, see `previous_dir`).",
+        "operationId": "restore_backup_api_backup_restore_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_restore_backup_api_backup_restore_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BackupRestoreResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -6539,6 +6621,68 @@
         "title": "ApiKeyPut",
         "description": "`PUT /api/settings/api-key` body (I7: the key is written straight to the OS keychain via\n`config.set_api_key` \u2014 never to `config.toml`, the database, a response, or a log line).\nThe key is stored for `base_url`'s host (default: the saved `[llm] base_url`), so it is only\never sent to that host."
       },
+      "BackupExportRequest": {
+        "properties": {
+          "passphrase": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Passphrase"
+          },
+          "encrypt": {
+            "type": "boolean",
+            "title": "Encrypt",
+            "default": true
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "BackupExportRequest",
+        "description": "`passphrase` encrypts the archive (at least 8 characters). Sending no passphrase is only\naccepted with an explicit `encrypt: false`."
+      },
+      "BackupRestoreResponse": {
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "title": "Created At"
+          },
+          "counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Counts"
+          },
+          "migrated": {
+            "type": "boolean",
+            "title": "Migrated"
+          },
+          "previous_dir": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Previous Dir"
+          }
+        },
+        "type": "object",
+        "required": [
+          "created_at",
+          "counts",
+          "migrated",
+          "previous_dir"
+        ],
+        "title": "BackupRestoreResponse"
+      },
       "BalanceEntry": {
         "properties": {
           "id": {
@@ -6729,6 +6873,31 @@
           "file"
         ],
         "title": "Body_provide_document_source_api_tax_documents__document_id__source_post"
+      },
+      "Body_restore_backup_api_backup_restore_post": {
+        "properties": {
+          "file": {
+            "type": "string",
+            "contentMediaType": "application/octet-stream",
+            "title": "File"
+          },
+          "passphrase": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Passphrase"
+          }
+        },
+        "type": "object",
+        "required": [
+          "file"
+        ],
+        "title": "Body_restore_backup_api_backup_restore_post"
       },
       "Body_upload_statement_api_statements_post": {
         "properties": {
