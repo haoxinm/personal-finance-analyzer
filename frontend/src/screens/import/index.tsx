@@ -2,12 +2,12 @@ import { useQueryClient } from "@tanstack/react-query";
 import * as React from "react";
 
 import { useUsers } from "@/api/hooks";
+import { FileDropZone } from "@/components/primitives/file-drop-zone";
 import { ErrorState, LoadingState } from "@/components/primitives/states";
 import { useSelectedUser } from "@/hooks/use-selected-user";
 import type { JobEvent } from "@/hooks/use-job-progress";
 
 import { useExtractStatement, useImportSettings, useUploadStatement } from "./api";
-import { FileDropZone } from "./file-drop-zone";
 import { IssuerExtractorPicker } from "./issuer-extractor-picker";
 import { StatementCard } from "./statement-card";
 import { PageSelector } from "./page-selector";

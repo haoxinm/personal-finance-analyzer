@@ -5,7 +5,7 @@ import { UserSwitcher } from "@/components/primitives/user-switcher";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { FileDropZone } from "@/screens/import/file-drop-zone";
+import { FileDropZone } from "@/components/primitives/file-drop-zone";
 
 import { useToast } from "@/components/ui/use-toast";
 
