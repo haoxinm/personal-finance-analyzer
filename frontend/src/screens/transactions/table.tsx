@@ -89,8 +89,20 @@ export function TransactionsTable({
   const visibleRows = tableRows.slice(range.startIndex, range.endIndex);
 
   return (
-    <div className="overflow-hidden rounded-lg border border-border">
-      <div className="flex border-b border-border bg-muted/50 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+    // The header row and the (scrolling) body are both inside the one `role="table"`; the
+    // virtualized body only mounts a window of rows, so each carries its `aria-rowindex`.
+    <div
+      role="table"
+      aria-label="Transactions"
+      aria-rowcount={tableRows.length + 1}
+      className="overflow-hidden rounded-lg border border-border"
+    >
+      <div role="rowgroup">
+      <div
+        role="row"
+        aria-rowindex={1}
+        className="flex border-b border-border bg-muted/50 text-xs font-medium uppercase tracking-wide text-muted-foreground"
+      >
         {table.getFlatHeaders().map((header) => {
           const sortKey = header.column.columnDef.meta?.sortKey;
           const sortable = sortKey !== undefined && sort !== undefined && onSortChange !== undefined;
@@ -131,20 +143,23 @@ export function TransactionsTable({
           );
         })}
       </div>
+      </div>
       <div
         ref={containerRef}
         onScroll={handleScroll}
-        role="table"
-        aria-rowcount={tableRows.length}
+        role="rowgroup"
         className="overflow-auto"
         style={{ height: VIEWPORT_HEIGHT }}
         data-testid="transactions-viewport"
       >
         <div style={{ paddingTop: range.paddingTop, paddingBottom: range.paddingBottom }}>
-          {visibleRows.map((row) => (
+          {visibleRows.map((row, i) => (
             <div
               key={row.id}
               role="row"
+              aria-rowindex={range.startIndex + i + 2}
+              aria-selected={context.selectedIds.has(row.original.id)}
+              // Mouse convenience only: the keyboard path is the Edit button in the Description cell.
               className={cn(
                 "flex cursor-pointer items-center border-b border-border/60 text-sm hover:bg-muted/40",
                 context.selectedIds.has(row.original.id) && "bg-primary/5",
@@ -155,6 +170,7 @@ export function TransactionsTable({
               {row.getVisibleCells().map((cell) => (
                 <div
                   key={cell.id}
+                  role="cell"
                   className="flex items-center overflow-hidden px-3"
                   style={{ flex: columnFlex(cell.column) }}
                 >

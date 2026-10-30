@@ -64,15 +64,29 @@ export function EditPopover({ transaction, categories, onSave, onClose, saving }
   const canCreateRule = merchant !== "" && categoryChanged && categoryComplete;
   const ruleRequested = createRule && canCreateRule;
 
+  // Keyboard users: focus moves into the dialog, Escape closes it, and focus goes back to the
+  // control that opened it (the row's Edit button) when it unmounts.
+  const dialogRef = React.useRef<HTMLDivElement>(null);
+  React.useEffect(() => {
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    dialogRef.current?.querySelector<HTMLElement>("select, textarea, button")?.focus();
+    return () => opener?.focus();
+  }, []);
+
   return (
     <div
       className="fixed inset-0 z-20 flex items-center justify-center bg-black/30 p-4"
       onClick={onClose}
     >
     <div
+      ref={dialogRef}
       role="dialog"
+      aria-modal="true"
       aria-label={`Edit transaction ${transaction.id}`}
       onClick={(e) => e.stopPropagation()}
+      onKeyDown={(e) => {
+        if (e.key === "Escape") onClose();
+      }}
       className="flex w-80 flex-col gap-3 rounded-md border border-border bg-background p-4 shadow-lg"
     >
       <label className="flex flex-col gap-1 text-xs text-muted-foreground">
