@@ -31,3 +31,11 @@ if (typeof globalThis.ResizeObserver === "undefined") {
 // virtualized grids rendering a normal-looking window under jsdom.
 Object.defineProperty(HTMLElement.prototype, "offsetHeight", { configurable: true, value: 600 });
 Object.defineProperty(HTMLElement.prototype, "offsetWidth", { configurable: true, value: 800 });
+
+// jsdom has no pointer-capture API, which Radix's toast calls from its pointer handlers; without
+// these stubs a (user-event) click on a toast's action button throws. Real browsers have them.
+if (typeof Element.prototype.hasPointerCapture !== "function") {
+  Element.prototype.hasPointerCapture = () => false;
+  Element.prototype.setPointerCapture = () => {};
+  Element.prototype.releasePointerCapture = () => {};
+}
