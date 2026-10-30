@@ -43,6 +43,13 @@ counterpart except the layout mapper and the forecast.
   merchant's future transactions; it reaches existing ones only when you press "Apply to existing"
   on the Rules screen, and never changes one you edited by hand. Precedence: one-time edits > your
   rules > built-in rules > issuer category and merchant cache > LLM.
+- **See where sources disagree, and pick one in a click.** The higher-precedence answer always
+  wins by default, but when your rules, the built-in rules, the issuer's label and the saved
+  merchant answer name different categories, Review and the transaction edit dialog list each as a
+  suggestion chip ("Grocery › Wholesale clubs · built-in"; the applied one is marked *Current*).
+  One click uses a lower-priority one as a one-time edit of that transaction only, with an Undo.
+  The Transactions screen flags such rows and has a *Conflicting suggestions* filter. Suggestions
+  are read from what is already stored: they never call an LLM.
 - **Reconcile every import** against the statement's own printed totals and warn, rather than
   silently accept numbers that don't add up; **never double-count a card payment** (a payment from
   a tracked checking account is a transfer on both sides, not spend).
@@ -337,6 +344,16 @@ looks off:
   classifications → an LLM, only for what nothing local could resolve → an `others/uncategorized`
   fallback that still needs your review. The Review screen can re-run the cascade over everything
   uncategorized.
+- **Suggestions are the cascade, laid side by side.** `GET /api/transactions/{id}/candidates`
+  evaluates every layer independently, reusing the cascade's own matching so the two cannot drift:
+  your rules (and legacy pins), built-in rules, the issuer's label, and the learned merchant cache
+  (reported as `llm` when the saved answer came from the LLM). It is read-only and makes no LLM or
+  network call. A one-time edit is listed as `one_time_edit` (current) with the layers beneath it,
+  and settles any conflict. The list endpoint can add each row's `candidates`/`conflict`
+  (`include_candidates`, `include_conflict`) and filter with `?conflict=true`; the filter is
+  computed in Python over the rows the other filters match, with one rule scan per distinct
+  merchant rather than per row, so it is fast on a household-sized database (tens of thousands of
+  rows) but is not indexed SQL.
 - **A one-time edit teaches the app nothing** about the merchant or future transactions. A rule
   reaches transactions you already have only when you press "Apply to existing" on the Rules screen
   (which first shows how many rows it will change, and whether that spans several users or changes

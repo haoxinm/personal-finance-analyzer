@@ -246,6 +246,9 @@ describe("RulesTab precedence and retroactive apply", () => {
     expect(screen.getByTestId("precedence-note")).toHaveTextContent(
       "A transaction you edited by hand is never changed by a rule.",
     );
+    expect(screen.getByTestId("precedence-note")).toHaveTextContent(
+      "one click uses a lower one for that transaction only",
+    );
   });
 
   it("offers to apply a new rule to the transactions it matches, and applies it on request", async () => {

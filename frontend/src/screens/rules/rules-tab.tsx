@@ -410,6 +410,9 @@ export function RulesTab() {
             number wins; ties go to the older rule) &gt; built-in rules &gt; issuer category and merchant
             cache &gt; LLM. A rule applies to future imports; use &ldquo;Apply to existing&rdquo; to change
             transactions you already have. A transaction you edited by hand is never changed by a rule.
+            When these sources disagree about a transaction, Review and the transaction editor show
+            each one as a suggestion chip: the higher one still wins by default, and one click uses
+            a lower one for that transaction only.
             Rules only see purchases, fees and interest: rows detected as a payment or transfer are
             filed under Payments &amp; transfers before rules run, so correct a misdetected one by
             editing its kind. A kind override stays on the transactions it already changed if you
