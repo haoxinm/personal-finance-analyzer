@@ -2,6 +2,7 @@ import * as React from "react";
 
 import { Page, PageHeader } from "@/components/primitives/page";
 import { EmptyState, ErrorState, LoadingState } from "@/components/primitives/states";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useSelectedUser } from "@/hooks/use-selected-user";
 import { cn } from "@/utils";
@@ -119,9 +120,14 @@ function ForecastBody({ userId }: { userId: number | null }) {
               onSaved={onSaved}
             />
             {presetsQuery.error ? (
-              <p role="alert" className="mt-2 text-xs text-destructive">
-                Could not load presets.
-              </p>
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <p role="alert" className="text-xs text-destructive">
+                  Could not load presets.
+                </p>
+                <Button size="sm" variant="outline" onClick={() => void presetsQuery.refetch()}>
+                  Try again
+                </Button>
+              </div>
             ) : null}
           </CardContent>
         </Card>

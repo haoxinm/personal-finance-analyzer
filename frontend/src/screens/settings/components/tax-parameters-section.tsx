@@ -2,6 +2,7 @@ import * as React from "react";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Spinner } from "@/components/ui/spinner";
 
 import {
   type TaxParametersRefresh,
@@ -80,9 +81,14 @@ export function TaxParametersSection({ settings, onSave, saving }: TaxParameters
           {parameters.isPending ? (
             <p className="text-xs text-muted-foreground">Loading…</p>
           ) : parameters.isError || !data ? (
-            <p role="alert" className="text-sm text-destructive">
-              Could not load the tax parameter status: {String(parameters.error)}
-            </p>
+            <div className="flex flex-wrap items-center gap-3">
+              <p role="alert" className="text-sm text-destructive">
+                Could not load the tax parameter status: {String(parameters.error)}
+              </p>
+              <Button size="sm" variant="outline" onClick={() => void parameters.refetch()}>
+                Try again
+              </Button>
+            </div>
           ) : (
             <dl className="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-sm" data-testid="tax-parameters-status">
               <dt className="text-muted-foreground">Source</dt>
@@ -101,24 +107,37 @@ export function TaxParametersSection({ settings, onSave, saving }: TaxParameters
             </dl>
           )}
           <div className="flex flex-wrap items-center gap-3">
-            <Button variant="secondary" onClick={() => refresh.mutate()} disabled={refresh.isPending}>
+            <Button
+              variant="secondary"
+              onClick={() => refresh.mutate()}
+              disabled={refresh.isPending}
+              aria-busy={refresh.isPending}
+            >
+              {refresh.isPending ? <Spinner /> : null}
               {refresh.isPending ? "Checking…" : "Check now"}
             </Button>
             <span className="text-xs text-muted-foreground">
               Makes one plain request to GitHub right now, even with the yearly check off.
             </span>
           </div>
+          {/* Always mounted so assistive tech announces the busy note and then the outcome. */}
+          <div role="status" aria-live="polite" data-testid="tax-parameters-check-status">
+            {refresh.isPending ? (
+              <p className="text-sm text-muted-foreground">
+                Checking GitHub for updated parameters. This can take up to about ten seconds.
+              </p>
+            ) : refresh.data && !refresh.isError ? (
+              <p
+                data-testid="tax-parameters-refresh-result"
+                className={refresh.data.outcome === "updated" || refresh.data.outcome === "current" ? "text-sm" : "text-sm text-destructive"}
+              >
+                <span className="font-medium">{OUTCOME_LABELS[refresh.data.outcome]}.</span> {refresh.data.detail}
+              </p>
+            ) : null}
+          </div>
           {refresh.isError ? (
             <p role="alert" className="text-sm text-destructive">
               Could not check for updates: {String(refresh.error)}
-            </p>
-          ) : refresh.data ? (
-            <p
-              role="status"
-              data-testid="tax-parameters-refresh-result"
-              className={refresh.data.outcome === "updated" || refresh.data.outcome === "current" ? "text-sm" : "text-sm text-destructive"}
-            >
-              <span className="font-medium">{OUTCOME_LABELS[refresh.data.outcome]}.</span> {refresh.data.detail}
             </p>
           ) : null}
         </div>

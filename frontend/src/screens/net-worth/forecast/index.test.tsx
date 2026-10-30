@@ -176,6 +176,24 @@ describe("ForecastScreen", () => {
     expect(await screen.findByRole("note")).toHaveTextContent(/illustrative projection, not financial/i);
   });
 
+  it("offers Try again when the presets fail to load", async () => {
+    mockApi({});
+    const ok = (apiClient.GET as ReturnType<typeof vi.fn>).getMockImplementation() as (
+      ...args: unknown[]
+    ) => Promise<unknown>;
+    let presetsFail = true;
+    (apiClient.GET as ReturnType<typeof vi.fn>).mockImplementation((path: string, ...rest: unknown[]) =>
+      path === "/net-worth/forecast/presets" && presetsFail
+        ? Promise.resolve({ data: undefined, error: { detail: "down" } })
+        : ok(path, ...rest),
+    );
+    renderScreen();
+    expect(await screen.findByText("Could not load presets.")).toBeInTheDocument();
+    presetsFail = false;
+    await userEvent.click(screen.getByRole("button", { name: "Try again" }));
+    await waitFor(() => expect(screen.queryByText("Could not load presets.")).not.toBeInTheDocument());
+  });
+
   it("asks for a starting net worth when there is no history, then projects from the typed value", async () => {
     mockApi({});
     renderScreen();
