@@ -1,0 +1,319 @@
+"""`/api/backup/*`: export and restore, their security checks, and a restore under a live app."""
+
+from __future__ import annotations
+
+import io
+import threading
+import zipfile
+from pathlib import Path
+
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from spend_analyzer.api.restore_gate import RestoreGate
+from spend_analyzer.backup import archive
+from spend_analyzer.backup.errors import BackupBusyError
+from spend_analyzer.db.models import Job, User
+from tests.backup.support import PASSPHRASE, USER_NAME, seed_home
+
+EXPORT = "/api/backup/export"
+RESTORE = "/api/backup/restore"
+
+
+@pytest.fixture
+def other_machine_backup(tmp_path: Path) -> Path:
+    """A passphrase-encrypted backup made from some other data directory."""
+    other = tmp_path / "other_machine"
+    seed_home(other)
+    out = tmp_path / "from_other.spendbackup"
+    archive.create_backup(out, passphrase=PASSPHRASE, home=other)
+    return out
+
+
+def _siblings(home: Path) -> list[str]:
+    return sorted(p.name for p in home.parent.iterdir())
+
+
+def _upload(path: Path, passphrase: str | None = PASSPHRASE) -> dict[str, object]:
+    data = {"passphrase": passphrase} if passphrase is not None else {}
+    return {
+        "files": {"file": (path.name, path.read_bytes(), "application/octet-stream")},
+        "data": data,
+    }
+
+
+# ---- security ------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("route", [EXPORT, RESTORE])
+def test_routes_require_token_and_host(client: TestClient, route: str) -> None:
+    assert client.post(route, headers={"X-Spend-Token": ""}).status_code == 403
+    assert client.post(route, headers={"X-Spend-Token": "wrong"}).status_code == 403
+    assert client.post(route, headers={"Host": "evil.example"}).status_code == 403
+
+
+def test_restore_upload_without_token_is_403_and_changes_nothing(
+    client: TestClient, home: Path, other_machine_backup: Path
+) -> None:
+    before = (home / "spend.db").read_bytes()
+    siblings = _siblings(home)
+    response = client.post(RESTORE, headers={"X-Spend-Token": ""}, **_upload(other_machine_backup))
+    assert response.status_code == 403
+    assert (home / "spend.db").read_bytes() == before
+    assert _siblings(home) == siblings
+
+
+@pytest.mark.parametrize("route", [EXPORT, RESTORE])
+def test_get_is_not_allowed(client: TestClient, route: str) -> None:
+    assert client.get(route).status_code == 405
+
+
+# ---- export --------------------------------------------------------------------------------
+
+
+def test_export_encrypted_downloads_an_archive_restore_can_open(
+    client: TestClient, home: Path, tmp_path: Path
+) -> None:
+    seed_home_over(home)
+    response = client.post(EXPORT, json={"passphrase": PASSPHRASE})
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/octet-stream"
+    assert response.headers["cache-control"] == "no-store"
+    assert ".spendbackup" in response.headers["content-disposition"]
+    assert not zipfile.is_zipfile(io.BytesIO(response.content))  # sealed, not a bare zip
+
+    downloaded = tmp_path / "dl.spendbackup"
+    downloaded.write_bytes(response.content)
+    info = archive.inspect_backup(downloaded, passphrase=PASSPHRASE)
+    assert info.encrypted
+    assert info.manifest.counts["transactions"] == 1
+
+
+def seed_home_over(home: Path) -> None:
+    """Put a user and a transaction into the live database the test app already has open."""
+    from spend_analyzer.db.models import Account, Issuer, Statement, Transaction
+    from spend_analyzer.db.session import make_engine_for_path, make_session_factory
+
+    engine = make_engine_for_path(home / "spend.db")
+    try:
+        with make_session_factory(engine)() as session:
+            user = User(name=USER_NAME, is_default=True)
+            issuer = Issuer(name="Fixture Bank", slug="fixture-bank")
+            session.add_all([user, issuer])
+            session.flush()
+            account = Account(
+                user_id=user.id, issuer_id=issuer.id, account_type="credit", display_name="Card"
+            )
+            session.add(account)
+            session.flush()
+            statement = Statement(
+                account_id=account.id,
+                user_id=user.id,
+                file_sha256="a" * 64,
+                original_name="s.pdf",
+                status="parsed",
+            )
+            session.add(statement)
+            session.flush()
+            session.add(
+                Transaction(
+                    statement_id=statement.id,
+                    account_id=account.id,
+                    user_id=user.id,
+                    posted_date="2026-01-02",
+                    description_raw="raw",
+                    description_clean="clean",
+                    merchant_key="m",
+                    amount_minor=100,
+                    currency="USD",
+                    kind="purchase",
+                    is_spend=True,
+                    dedupe_hash="h",
+                )
+            )
+            session.commit()
+    finally:
+        engine.dispose()
+
+
+def test_export_without_passphrase_is_refused_unless_opted_out(client: TestClient) -> None:
+    refused = client.post(EXPORT, json={})
+    assert refused.status_code == 400
+    assert "passphrase is required" in refused.json()["detail"]
+
+    short = client.post(EXPORT, json={"passphrase": "abc"})
+    assert short.status_code == 400
+    assert "at least" in short.json()["detail"]
+
+    plain = client.post(EXPORT, json={"encrypt": False})
+    assert plain.status_code == 200
+    assert zipfile.is_zipfile(io.BytesIO(plain.content))
+
+
+def test_export_rejects_unknown_fields(client: TestClient) -> None:
+    assert (
+        client.post(EXPORT, json={"passphrase": PASSPHRASE, "include_keys": True}).status_code
+        == 422
+    )
+
+
+def test_export_cleans_up_its_temp_files(client: TestClient) -> None:
+    import tempfile
+
+    tmp_root = Path(tempfile.gettempdir())
+    before = set(tmp_root.glob("spend-export-*"))
+    assert client.post(EXPORT, json={"passphrase": PASSPHRASE}).status_code == 200
+    assert set(tmp_root.glob("spend-export-*")) == before
+
+
+# ---- restore -------------------------------------------------------------------------------
+
+
+def test_restore_replaces_data_and_the_running_app_serves_it(
+    client: TestClient, app_instance: FastAPI, home: Path, other_machine_backup: Path
+) -> None:
+    assert USER_NAME not in [u["name"] for u in client.get("/api/users").json()]
+
+    response = client.post(RESTORE, **_upload(other_machine_backup))
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["counts"]["transactions"] == 1
+    assert body["migrated"] is False
+    previous = Path(body["previous_dir"])
+    assert previous.is_dir() and previous.name.endswith(".before-restore")
+    assert (previous / "spend.db").is_file()  # the old data is kept, not deleted
+
+    # Same app instance, same engine object: it now reads the restored database.
+    names = [u["name"] for u in client.get("/api/users").json()]
+    assert USER_NAME in names
+    assert client.get("/api/statements").status_code == 200
+    # ...and the gate is open again for ordinary traffic.
+    assert app_instance.state.restore_gate.enter()
+    app_instance.state.restore_gate.leave()
+
+
+def test_restore_wrong_passphrase_is_400_and_touches_nothing(
+    client: TestClient, home: Path, other_machine_backup: Path
+) -> None:
+    before = (home / "spend.db").read_bytes()
+    siblings = _siblings(home)
+    response = client.post(RESTORE, **_upload(other_machine_backup, "not the passphrase"))
+    assert response.status_code == 400
+    assert "wrong passphrase" in response.json()["detail"]
+    missing = client.post(RESTORE, **_upload(other_machine_backup, None))
+    assert missing.status_code == 400
+    assert (home / "spend.db").read_bytes() == before
+    assert _siblings(home) == siblings
+    assert client.get("/api/users").status_code == 200  # still serving
+
+
+def test_restore_rejects_junk_upload(client: TestClient, home: Path) -> None:
+    siblings = _siblings(home)
+    response = client.post(
+        RESTORE, files={"file": ("x.spendbackup", b"not a backup", "application/octet-stream")}
+    )
+    assert response.status_code == 400
+    assert _siblings(home) == siblings
+
+
+def test_restore_upload_over_the_cap_is_413(
+    client: TestClient, home: Path, other_machine_backup: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from spend_analyzer.api.routers import backup as backup_router
+
+    monkeypatch.setattr(backup_router, "MAX_BACKUP_UPLOAD_BYTES", 1024)
+    siblings = _siblings(home)
+    response = client.post(RESTORE, **_upload(other_machine_backup))
+    assert response.status_code == 413
+    assert _siblings(home) == siblings
+
+
+def test_restore_refused_while_a_job_is_running(
+    client: TestClient, session: Session, home: Path, other_machine_backup: Path
+) -> None:
+    session.add(Job(id="busy-1", kind="import", status="running"))
+    session.commit()
+    siblings = _siblings(home)
+
+    response = client.post(RESTORE, **_upload(other_machine_backup))
+
+    assert response.status_code == 409
+    assert "job is still running" in response.json()["detail"]
+    assert _siblings(home) == siblings
+    # Nothing was swapped: the live database still has its running job, and the gate is released.
+    assert [j.id for j in session.scalars(select(Job)).all()] == ["busy-1"]
+    assert client.get("/api/users").status_code == 200
+
+
+def test_restore_refused_when_server_uses_a_different_database(
+    other_machine_backup: Path, tmp_path: Path, home: Path
+) -> None:
+    from spend_analyzer.api.app import create_app
+    from spend_analyzer.config import Settings
+    from spend_analyzer.db.migrate import upgrade_head
+    from spend_analyzer.db.session import make_engine_for_path
+
+    elsewhere = tmp_path / "elsewhere.db"
+    upgrade_head(f"sqlite:///{elsewhere}")
+    engine = make_engine_for_path(elsewhere)
+    try:
+        app = create_app(engine=engine, settings=Settings(), token="t")
+        with TestClient(
+            app, base_url="http://127.0.0.1", headers={"Host": "127.0.0.1", "X-Spend-Token": "t"}
+        ) as other_client:
+            response = other_client.post(RESTORE, **_upload(other_machine_backup))
+        assert response.status_code == 409
+    finally:
+        engine.dispose()
+
+
+def test_requests_get_503_while_a_restore_holds_the_gate(
+    client: TestClient, app_instance: FastAPI
+) -> None:
+    gate: RestoreGate = app_instance.state.restore_gate
+    gate.begin_exclusive()
+    try:
+        response = client.get("/api/users")
+        assert response.status_code == 503
+        assert "restore is in progress" in response.json()["detail"]
+    finally:
+        gate.end_exclusive()
+    assert client.get("/api/users").status_code == 200
+
+
+# ---- the gate itself -----------------------------------------------------------------------
+
+
+def test_gate_waits_for_in_flight_requests_then_blocks_new_ones() -> None:
+    gate = RestoreGate()
+    assert gate.enter()  # the restore request itself
+    assert gate.enter()  # another request already running
+    finished = threading.Timer(0.1, gate.leave)
+    finished.start()
+    gate.begin_exclusive(timeout=5)  # returns once that other request leaves
+    finished.join()
+    assert not gate.enter()
+    gate.end_exclusive()
+    gate.leave()
+    assert gate.enter()
+
+
+def test_gate_times_out_when_requests_do_not_finish() -> None:
+    gate = RestoreGate()
+    gate.enter()
+    gate.enter()  # never leaves
+    with pytest.raises(BackupBusyError, match="busy"):
+        gate.begin_exclusive(timeout=0.05)
+    assert gate.enter()  # the gate reopened itself
+
+
+def test_gate_rejects_a_second_exclusive() -> None:
+    gate = RestoreGate()
+    gate.enter()
+    gate.begin_exclusive(timeout=1)
+    with pytest.raises(BackupBusyError, match="already in progress"):
+        gate.begin_exclusive(timeout=1)
+    gate.end_exclusive()

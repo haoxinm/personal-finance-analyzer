@@ -21,6 +21,9 @@ from spend_analyzer.ingest.extract import sha256_file
 
 #: A12: hard cap on an uploaded file's size.
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024
+#: Cap for a `.spendbackup` upload (`/api/backup/restore`): it bundles every kept PDF, so it is far
+#: larger than one statement, but still bounded (and streamed to disk, never held in memory).
+MAX_BACKUP_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024
 PDF_MAGIC = b"%PDF-"
 _UNSAFE_NAME_CHARS = re.compile(r"[^A-Za-z0-9._ -]")
 
@@ -57,6 +60,28 @@ async def read_pdf_upload(file: UploadFile) -> bytes:
     if not data.startswith(PDF_MAGIC):
         raise HTTPException(status_code=400, detail="not a PDF file")
     return data
+
+
+async def stream_upload_to_file(file: UploadFile, dest: Path, *, max_bytes: int) -> None:
+    """Copy an upload to ``dest`` in 1 MiB pieces, enforcing ``max_bytes`` while streaming.
+
+    Raises:
+        HTTPException: 413 when the upload exceeds ``max_bytes`` (``dest`` is left partial; the
+            caller discards its directory).
+    """
+    total = 0
+    with dest.open("wb") as out:
+        while True:
+            chunk = await file.read(1024 * 1024)
+            if not chunk:
+                return
+            total += len(chunk)
+            if total > max_bytes:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"upload exceeds the {max_bytes // (1024 * 1024)} MB cap",
+                )
+            out.write(chunk)
 
 
 def save_upload(file_bytes: bytes) -> Path:

@@ -19,9 +19,11 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
+from spend_analyzer.api.restore_gate import RestoreGate, RestoreGateMiddleware
 from spend_analyzer.api.routers import (
     accounts,
     analytics,
+    backup,
     classify,
     export,
     forecast,
@@ -75,7 +77,11 @@ def create_app(
     app.state.token = resolved_token
     app.state.job_runner = JobRunner(session_factory)
     app.state.job_runner.start()
+    app.state.restore_gate = RestoreGate()
 
+    # Added first so it sits inside the localhost guard: unauthenticated requests are rejected
+    # before a restore in progress can count (or turn away) them.
+    app.add_middleware(RestoreGateMiddleware, gate=app.state.restore_gate)
     app.add_middleware(
         LocalhostGuardMiddleware, token=resolved_token, port=resolved_settings.server.port
     )
@@ -98,6 +104,7 @@ def create_app(
         net_worth.router,
         forecast.router,
         tax.router,
+        backup.router,
     ):
         app.include_router(router, prefix="/api")
 
