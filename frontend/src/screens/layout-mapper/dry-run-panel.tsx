@@ -1,5 +1,7 @@
 import * as React from "react";
 
+import { Money } from "@/components/primitives/money";
+
 import { useDryRunLayoutSpec } from "./api";
 
 const DEBOUNCE_MS = 400;
@@ -51,15 +53,18 @@ export function DryRunPanel({
   }
 
   const { result } = dryRun.data;
-  const total = (result.total_minor / 100).toFixed(2);
   return (
     <div className="flex flex-col gap-1 rounded-md border border-border bg-muted/30 p-2">
       <p className="text-sm font-medium">
-        {result.txn_count} transaction{result.txn_count === 1 ? "" : "s"} totalling {result.currency}{" "}
-        {total}
-        {result.reconciliation_delta_minor != null
-          ? ` (reconciliation delta ${(result.reconciliation_delta_minor / 100).toFixed(2)})`
-          : ""}
+        {result.txn_count} transaction{result.txn_count === 1 ? "" : "s"} totalling{" "}
+        <Money tone="neutral" minorUnits={result.total_minor} currency={result.currency} />
+        {result.reconciliation_delta_minor != null ? (
+          <>
+            {" "}
+            (reconciliation delta{" "}
+            <Money tone="neutral" minorUnits={result.reconciliation_delta_minor} currency={result.currency} />)
+          </>
+        ) : null}
       </p>
       {result.warnings.length > 0 ? (
         <ul className="flex flex-col gap-0.5">
@@ -73,7 +78,7 @@ export function DryRunPanel({
       {result.sample_rows.length > 0 ? (
         <details className="text-xs text-muted-foreground">
           <summary className="cursor-pointer">Sample rows ({result.sample_rows.length})</summary>
-          <pre className="mt-1 overflow-auto rounded bg-card p-1 font-mono text-[11px]">
+          <pre className="mt-1 overflow-auto rounded bg-card p-1 font-mono text-xs">
             {JSON.stringify(result.sample_rows, null, 2)}
           </pre>
         </details>

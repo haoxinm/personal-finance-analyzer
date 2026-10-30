@@ -7,7 +7,7 @@ import { TaxUploadPanel } from "./components/tax-upload-panel";
 export const screenMeta = { path: "/tax/import", title: "Import" };
 
 /**
- * Income & Tax import: upload W-2, 1099 and 1040 PDFs. Each file's outcome is listed here; figures
+ * Income & tax import: upload W-2, 1099 and 1040 PDFs. Each file's outcome is listed here; figures
  * that could not be read are completed by hand on the Documents tab.
  */
 export default function TaxImportScreen() {

@@ -28,11 +28,13 @@ npm run gen:api-types # regenerate src/api/schema.d.ts from src/api/openapi.json
 - `src/components/ui/` — shadcn-style primitives (Button, Badge, Card, Input, Skeleton,
   Toast).
 - `src/components/primitives/` — the shared domain primitives every screen needs: `Money`,
-  `CategoryBadge`, `DateRangePicker`, loading/empty/error states, `ErrorBoundary`.
+  `CategoryBadge`, `DateRangePicker`, loading/empty/error states, `ErrorBoundary`, and
+  `Page`/`PageHeader` (every screen's root and its one `h1`, so spacing and headings stay
+  uniform; the shell's `<main>` already pads the page, screens add none).
 - `src/hooks/` — `useSpendQueryParams` (URL search params ⇄ `SpendQuery`) and
   `useJobProgress` (SSE with reconnect).
 - `src/routes/gallery.tsx` — the Storybook-less component gallery at `/gallery`.
-- `src/navigation.ts` — the app's information architecture: sections (Spending, Income & Tax,
+- `src/navigation.ts` — the app's information architecture: sections (Spending, Income & tax,
   Net worth, Settings), their sub-tabs, and per-route chrome (user bar, compare, notes, document
   title). The shell renders the top nav and the active section's sub-tab row from it. Old flat
   paths (`/review`, `/import`, ...) redirect to their `/spending/...` equivalents, keeping the

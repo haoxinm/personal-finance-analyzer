@@ -14,7 +14,7 @@ import { useTaxYear, useTaxYears } from "./hooks";
 export const screenMeta = { path: "/tax/estimate", title: "Estimate" };
 
 /**
- * Income & Tax estimate: a simple federal income tax estimate for one person and year, computed from
+ * Income & tax estimate: a simple federal income tax estimate for one person and year, computed from
  * the imported source forms and a few manual inputs (filing status, deduction, credits, payments).
  * The Form 1040, when there is one, is only a cross-check. With "All users" selected the screen shows
  * one summary card per person, because the estimate needs a person. The year picker offers every year

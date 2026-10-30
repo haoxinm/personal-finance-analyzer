@@ -43,7 +43,7 @@ export function CategoryPicker({
             disabled={disabled}
             onClick={() => onPick(choice.categoryKey, choice.subcategoryKey)}
           >
-            <Badge variant="secondary" className="mr-1 px-1.5 py-0 text-[10px]">
+            <Badge variant="secondary" className="mr-1 px-1.5 py-0 text-xs">
               {position + 1}
             </Badge>
             {choice.categoryLabel}

@@ -29,7 +29,7 @@ export const screenMeta = { path: "/tax", title: "Overview" };
 const EMPTY_TEXT = "Import a W-2, 1099 or 1040 to see income and tax";
 
 /**
- * Income & Tax overview: per-year income by category and payer, withholding / FICA / liability,
+ * Income & tax overview: per-year income by category and payer, withholding / FICA / liability,
  * effective rates and the year-over-year trend. Amounts are neutral (income and tax are not
  * "spending"). The documents behind the numbers live on the Documents tab.
  */

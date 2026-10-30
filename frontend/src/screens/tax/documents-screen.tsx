@@ -12,7 +12,7 @@ import { supersededByDocument } from "./logic";
 export const screenMeta = { path: "/tax/documents", title: "Documents" };
 
 /**
- * Income & Tax documents: every imported tax form PDF (and hand-entered document) with its status,
+ * Income & tax documents: every imported tax form PDF (and hand-entered document) with its status,
  * figures to review or correct, owner, and manual entry. New files are uploaded on the Import tab.
  * Filterable by year via `?year=`.
  */

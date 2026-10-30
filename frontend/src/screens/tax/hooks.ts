@@ -47,7 +47,7 @@ function useYearParamSetter() {
 
 /**
  * The year shown on the Overview: `?year=` if it is one of `years`, else the newest. Lives in the
- * URL so a year is linkable and survives moving between the Income & Tax tabs. In compare mode both
+ * URL so a year is linkable and survives moving between the Income & tax tabs. In compare mode both
  * panes read the same `?year=` (the year is a view setting, like the date filters, not per user).
  */
 export function useTaxYear(
