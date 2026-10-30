@@ -70,6 +70,7 @@ from personal_finance_analyzer.classify.llm.batching import classify_all
 from personal_finance_analyzer.classify.llm.egress import BatchResult, preview_payload
 from personal_finance_analyzer.classify.llm.schema import Item
 from personal_finance_analyzer.classify.rules import (
+    IssuerCategoryMatch,
     resolve_issuer_category,
     rule_matches,
     sync_builtin_rules,
@@ -1082,6 +1083,36 @@ def _load_rule_sets(session: Session) -> tuple[list[Rule], list[Rule]]:
     return user_rules, builtin_rules
 
 
+#: `merchant_map.source` values the cascade reads at each step, shared with
+#: `classify.candidates` so the one-click suggestions can never read a different set of rows.
+USER_PIN_SOURCES: tuple[str, ...] = ("user",)
+CACHE_SOURCES: tuple[str, ...] = ("llm", "issuer")
+
+
+def first_matching_rule(
+    rules: Sequence[Rule],
+    *,
+    user_id: int,
+    merchant_key: str,
+    matches: Callable[[Rule, str], bool] = rule_matches,
+) -> Rule | None:
+    """The first rule of `rules` (already in priority order) that applies to `user_id` and whose
+    pattern matches `merchant_key`: cascade steps 2 and 4 (and their suggestions). `matches` lets
+    a read-only caller swap in a matcher that treats a stored regex that no longer compiles as a
+    non-match instead of raising."""
+    for rule in rules:
+        if _rule_applies_to_user(rule, user_id) and matches(rule, merchant_key):
+            return rule
+    return None
+
+
+def issuer_match(parser_id: str | None, issuer_category: str | None) -> IssuerCategoryMatch | None:
+    """Cascade step 5's lookup: the category an issuer's own label implies, or `None`."""
+    if not issuer_category:
+        return None
+    return resolve_issuer_category(parser_id, issuer_category)
+
+
 def _classify_deterministic(
     session: Session,
     txn: Transaction,
@@ -1095,6 +1126,9 @@ def _classify_deterministic(
     `dry_run=True` (used by `preview_egress`) performs every read but skips every write
     (`merchant_map.hit_count` increments, the issuer-category `merchant_map` write), so nothing
     persists from a preview.
+
+    The per-layer matching goes through `first_matching_rule`, `issuer_match` and the
+    `USER_PIN_SOURCES` / `CACHE_SOURCES` constants, which `classify.candidates` reuses.
     """
     if txn.kind in _NON_SPEND_KINDS:
         return _Outcome(
@@ -1104,14 +1138,15 @@ def _classify_deterministic(
             classified_by="kind",
         )
 
-    for rule in user_rules:
-        if _rule_applies_to_user(rule, txn.user_id) and rule_matches(rule, txn.merchant_key):
-            return _outcome_from_rule(session, rule, classified_by="user_rule")
+    user_rule = first_matching_rule(user_rules, user_id=txn.user_id, merchant_key=txn.merchant_key)
+    if user_rule is not None:
+        return _outcome_from_rule(session, user_rule, classified_by="user_rule")
 
     if txn.merchant_key:
         user_map = session.execute(
             select(MerchantMap).where(
-                MerchantMap.merchant_key == txn.merchant_key, MerchantMap.source == "user"
+                MerchantMap.merchant_key == txn.merchant_key,
+                MerchantMap.source.in_(USER_PIN_SOURCES),
             )
         ).scalar_one_or_none()
         if user_map is not None:
@@ -1120,35 +1155,36 @@ def _classify_deterministic(
             # Recorded as a rule result, never as a one-time edit (`classified_by='user'`).
             return _outcome_from_map(session, user_map, classified_by="user_rule")
 
-    for rule in builtin_rules:
-        if rule_matches(rule, txn.merchant_key):
-            return _outcome_from_rule(session, rule, classified_by="builtin_rule")
+    builtin_rule = first_matching_rule(
+        builtin_rules, user_id=txn.user_id, merchant_key=txn.merchant_key
+    )
+    if builtin_rule is not None:
+        return _outcome_from_rule(session, builtin_rule, classified_by="builtin_rule")
 
-    if txn.issuer_category:
-        parser_id = txn.statement.parser_id if txn.statement is not None else None
-        match = resolve_issuer_category(parser_id, txn.issuer_category)
-        if match is not None:
-            outcome = _Outcome(
-                category_key=match.category_key,
-                subcategory_key=match.subcategory_key,
-                confidence=0.9,
-                classified_by="issuer",
+    parser_id = txn.statement.parser_id if txn.statement is not None else None
+    match = issuer_match(parser_id, txn.issuer_category)
+    if match is not None:
+        outcome = _Outcome(
+            category_key=match.category_key,
+            subcategory_key=match.subcategory_key,
+            confidence=0.9,
+            classified_by="issuer",
+        )
+        if txn.merchant_key and not dry_run:
+            _write_merchant_map(
+                session,
+                txn.merchant_key,
+                outcome,
+                source="issuer",
+                canonical=txn.merchant_canonical,
             )
-            if txn.merchant_key and not dry_run:
-                _write_merchant_map(
-                    session,
-                    txn.merchant_key,
-                    outcome,
-                    source="issuer",
-                    canonical=txn.merchant_canonical,
-                )
-            return outcome
+        return outcome
 
     if txn.merchant_key:
         cache_map = session.execute(
             select(MerchantMap).where(
                 MerchantMap.merchant_key == txn.merchant_key,
-                MerchantMap.source.in_(("llm", "issuer")),
+                MerchantMap.source.in_(CACHE_SOURCES),
             )
         ).scalar_one_or_none()
         if cache_map is not None:
@@ -1409,6 +1445,8 @@ def _persist_llm_run(session: Session, result: BatchResult, *, group_id: str) ->
 
 
 __all__ = [
+    "CACHE_SOURCES",
+    "USER_PIN_SOURCES",
     "AcceptResult",
     "AcceptUndo",
     "ClassifyResult",
@@ -1420,6 +1458,8 @@ __all__ = [
     "apply_user_correction",
     "approve_subcategory",
     "classify_transactions",
+    "first_matching_rule",
+    "issuer_match",
     "merge_subcategory",
     "preview_egress",
     "rule_target_ids",
