@@ -10,6 +10,7 @@ import { screenMeta as reviewMeta } from "@/screens/review";
 import { screenMeta as rulesMeta } from "@/screens/rules";
 import { screenMeta as settingsMeta } from "@/screens/settings";
 import { screenMeta as taxDocumentsMeta } from "@/screens/tax/documents-screen";
+import { screenMeta as taxEstimateMeta } from "@/screens/tax/estimate-screen";
 import { screenMeta as taxImportMeta } from "@/screens/tax/import-screen";
 import { screenMeta as taxOverviewMeta } from "@/screens/tax/overview-screen";
 import { screenMeta as transactionsMeta } from "@/screens/transactions";
@@ -22,6 +23,7 @@ const SCREEN_PATHS = [
   rulesMeta,
   layoutMapperMeta,
   taxOverviewMeta,
+  taxEstimateMeta,
   taxDocumentsMeta,
   taxImportMeta,
   netWorthMeta,
@@ -57,6 +59,7 @@ describe("routeInfo", () => {
       ["/spending/rules", "spending", "Rules", { userBar: true, compare: false, note: "Rules apply to all users." }],
       ["/spending/layout-mapper", "spending", "Layout mapper", { userBar: true, compare: false }],
       ["/tax", "tax", "Overview", { userBar: true, compare: true }],
+      ["/tax/estimate", "tax", "Estimate", { userBar: true, compare: true }],
       ["/tax/documents", "tax", "Documents", { userBar: true, compare: true }],
       ["/tax/import", "tax", "Import", { userBar: true, compare: false }],
       ["/net-worth", "net-worth", "Overview", { userBar: true, compare: true }],
@@ -80,6 +83,7 @@ describe("routeInfo", () => {
   it("builds document titles, collapsing one-tab sections", () => {
     expect(routeInfo("/spending/review").title).toBe("Review · Spending · Spend Analyzer");
     expect(routeInfo("/tax").title).toBe("Overview · Income & Tax · Spend Analyzer");
+    expect(routeInfo("/tax/estimate").title).toBe("Estimate · Income & Tax · Spend Analyzer");
     expect(routeInfo("/spending/layout-mapper").title).toBe("Layout mapper · Spending · Spend Analyzer");
     expect(routeInfo("/net-worth").title).toBe("Overview · Net worth · Spend Analyzer");
     expect(routeInfo("/net-worth/forecast").title).toBe("Forecast · Net worth · Spend Analyzer");
@@ -99,6 +103,7 @@ describe("carriedSearch", () => {
 
   it("carries keepParams only within the same section", () => {
     expect(carriedSearch(tab("/tax/documents"), "?year=2023", true)).toBe("?year=2023");
+    expect(carriedSearch(tab("/tax/estimate"), "?year=2023&compare=2", true)).toBe("?compare=2&year=2023");
     expect(carriedSearch(tab("/tax/documents"), "?year=2023", false)).toBe("");
     expect(carriedSearch(tab("/tax/documents"), "?year=2023&compare=2&doc=4", true)).toBe("?compare=2&year=2023");
   });

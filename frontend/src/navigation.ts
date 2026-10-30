@@ -60,6 +60,7 @@ export const SECTIONS: readonly SectionSpec[] = [
     base: "/tax",
     tabs: [
       { path: "/tax", label: "Overview", end: true, compare: true, keepParams: ["year"] },
+      { path: "/tax/estimate", label: "Estimate", compare: true, keepParams: ["year"] },
       { path: "/tax/documents", label: "Documents", compare: true, keepParams: ["year"] },
       { path: "/tax/import", label: "Import", keepParams: ["year"] },
     ],
