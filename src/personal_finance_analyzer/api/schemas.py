@@ -708,6 +708,35 @@ class ApiKeyPut(_Model):
     base_url: str = ""
 
 
+class SecretStorageStatus(_Model):
+    """`GET /api/settings/secret-storage`: which secret backend holds (or would hold) the LLM API
+    key on this machine. Never contains key material."""
+
+    #: Where the current endpoint's key comes from: an environment variable, the OS keychain, the
+    #: opt-in plaintext file, or nowhere.
+    key_source: Literal["env", "keychain", "file", "none"]
+    #: Where a newly saved key would go; `none` means a save will fail (no keychain, file store off).
+    storage: Literal["keychain", "file", "none"]
+    keychain_name: str
+    keychain_usable: bool
+    keychain_detail: str
+    env_var: str | None
+    file_store_enabled: bool
+    file_store_path: str
+    file_store_has_keys: bool
+    #: Platform-specific setup advice, filled in when no usable keychain exists.
+    guidance: str
+    #: The plaintext-at-rest warning, filled in while the file store is enabled.
+    warning: str
+
+
+class SecretStoragePut(_Model):
+    """`PUT /api/settings/secret-storage`: switch the plaintext file store on or off
+    (`[secrets] allow_file_store`)."""
+
+    allow_file_store: bool
+
+
 # --- Net worth ---------------------------------------------------------------------------------
 
 

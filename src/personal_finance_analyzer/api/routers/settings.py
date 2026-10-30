@@ -20,17 +20,20 @@ from personal_finance_analyzer.config import (
     IngestConfig,
     LLMConfig,
     PrivacyConfig,
+    SecretsConfig,
     ServerConfig,
     Settings,
     TaxConfig,
     delete_api_key,
     get_llm_api_key,
     save_settings,
+    secret_storage_status,
     set_api_key,
     without_stale_tax_consent,
 )
 from personal_finance_analyzer.core.pii import compile_redactor
 from personal_finance_analyzer.llm.diagnostics import check_connection
+from personal_finance_analyzer.secret_store import SecretStorageError
 
 router = APIRouter(tags=["settings"])
 
@@ -135,6 +138,8 @@ def put_settings(body: schemas.Settings, current: SettingsDep) -> schemas.Settin
             if "tax" in body.model_fields_set
             else current.tax
         ),
+        # Changed only through `PUT /settings/secret-storage`, which carries the warning.
+        secrets=current.secrets,
     )
     new_settings = without_stale_tax_consent(new_settings)
     save_settings(new_settings)
@@ -154,17 +159,65 @@ def _key_account(base_url: str, saved: LLMConfig) -> str:
 
 @router.put("/settings/api-key", status_code=204, response_class=Response)
 def put_api_key(body: schemas.ApiKeyPut, settings: SettingsDep) -> Response:
-    """Store `body.api_key` for the endpoint's host in the OS keychain (I7). Never returned,
-    logged, or written to `config.toml`/the database."""
-    set_api_key(_key_account(body.base_url, settings.llm), body.api_key)
+    """Store `body.api_key` for the endpoint's host in the OS keychain (I7), or, only when there is
+    no keychain and the user enabled `[secrets] allow_file_store`, in the 0600 file store. Never
+    returned, logged, or written to `config.toml`/the database. `503` (with an actionable message)
+    when no backend can take it."""
+    try:
+        set_api_key(_key_account(body.base_url, settings.llm), body.api_key)
+    except SecretStorageError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from None
     return Response(status_code=204)
 
 
 @router.delete("/settings/api-key", status_code=204, response_class=Response)
 def delete_api_key_route(settings: SettingsDep, base_url: str = "") -> Response:
     """Remove the key stored for the endpoint's host, if present (I7). Idempotent."""
-    delete_api_key(_key_account(base_url, settings.llm))
+    try:
+        delete_api_key(_key_account(base_url, settings.llm))
+    except SecretStorageError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from None
     return Response(status_code=204)
+
+
+def _secret_storage_schema(llm: LLMConfig) -> schemas.SecretStorageStatus:
+    status = secret_storage_status(llm)
+    return schemas.SecretStorageStatus(
+        key_source=status.key_source,
+        storage=status.storage,
+        keychain_name=status.keychain_name,
+        keychain_usable=status.keychain_usable,
+        keychain_detail=status.keychain_detail,
+        env_var=status.env_var,
+        file_store_enabled=status.file_store_enabled,
+        file_store_path=status.file_store_path,
+        file_store_has_keys=status.file_store_has_keys,
+        guidance=status.guidance,
+        warning=status.warning,
+    )
+
+
+@router.get("/settings/secret-storage", response_model=schemas.SecretStorageStatus)
+def get_secret_storage(settings: SettingsDep, base_url: str = "") -> schemas.SecretStorageStatus:
+    """Which backend holds the LLM API key (environment variable / keychain name / plaintext file
+    / none), with platform-specific setup advice when no keychain works. Read-only; never returns
+    a key. `base_url` (default: the saved one) picks the endpoint whose key is looked up."""
+    llm = settings.llm.model_copy(update={"base_url": base_url.strip() or settings.llm.base_url})
+    return _secret_storage_schema(llm)
+
+
+@router.put("/settings/secret-storage", response_model=schemas.SecretStorageStatus)
+def put_secret_storage(
+    body: schemas.SecretStoragePut, settings: SettingsDep
+) -> schemas.SecretStorageStatus:
+    """Switch the plaintext file store on or off (`[secrets] allow_file_store`; only used when the
+    OS keychain is unavailable)."""
+    save_settings(
+        settings.model_copy(
+            update={"secrets": SecretsConfig(allow_file_store=body.allow_file_store)}
+        )
+    )
+    return _secret_storage_schema(settings.llm)
 
 
 @router.post("/settings/pii-test", response_model=schemas.PiiTestResponse)

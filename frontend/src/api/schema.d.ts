@@ -798,8 +798,10 @@ export interface paths {
         get?: never;
         /**
          * Put Api Key
-         * @description Store `body.api_key` for the endpoint's host in the OS keychain (I7). Never returned,
-         *     logged, or written to `config.toml`/the database.
+         * @description Store `body.api_key` for the endpoint's host in the OS keychain (I7), or, only when there is
+         *     no keychain and the user enabled `[secrets] allow_file_store`, in the 0600 file store. Never
+         *     returned, logged, or written to `config.toml`/the database. `503` (with an actionable message)
+         *     when no backend can take it.
          */
         put: operations["put_api_key_api_settings_api_key_put"];
         post?: never;
@@ -808,6 +810,33 @@ export interface paths {
          * @description Remove the key stored for the endpoint's host, if present (I7). Idempotent.
          */
         delete: operations["delete_api_key_route_api_settings_api_key_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/settings/secret-storage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Secret Storage
+         * @description Which backend holds the LLM API key (environment variable / keychain name / plaintext file
+         *     / none), with platform-specific setup advice when no keychain works. Read-only; never returns
+         *     a key. `base_url` (default: the saved one) picks the endpoint whose key is looked up.
+         */
+        get: operations["get_secret_storage_api_settings_secret_storage_get"];
+        /**
+         * Put Secret Storage
+         * @description Switch the plaintext file store on or off (`[secrets] allow_file_store`; only used when the
+         *     OS keychain is unavailable).
+         */
+        put: operations["put_secret_storage_api_settings_secret_storage_put"];
+        post?: never;
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -2741,6 +2770,50 @@ export interface components {
             /** Subcategory Key */
             subcategory_key?: string | null;
             kind?: components["schemas"]["Kind"] | null;
+        };
+        /**
+         * SecretStoragePut
+         * @description `PUT /api/settings/secret-storage`: switch the plaintext file store on or off
+         *     (`[secrets] allow_file_store`).
+         */
+        SecretStoragePut: {
+            /** Allow File Store */
+            allow_file_store: boolean;
+        };
+        /**
+         * SecretStorageStatus
+         * @description `GET /api/settings/secret-storage`: which secret backend holds (or would hold) the LLM API
+         *     key on this machine. Never contains key material.
+         */
+        SecretStorageStatus: {
+            /**
+             * Key Source
+             * @enum {string}
+             */
+            key_source: "env" | "keychain" | "file" | "none";
+            /**
+             * Storage
+             * @enum {string}
+             */
+            storage: "keychain" | "file" | "none";
+            /** Keychain Name */
+            keychain_name: string;
+            /** Keychain Usable */
+            keychain_usable: boolean;
+            /** Keychain Detail */
+            keychain_detail: string;
+            /** Env Var */
+            env_var: string | null;
+            /** File Store Enabled */
+            file_store_enabled: boolean;
+            /** File Store Path */
+            file_store_path: string;
+            /** File Store Has Keys */
+            file_store_has_keys: boolean;
+            /** Guidance */
+            guidance: string;
+            /** Warning */
+            warning: string;
         };
         /** ServerSettings */
         ServerSettings: {
@@ -5790,6 +5863,70 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_secret_storage_api_settings_secret_storage_get: {
+        parameters: {
+            query?: {
+                base_url?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SecretStorageStatus"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    put_secret_storage_api_settings_secret_storage_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SecretStoragePut"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SecretStorageStatus"];
+                };
             };
             /** @description Validation Error */
             422: {
