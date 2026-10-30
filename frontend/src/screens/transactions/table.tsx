@@ -158,7 +158,6 @@ export function TransactionsTable({
               key={row.id}
               role="row"
               aria-rowindex={range.startIndex + i + 2}
-              aria-selected={context.selectedIds.has(row.original.id)}
               // Mouse convenience only: the keyboard path is the Edit button in the Description cell.
               className={cn(
                 "flex cursor-pointer items-center border-b border-border/60 text-sm hover:bg-muted/40",
