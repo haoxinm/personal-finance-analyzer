@@ -74,12 +74,39 @@ This is the reason to run this instead of a hosted budgeting app, so it comes fi
 - **Secrets** (an LLM API key) live only in your OS credential store (macOS Keychain, Windows
   Credential Manager, Linux Secret Service), keyed per host — never in the database, the config
   file, or a log line. On a headless machine you can supply it as `SPEND_ANALYZER_LLM_API_KEY`.
+- **Backups are encrypted by default and never carry secrets.** `backup create` (and Settings ->
+  Backup & restore) seals the archive with a passphrase (scrypt + AES-256-GCM); skipping that is an
+  explicit `--no-encrypt`. The OS-keychain API key is never read into one. The archive is built
+  locally and goes nowhere on its own.
 - **The local web server** binds `127.0.0.1` only, checks every request's `Host` header, and
   requires a random token minted fresh on every launch — so nothing else on your machine's network,
   let alone the internet, can reach it, and a malicious web page open in your browser can't either.
 
 See [docs/SECURITY_REVIEW.md](docs/SECURITY_REVIEW.md) for the full, code-verified security
 checklist, and [SECURITY.md](SECURITY.md) for the threat model and how to report a vulnerability.
+
+## Moving to another machine
+
+Switching computers should not mean re-importing every statement and tax form. Back up on the old
+one, copy the single file, restore on the new one:
+
+```console
+$ spend-analyzer backup create ~/Desktop/          # old machine; asks for a passphrase
+$ pipx install spend-analyzer                      # new machine
+$ spend-analyzer backup restore spend-analyzer-2026-10-30.spendbackup
+$ spend-analyzer llm set-key                       # only if you use a remote LLM that needs a key
+$ spend-analyzer serve
+```
+
+The same two actions are in the web UI under **Settings -> Backup & restore**. A backup holds your
+database, the kept statement PDFs, layout specs and settings, and is **encrypted with a passphrase
+by default** because it contains everything the app knows about your finances (there is no way to
+recover a lost passphrase). It never contains your LLM API key: that stays in the OS credential
+store of the machine that made it, so enter it again on the new one. Restore checks the whole file
+before touching anything, migrates a backup made by an older version, and refuses one from a newer
+version. If the new machine already has data, `restore` needs `--replace`, which moves the existing
+data directory aside to `<name>.<timestamp>.before-restore` instead of deleting it. See
+[docs/CLI.md](docs/CLI.md#backup).
 
 ## Using an LLM (local or remote)
 
@@ -274,6 +301,7 @@ spend-analyzer import <pdf>...      import statement PDFs (--pages, --parser-id 
 spend-analyzer classify             run the classification cascade over unclassified transactions
 spend-analyzer report               print monthly category totals for a date range
 spend-analyzer export               export transactions to CSV/JSON (never includes account masks)
+spend-analyzer backup               move all data to another machine (create / inspect / restore)
 spend-analyzer llm                  configure the LLM (show / set / enable / disable / set-key / clear-key / test)
 spend-analyzer doctor               diagnose the local install: Python, data dir, DB, keychain, LLM
 spend-analyzer eval                 run the classifier evaluation harness against a labelled CSV
