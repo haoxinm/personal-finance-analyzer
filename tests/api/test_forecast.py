@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -180,6 +182,29 @@ def test_preset_visibility_scopes(client: TestClient) -> None:
     assert names(user_id=sam) == ["Shared one"]
     assert names() == ["Shared one"]  # all-users view: shared only
     assert client.get(PRESETS, params={"user_id": 99}).status_code == 404
+
+
+def test_list_skips_saved_presets_with_invalid_stored_params(
+    client: TestClient, session: Session, caplog: pytest.LogCaptureFixture
+) -> None:
+    good = client.post(PRESETS, json={"name": "Good", "params": _params()}).json()
+    bad = client.post(PRESETS, json={"name": "Bad", "params": _params()}).json()
+    broken = client.post(PRESETS, json={"name": "Broken JSON", "params": _params()}).json()
+    # Stored JSON is re-validated on read: out-of-range, wrong type and unparseable all fail.
+    session.get(ForecastPreset, bad["id"]).params = '{"horizon_years": 9999}'  # type: ignore[union-attr]
+    session.get(ForecastPreset, broken["id"]).params = "not json"  # type: ignore[union-attr]
+    session.commit()
+
+    with caplog.at_level(logging.WARNING, logger="spend_analyzer.api.services.forecast"):
+        r = client.get(PRESETS)
+    assert r.status_code == 200
+    assert [p["id"] for p in r.json()["saved"]] == [good["id"]]
+    assert len(r.json()["builtin"]) > 0
+    assert str(bad["id"]) in caplog.text and str(broken["id"]) in caplog.text
+    # The rows are kept, so nothing is lost; the user can still replace the parameters.
+    assert session.get(ForecastPreset, bad["id"]) is not None
+    assert client.put(f"{PRESETS}/{bad['id']}", json={"params": _params()}).status_code == 200
+    assert [p["name"] for p in client.get(PRESETS).json()["saved"]] == ["Bad", "Good"]
 
 
 def test_preset_name_uniqueness_per_scope(client: TestClient) -> None:

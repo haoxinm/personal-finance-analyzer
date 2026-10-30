@@ -81,7 +81,8 @@ def delete_history(user_id: _UserId, year: _Year, session: SessionDep) -> None:
 @router.get("/net-worth/forecast/presets", response_model=schemas.ForecastPresetList)
 def list_presets(session: SessionDep, user_id: int | None = None) -> schemas.ForecastPresetList:
     """Built-in presets plus the saved ones visible to `user_id`: shared presets and that user's
-    own. Without `user_id` (the all-users view), shared presets only."""
+    own. Without `user_id` (the all-users view), shared presets only. A saved preset whose stored
+    parameters no longer validate is left out (and logged) rather than failing the list."""
     if user_id is not None and not service.user_exists(session, user_id):
         raise HTTPException(status_code=404, detail="user not found")
     return schemas.ForecastPresetList(
@@ -99,7 +100,7 @@ def list_presets(session: SessionDep, user_id: int | None = None) -> schemas.For
             )
             for p in BUILTIN_PRESETS
         ],
-        saved=[service.preset_to_schema(r) for r in service.list_presets(session, user_id)],
+        saved=service.saved_presets_to_schema(service.list_presets(session, user_id)),
     )
 
 

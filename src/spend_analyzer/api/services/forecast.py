@@ -3,12 +3,17 @@ LLM/HTTP imports; no commit here)."""
 
 from __future__ import annotations
 
+import logging
+
+from pydantic import ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from spend_analyzer.api import schemas
 from spend_analyzer.core.forecast import is_builtin_name, normalize_preset_name
 from spend_analyzer.db.models import ForecastPreset, NetWorthHistory, User
+
+_log = logging.getLogger(__name__)
 
 
 class PresetNameConflict(ValueError):
@@ -69,6 +74,23 @@ def preset_to_schema(row: ForecastPreset) -> schemas.ForecastPreset:
         created_at=row.created_at,
         updated_at=row.updated_at,
     )
+
+
+def saved_presets_to_schema(rows: list[ForecastPreset]) -> list[schemas.ForecastPreset]:
+    """Convert stored presets for the list endpoint, skipping any whose stored JSON no longer
+    validates (hand-edited, or written by a build with looser limits) so one bad row cannot take
+    the whole list down. The row is left in the database and a warning names its id."""
+    out: list[schemas.ForecastPreset] = []
+    for row in rows:
+        try:
+            out.append(preset_to_schema(row))
+        except ValidationError as exc:
+            _log.warning(
+                "skipping forecast preset id=%s: stored parameters are invalid (%d error(s))",
+                row.id,
+                exc.error_count(),
+            )
+    return out
 
 
 def get_preset(session: Session, preset_id: int) -> ForecastPreset | None:

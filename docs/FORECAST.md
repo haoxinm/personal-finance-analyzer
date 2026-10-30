@@ -105,7 +105,9 @@ that way), spending change, retirement and events. **Save as preset...** stores 
 user, or for everyone with **Share with everyone** (also what happens when **All users** is
 selected). A saved preset can be updated with the current scenario, renamed or deleted. Names are
 unique within their scope and cannot reuse a built-in name. The screen marks a scenario as
-**Modified** once it differs from the chosen preset.
+**Modified** once it differs from the chosen preset. A saved preset whose stored parameters no
+longer pass validation (for example after editing the database by hand) is left out of the list and
+logged as a warning rather than failing the whole list; the row is kept.
 
 ## Limitations
 
