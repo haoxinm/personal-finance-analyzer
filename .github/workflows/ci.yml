@@ -48,6 +48,43 @@ jobs:
       - name: Test
         run: uv run pytest -q
 
+  # The secret-storage tests that need a real Linux Secret Service. A throwaway D-Bus session and
+  # an unlocked gnome-keyring stand in for the desktop login a Linux user has; every other test
+  # (including `pytest -q` above) runs on an in-memory keyring and skips these.
+  linux-keyring:
+    runs-on: ubuntu-latest
+    env:
+      PFA_TEST_LINUX_KEYRING: "1"
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Install Python
+        run: uv python install 3.12
+
+      - name: Install D-Bus and gnome-keyring
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y dbus-x11 gnome-keyring libsecret-1-0
+
+      - name: Sync dependencies
+        run: uv sync --extra dev
+
+      - name: Secret Service tests (dbus-run-session + gnome-keyring)
+        run: |
+          dbus-run-session -- bash -c '
+            set -euo pipefail
+            echo "ci-password" | gnome-keyring-daemon --unlock --components=secrets >/dev/null
+            uv run pytest -q -rs -m linux_keyring tests/core/test_secret_store_linux.py
+          '
+
   frontend:
     runs-on: ubuntu-latest
     defaults:
