@@ -69,7 +69,8 @@ This is the reason to run this instead of a hosted budgeting app, so it comes fi
   `[privacy] store_tax_pdf_copies = true`. See [docs/TAX.md](docs/TAX.md).
 - **Account balances stay local.** The balances you enter for net worth (checking, savings,
   investment, credit card) live only in your local database. They are never exported, never part
-  of any LLM payload, and the net-worth code imports neither an LLM nor an HTTP client.
+  of any LLM payload, and the net-worth code (including the forecast, its manual past-year net worth
+  and saved presets) imports neither an LLM nor an HTTP client.
 - **Secrets** (an LLM API key) live only in your OS credential store (macOS Keychain, Windows
   Credential Manager, Linux Secret Service), keyed per host — never in the database, the config
   file, or a log line. On a headless machine you can supply it as `SPEND_ANALYZER_LLM_API_KEY`.
@@ -210,6 +211,12 @@ build is missing or stale).
   and credit-card accounts (several accounts per category). Net worth is assets minus credit-card
   balances, shown with a breakdown table, a pie of where your assets are held, and trend lines per
   category and per account. A month with no entry carries the account's last balance forward.
+- **Forecasts net worth.** **Net worth › Forecast** projects net worth to a year you choose from your
+  balance entries, tax forms and spending, with adjustable income growth, tax rate, spending growth,
+  investment return, inflation, retirement and one-off events. Start from a built-in preset
+  (Conservative, Moderate, Aggressive) or save your own, enter net worth by hand for past years your
+  entries don't cover, and see the result nominal or in today's dollars. It is a deterministic
+  illustration, not advice. See [docs/FORECAST.md](docs/FORECAST.md).
 - **Gives each person their own view.** Every page except Settings has a user bar with user
   chips ("All users" plus one per user, a dropdown beyond six users). Your choice is kept in the
   `?user=` URL parameter, so a view can be bookmarked, and remembered in your browser between
@@ -284,6 +291,7 @@ Run `spend-analyzer --help` or `spend-analyzer <command> --help` for full option
 - [docs/CLI.md](docs/CLI.md) — full CLI command reference
 - [docs/LAYOUTS.md](docs/LAYOUTS.md) — the four built-in layout specifications and how to add one
 - [docs/TAX.md](docs/TAX.md) — income and tax analysis: supported forms, boxes, rates, the estimate and its limits
+- [docs/FORECAST.md](docs/FORECAST.md) — net worth forecast: sources, parameters, formula, presets and limits
 - [docs/SECURITY_REVIEW.md](docs/SECURITY_REVIEW.md) — the security checklist, re-verified against
   the shipped code
 - [SECURITY.md](SECURITY.md) — threat model and vulnerability reporting
