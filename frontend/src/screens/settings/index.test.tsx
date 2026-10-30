@@ -46,6 +46,14 @@ vi.mock("./lib/hooks", () => ({
   useClassifyPreview: () => ({ isPending: false, isError: false, isSuccess: true, data: [] }),
 }));
 
+vi.mock("./lib/backup", () => ({
+  MIN_PASSPHRASE_LENGTH: 8,
+  backupFilename: () => "spend-analyzer-2026-01-01.spendbackup",
+  saveBlob: vi.fn(),
+  useExportBackup: () => ({ mutate: vi.fn(), isPending: false }),
+  useRestoreBackup: () => ({ mutate: vi.fn(), isPending: false }),
+}));
+
 describe("SettingsScreen", () => {
   it("exports the screen contract (default component + screenMeta)", async () => {
     const mod = await import("./index");
@@ -65,5 +73,6 @@ describe("SettingsScreen", () => {
     expect(screen.getByText("LLM provider")).toBeInTheDocument();
     expect(screen.getByText("Privacy")).toBeInTheDocument();
     expect(screen.getByText("Preview what will be sent")).toBeInTheDocument();
+    expect(screen.getByText("Backup & restore")).toBeInTheDocument();
   });
 });
