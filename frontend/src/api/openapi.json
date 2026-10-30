@@ -6402,6 +6402,28 @@
               }
             ],
             "title": "Needs Review"
+          },
+          "inserted": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Inserted"
+          },
+          "skipped_duplicates": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Skipped Duplicates"
           }
         },
         "type": "object",
@@ -7742,6 +7764,11 @@
           },
           "proposal": {
             "$ref": "#/components/schemas/ExtractorProposal"
+          },
+          "duplicate": {
+            "type": "boolean",
+            "title": "Duplicate",
+            "default": false
           }
         },
         "type": "object",
