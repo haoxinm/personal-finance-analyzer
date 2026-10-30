@@ -13,7 +13,7 @@ import { MonthOverMonth } from "./components/month-over-month";
 import { TopMerchants } from "./components/top-merchants";
 import { TrendLine } from "./components/trend-line";
 import { UserComparison } from "./components/user-comparison";
-import { NetWorthSection } from "./net-worth/net-worth-section";
+import { NetWorthSection } from "../net-worth/net-worth-section";
 import {
   type DashboardFilters,
   useAccounts,

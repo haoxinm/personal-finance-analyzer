@@ -12,9 +12,10 @@ import {
 
 import type { components } from "@/api/client";
 import { EmptyState } from "@/components/primitives/states";
+import { colorByIndex } from "@/screens/dashboard/chart-colors";
 import { cn } from "@/utils";
 
-import { CHART_NET_WORTH, NET_WORTH_CATEGORY_COLORS, colorByIndex } from "../chart-colors";
+import { CHART_NET_WORTH, NET_WORTH_CATEGORY_COLORS } from "./chart-colors";
 import {
   CATEGORIES,
   CATEGORY_LABELS,

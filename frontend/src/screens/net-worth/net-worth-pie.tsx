@@ -5,7 +5,7 @@ import type { components } from "@/api/client";
 import { Money } from "@/components/primitives/money";
 import { EmptyState } from "@/components/primitives/states";
 
-import { NET_WORTH_CATEGORY_COLORS } from "../chart-colors";
+import { NET_WORTH_CATEGORY_COLORS } from "./chart-colors";
 import { pieSlices } from "./logic";
 
 type Snapshot = components["schemas"]["NetWorthSnapshot"];

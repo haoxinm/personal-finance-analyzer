@@ -1,5 +1,5 @@
 import { ApiError, type components } from "@/api/client";
-import { parseBalanceInput } from "@/screens/dashboard/net-worth/logic";
+import { parseBalanceInput } from "@/screens/net-worth/logic";
 
 export type TaxSummary = components["schemas"]["TaxYearSummary"];
 export type TaxDocument = components["schemas"]["TaxDocument"];
