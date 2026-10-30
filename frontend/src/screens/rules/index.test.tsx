@@ -45,4 +45,34 @@ describe("RulesScreen", () => {
     expect(screen.getByRole("tab", { name: "Taxonomy" })).toHaveAttribute("aria-selected", "true");
     expect(await screen.findByText("No taxonomy loaded")).toBeInTheDocument();
   });
+
+  it("is a proper tabs pattern: roving tabindex, arrow keys, aria-controls and a labelled panel", async () => {
+    const { default: RulesScreen } = await import("./index");
+    const user = userEvent.setup();
+    render(<RulesScreen />, { wrapper: TestProviders });
+
+    const rules = screen.getByRole("tab", { name: "Rules" });
+    const extractors = screen.getByRole("tab", { name: "Extractors" });
+    const taxonomy = screen.getByRole("tab", { name: "Taxonomy" });
+    expect(rules).toHaveAttribute("tabindex", "0");
+    expect(extractors).toHaveAttribute("tabindex", "-1");
+    expect(screen.getByRole("tabpanel", { name: "Rules" })).toHaveAttribute("id", rules.getAttribute("aria-controls"));
+
+    rules.focus();
+    await user.keyboard("{ArrowRight}");
+    expect(extractors).toHaveFocus();
+    expect(extractors).toHaveAttribute("aria-selected", "true");
+    expect(extractors).toHaveAttribute("tabindex", "0");
+    expect(rules).toHaveAttribute("tabindex", "-1");
+    expect(screen.getByRole("tabpanel", { name: "Extractors" })).toBeVisible();
+
+    await user.keyboard("{End}");
+    expect(taxonomy).toHaveFocus();
+    await user.keyboard("{ArrowRight}");
+    expect(rules).toHaveFocus();
+    await user.keyboard("{ArrowLeft}");
+    expect(taxonomy).toHaveAttribute("aria-selected", "true");
+    await user.keyboard("{Home}");
+    expect(rules).toHaveAttribute("aria-selected", "true");
+  });
 });
