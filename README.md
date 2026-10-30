@@ -47,8 +47,8 @@ This is the reason to run this instead of a hosted budgeting app, so it comes fi
   the Import preview reports how many matches were removed (`core/pii.py`).
 - **Local endpoint = nothing leaves your machine.** Local vs. remote is derived from the address:
   `localhost`, `127.0.0.1` and `::1` are local. The redaction and previews apply either way.
-- **Preview before you send.** The Spending › Review screen shows the exact CSV a classification call would
-  send (`GET /api/classify/preview`), and Spending › Import shows the exact redacted page text a
+- **Preview before you send.** Settings shows the exact CSV a classification call would send
+  (`GET /api/classify/preview`), and Spending › Import shows the exact redacted page text a
   statement parse would send (`GET /api/statements/{id}/llm-preview`) — the same bytes the real
   call uses, built by the same code path.
 - **One HTTP client, two callers.** Only `llm/client.py` imports an HTTP client, and only the two

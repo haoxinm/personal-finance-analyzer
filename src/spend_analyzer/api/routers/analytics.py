@@ -179,8 +179,14 @@ def analytics_top_merchants(
         rows = run_query(session, query)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
-    ranked = sorted(rows, key=lambda r: int(r["total_minor"]), reverse=True)  # type: ignore[call-overload]
-    top_rows = [row for row in ranked[: max(min(limit, 100), 1)] if row["merchant"]]
+    # Rows with no merchant key (nothing to rank or display) are dropped *before* the limit, so a
+    # large un-keyed bucket never crowds a real merchant out of the top N.
+    ranked = sorted(
+        (row for row in rows if row["merchant"]),
+        key=lambda r: int(r["total_minor"]),  # type: ignore[call-overload]
+        reverse=True,
+    )
+    top_rows = ranked[: max(min(limit, 100), 1)]
     display_names = crud.merchant_display_names(session, [str(row["merchant"]) for row in top_rows])
     return [
         schemas.TopMerchantRow(
