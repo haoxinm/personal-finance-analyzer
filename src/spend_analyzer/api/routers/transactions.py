@@ -1,8 +1,15 @@
 """`/api/transactions` (§3.12).
 
-A plain field patch (`kind`, `notes`) is CRUD; a category/subcategory change goes through
-`classify.cascade.apply_user_correction` (§3.12a, P2-B) via `api/services/gateway.py`, so a user
-correction always writes `merchant_map(source='user')` and wins forever (I6).
+An edit here is a **one-time patch**: it changes the one transaction (or, for the bulk endpoint,
+each listed transaction) and marks it `classified_by='user'`, after which no rule, re-run, cache or
+LLM pass ever changes it (I6). It never writes a `merchant_map` row or a rule, so it cannot
+affect any other or future transaction. The only way to make an edit stick to a merchant is the
+explicit `create_rule` flag on `PATCH /transactions/{id}` ("always categorize this merchant this
+way"), which saves an exact user rule in addition to patching the transaction.
+
+A category/subcategory change goes through `classify.cascade.apply_user_correction` (§3.12a,
+P2-B) via `api/services/gateway.py`; a kind-only change goes through
+`crud.update_transaction_fields`, which marks the row the same way; notes never lock a row.
 """
 
 from __future__ import annotations

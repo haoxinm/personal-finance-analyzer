@@ -1,15 +1,36 @@
 """The classification cascade (§3.12a, §2b P2-B, A28).
 
 `classify_transactions` is the only entry point that reaches the LLM. Every other function here
-is a deterministic, local, first-hit-wins cascade over already-persisted `Transaction` rows:
+is a deterministic, local, first-hit-wins cascade over already-persisted `Transaction` rows.
 
+There are two kinds of user correction, and they never mix:
+
+- A **one-time edit** (a "patch": the edit popover, a bulk update, Review's Accept) changes exactly
+  one transaction and marks it `classified_by='user'`. It writes no rule and no `merchant_map`
+  row, so it says nothing about any other or future transaction of the merchant.
+- A **merchant rule** (Review's "Always categorize ... this way", the edit popover's "Also create a
+  rule", or a rule added on the Rules screen) is a `rules` row with `source='user'`. It decides
+  future transactions of the merchant, and existing ones only through an explicit "Apply to
+  existing".
+
+Precedence, highest first: one-time edit > your rules > built-in rules > merchant cache > LLM.
+
+0. **One-time edits** — a transaction with `classified_by='user'` is never processed by anything
+   here: not by a re-run, not by a rule, not by the cache or the LLM (I6). The cascade skips it
+   outright, so no step below can rewrite it.
 1. **Kind** — `Transaction.kind` is set by the ingest pipeline (P2-A) from `classify/kinds.py`,
    *before* this module ever sees the row. If it is already `payment` or `transfer`, this module
    assigns `others/payments_transfers`, `is_spend=0`, `classified_by='kind'`, and stops: these
    transactions never reach the LLM (I11, A26).
 2. **User rules** — `rules` where `source='user'`, by `priority` then `id`, matched against
    `merchant_key` (`classify/rules.py`).
-3. **User corrections** — a `merchant_map` hit with `source='user'` (I6); increments `hit_count`.
+3. **Legacy merchant pins** — a `merchant_map` hit with `source='user'`. Older versions wrote one
+   silently on every single-transaction edit; nothing writes them any more, and the data
+   migration `0010_user_merchant_pins_to_rules` turns the ones that exist into visible exact
+   rules. Until a database has been migrated they are still honored, but they rank *below* your
+   rules, exactly like a low-priority rule would, and they are recorded as
+   `classified_by='user_rule'` (never as a one-time edit, so they can still be changed later).
+   Increments `hit_count`.
 4. **Built-in rules** — `rules` where `source='builtin'`, seeded from `builtin_rules.yaml` by
    `rules.sync_builtin_rules` (D8).
 5. **Issuer category** — `Transaction.issuer_category` resolved via `rules.resolve_issuer_category`
@@ -23,12 +44,9 @@ is a deterministic, local, first-hit-wins cascade over already-persisted `Transa
    provider configured at all, D2) lands in `others/uncategorized` with `needs_review=True` —
    step 8's fallback is already built into that result, so there is no separate step here.
 
-Precedence, stated plainly: a user *rule* outranks a user *correction*. A correction (step 3) wins
-over built-in rules, the issuer category, the cache and the LLM, and is never overwritten by any of
-them (I6) — but your own rules (step 2) are explicit, prioritised instructions and are consulted
-first, so a rule that matches a merchant also decides its future imports even if you once corrected
-one transaction differently. "Always categorize this merchant this way" (`create_rule`) updates
-the merchant's own exact rule instead of stacking a second one, so the newest choice wins.
+"Always categorize this merchant this way" (`create_rule`) updates the merchant's own exact rule
+instead of stacking a second one, so the newest choice wins; it also patches the transaction it
+was chosen on.
 
 `merchant_key` is never written to `merchant_map` when empty (A27). A result's
 `confidence < cfg.confidence_threshold` always sets `needs_review=True`, on top of any
@@ -59,7 +77,7 @@ from spend_analyzer.classify.rules import (
 from spend_analyzer.classify.taxonomy import is_dynamic
 from spend_analyzer.config import LLMConfig
 from spend_analyzer.core.errors import ConfigError
-from spend_analyzer.core.types import Kind
+from spend_analyzer.core.types import USER_CLASSIFIED, Kind
 from spend_analyzer.db.models import (
     Category,
     Classification,
@@ -107,7 +125,7 @@ class _Outcome:
     category_key: str
     subcategory_key: str
     confidence: float | None
-    classified_by: str  # cache|user_rule|builtin_rule|issuer|llm|user|kind
+    classified_by: str  # cache|user_rule|builtin_rule|issuer|llm|user (one-time edit)|kind
     merchant_canonical: str | None = None
     kind_override: str | None = None
     needs_review_override: bool = False
@@ -166,7 +184,8 @@ def classify_transactions(
             txn = session.get(Transaction, txn_id)
             done += 1
             since_commit += 1
-            if txn is None:
+            if txn is None or txn.classified_by == USER_CLASSIFIED:
+                # A one-time edit is final: nothing in the cascade may reconsider it.
                 continue
             outcome = _classify_deterministic(
                 session, txn, user_rules=user_rules, builtin_rules=builtin_rules
@@ -268,7 +287,8 @@ def _run_llm_phase(
             _write_merchant_map(session, key, outcome, source="llm")
             for txn_id in pending_llm[key]:
                 txn = session.get(Transaction, txn_id)
-                if txn is None:
+                if txn is None or txn.classified_by == USER_CLASSIFIED:
+                    # Edited by hand while the model was running: the edit stands.
                     continue
                 _apply_outcome(session, txn, outcome, cfg=cfg, llm_run_id=primary_llm_run_id)
                 classified += 1
@@ -299,7 +319,7 @@ def preview_egress(session: Session, transaction_ids: Sequence[int]) -> str:
     pending: dict[str, list[str]] = {}
     for txn_id in transaction_ids:
         txn = session.get(Transaction, txn_id)
-        if txn is None:
+        if txn is None or txn.classified_by == USER_CLASSIFIED:
             continue
         outcome = _classify_deterministic(
             session, txn, user_rules=user_rules, builtin_rules=builtin_rules, dry_run=True
@@ -320,14 +340,19 @@ def apply_user_correction(
     kind: Kind | None,
     create_rule: bool,
 ) -> Rule | None:
-    """Apply a user's correction to one transaction (I6, §3.12a).
+    """Apply a user's edit to one transaction (I6, §3.12a). Does not commit.
 
-    Writes `merchant_map(source='user')` for the transaction's `merchant_key` (never overwritten
-    by cache, rules, or the LLM afterwards) and, if `create_rule`, a `rules` row
-    (`source='user'`, `match_type='exact'`, matched against `merchant_key`) so future imports of
-    the same merchant need no correction at all. If this user already has an exact rule for the
-    merchant it is updated in place rather than duplicated (an older rule would otherwise keep
-    winning by id). Returns the created or updated rule, or `None`. Does not commit.
+    The edit is a **one-time patch**: the transaction gets the category (and `kind`, if given),
+    `confidence=1.0`, `needs_review=False` and `classified_by='user'`, and nothing else changes —
+    no `merchant_map` row, no rule. Every later automated pass (re-classify, rule application,
+    re-import, the LLM) leaves it alone, and no other transaction of the merchant is affected.
+
+    With `create_rule=True` this is also the explicit "always categorize this merchant this way"
+    action: a `rules` row (`source='user'`, `match_type='exact'`, matched against `merchant_key`)
+    is created, or the user's existing exact rule for the merchant is updated in place rather than
+    duplicated (an older rule would otherwise keep winning by id). The rule applies to the
+    merchant's future transactions only; existing ones change only through "Apply to existing".
+    Returns the created or updated rule, or `None`.
 
     Raises:
         ConfigError: `transaction_id` does not exist, or `category_key`/`subcategory_key` is not
@@ -350,49 +375,15 @@ def apply_user_correction(
     if subcategory is None:
         raise ConfigError(f"unknown subcategory {subcategory_key!r} for category {category_key!r}")
 
-    if kind is not None and kind != txn.kind:
-        txn.kind = kind
-        txn.is_spend = kind_is_spend(kind)
-
-    txn.category_id = category.id
-    txn.subcategory_id = subcategory.id
-    txn.confidence = 1.0
-    txn.classified_by = "user"
-    txn.needs_review = False
-    txn.updated_at = utcnow_iso()
-    session.add(
-        Classification(
-            transaction_id=txn.id,
-            category_key=category_key,
-            subcategory_key=subcategory_key,
-            confidence=1.0,
-            method="user",
-            llm_run_id=None,
-        )
+    _write_user_patch(
+        session,
+        txn,
+        category_id=category.id,
+        subcategory_id=subcategory.id,
+        category_key=category_key,
+        subcategory_key=subcategory_key,
+        kind=kind,
     )
-
-    if txn.merchant_key:
-        row = session.get(MerchantMap, txn.merchant_key)
-        if row is None:
-            session.add(
-                MerchantMap(
-                    merchant_key=txn.merchant_key,
-                    merchant_canonical=txn.merchant_canonical,
-                    category_id=category.id,
-                    subcategory_id=subcategory.id,
-                    source="user",
-                    confidence=1.0,
-                    hit_count=0,
-                    updated_at=utcnow_iso(),
-                )
-            )
-        else:
-            row.merchant_canonical = txn.merchant_canonical or row.merchant_canonical
-            row.category_id = category.id
-            row.subcategory_id = subcategory.id
-            row.source = "user"
-            row.confidence = 1.0
-            row.updated_at = utcnow_iso()
 
     rule: Rule | None = None
     if create_rule and txn.merchant_key:
@@ -406,6 +397,40 @@ def apply_user_correction(
         )
     session.flush()
     return rule
+
+
+def _write_user_patch(
+    session: Session,
+    txn: Transaction,
+    *,
+    category_id: int,
+    subcategory_id: int,
+    category_key: str,
+    subcategory_key: str,
+    kind: Kind | None,
+) -> None:
+    """Make `txn` a one-time user edit: the chosen category (and kind), marked
+    `classified_by='user'`, no longer flagged for review. Touches no other row."""
+    if kind is not None and kind != txn.kind:
+        txn.kind = kind
+        txn.is_spend = kind_is_spend(kind)
+
+    txn.category_id = category_id
+    txn.subcategory_id = subcategory_id
+    txn.confidence = 1.0
+    txn.classified_by = USER_CLASSIFIED
+    txn.needs_review = False
+    txn.updated_at = utcnow_iso()
+    session.add(
+        Classification(
+            transaction_id=txn.id,
+            category_key=category_key,
+            subcategory_key=subcategory_key,
+            confidence=1.0,
+            method=USER_CLASSIFIED,
+            llm_run_id=None,
+        )
+    )
 
 
 def _upsert_exact_rule(
@@ -475,7 +500,7 @@ def rule_target_ids(session: Session, rule: Rule) -> list[int]:
         select(Transaction.merchant_key)
         .where(
             Transaction.kind.not_in(tuple(_NON_SPEND_KINDS)),
-            Transaction.classified_by.is_distinct_from("user"),
+            Transaction.classified_by.is_distinct_from(USER_CLASSIFIED),
         )
         .distinct()
     ).scalars()
@@ -488,7 +513,7 @@ def rule_target_ids(session: Session, rule: Rule) -> list[int]:
             select(Transaction).where(
                 Transaction.merchant_key.in_(chunk),
                 Transaction.kind.not_in(tuple(_NON_SPEND_KINDS)),
-                Transaction.classified_by.is_distinct_from("user"),
+                Transaction.classified_by.is_distinct_from(USER_CLASSIFIED),
             )
         ).scalars()
         for txn in rows:
@@ -565,20 +590,6 @@ class TransactionSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
-class MerchantMapSnapshot:
-    """A `merchant_map` row before an accept: `existed=False` means undo deletes it."""
-
-    merchant_key: str
-    existed: bool
-    merchant_canonical: str | None = None
-    category_id: int | None = None
-    subcategory_id: int | None = None
-    source: str | None = None
-    confidence: float | None = None
-    hit_count: int = 0
-
-
-@dataclass(frozen=True, slots=True)
 class RuleSnapshot:
     """The merchant's exact rule before an accept: `existed=False` means undo deletes it."""
 
@@ -592,10 +603,10 @@ class RuleSnapshot:
 
 @dataclass(frozen=True, slots=True)
 class AcceptUndo:
-    """Everything one `accept_review` changed, to hand back to `undo_accept`."""
+    """Everything one `accept_review` changed, to hand back to `undo_accept`: every patched
+    transaction as it was and, when the accept was an "always categorize" one, the rule."""
 
     transactions: tuple[TransactionSnapshot, ...]
-    merchant_map: MerchantMapSnapshot | None
     rule: RuleSnapshot | None
 
 
@@ -631,12 +642,17 @@ def accept_review(
     create_rule: bool,
     similar_ids: Sequence[int] = (),
 ) -> AcceptResult:
-    """Accept one Review-queue transaction as `category_key/subcategory_key` — a user correction
-    (`apply_user_correction`: merchant map, optional exact rule) — and also apply it to
-    `similar_ids`: other still-pending rows of the *same merchant* the user is looking at.
+    """Accept one Review-queue transaction as `category_key/subcategory_key`.
+
+    By default this is a one-time patch of that transaction (`apply_user_correction` with no
+    rule): nothing is remembered about the merchant. With `create_rule` it is the explicit
+    "always categorize this merchant this way" action, which also saves the merchant's exact
+    rule. `similar_ids` — other still-pending rows of the *same merchant* the user is looking
+    at — are simply patched the same way (each one is its own one-time edit; they do not become a
+    rule).
 
     A `similar_ids` entry is skipped unless it exists, has the accepted row's non-empty
-    `merchant_key`, is still `needs_review`, and was not corrected by hand. Returns the ids
+    `merchant_key`, is still `needs_review`, and was not already edited by hand. Returns the ids
     actually applied and an `AcceptUndo` that `undo_accept` can replay. Does not commit.
 
     Raises:
@@ -647,23 +663,6 @@ def accept_review(
         raise ConfigError(f"no transaction with id {transaction_id}")
 
     snapshots = [_snapshot_transaction(txn)]
-    map_snapshot: MerchantMapSnapshot | None = None
-    if txn.merchant_key:
-        existing_map = session.get(MerchantMap, txn.merchant_key)
-        map_snapshot = (
-            MerchantMapSnapshot(merchant_key=txn.merchant_key, existed=False)
-            if existing_map is None
-            else MerchantMapSnapshot(
-                merchant_key=txn.merchant_key,
-                existed=True,
-                merchant_canonical=existing_map.merchant_canonical,
-                category_id=existing_map.category_id,
-                subcategory_id=existing_map.subcategory_id,
-                source=existing_map.source,
-                confidence=existing_map.confidence,
-                hit_count=existing_map.hit_count,
-            )
-        )
     rule_before = (
         session.execute(
             select(Rule)
@@ -714,38 +713,33 @@ def accept_review(
             or not txn.merchant_key
             or other.merchant_key != txn.merchant_key
             or not other.needs_review
-            or other.classified_by == "user"
+            or other.classified_by == USER_CLASSIFIED
         ):
             continue
         snapshots.append(_snapshot_transaction(other))
-        _write_outcome(
+        apply_user_correction(
             session,
-            other,
-            _Outcome(
-                category_key=category_key,
-                subcategory_key=subcategory_key,
-                confidence=1.0,
-                classified_by="user",
-            ),
-            needs_review=False,
+            other.id,
+            category_key=category_key,
+            subcategory_key=subcategory_key,
+            kind=None,
+            create_rule=False,
         )
         applied.append(other.id)
     session.flush()
     return AcceptResult(
         transaction_id=transaction_id,
         similar_ids=tuple(applied),
-        undo=AcceptUndo(
-            transactions=tuple(snapshots), merchant_map=map_snapshot, rule=rule_snapshot
-        ),
+        undo=AcceptUndo(transactions=tuple(snapshots), rule=rule_snapshot),
     )
 
 
 def undo_accept(session: Session, undo: AcceptUndo) -> int:
     """Reverse one `accept_review`: restore every snapshotted transaction (category, provenance,
-    `needs_review`, kind), put the merchant-map row and the exact rule back as they were or
-    delete the ones the accept created. Returns how many transactions were restored. The
-    `classifications` audit rows the accept wrote stay (history, never read back). Does not
-    commit."""
+    `needs_review`, kind) and, if the accept was an "always categorize" one, put the exact rule
+    back as it was or delete the one the accept created. Returns how many transactions were
+    restored. The `classifications` audit rows the accept wrote stay (history, never read back).
+    Does not commit."""
     restored = 0
     for snap in undo.transactions:
         txn = session.get(Transaction, snap.transaction_id)
@@ -761,26 +755,6 @@ def undo_accept(session: Session, undo: AcceptUndo) -> int:
         txn.merchant_canonical = snap.merchant_canonical
         txn.updated_at = utcnow_iso()
         restored += 1
-
-    map_snap = undo.merchant_map
-    if map_snap is not None:
-        row = session.get(MerchantMap, map_snap.merchant_key)
-        if not map_snap.existed:
-            if row is not None:
-                session.delete(row)
-        elif (
-            row is not None
-            and map_snap.category_id is not None
-            and map_snap.subcategory_id is not None
-            and map_snap.source is not None
-        ):
-            row.merchant_canonical = map_snap.merchant_canonical
-            row.category_id = map_snap.category_id
-            row.subcategory_id = map_snap.subcategory_id
-            row.source = map_snap.source
-            row.confidence = map_snap.confidence
-            row.hit_count = map_snap.hit_count
-            row.updated_at = utcnow_iso()
 
     rule_snap = undo.rule
     if rule_snap is not None:
@@ -813,9 +787,12 @@ def approve_subcategory(session: Session, subcategory_id: int) -> None:
 def merge_subcategory(session: Session, subcategory_id: int, *, into_id: int) -> None:
     """Merge `subcategory_id` into `into_id`, atomically (A14). Does not commit.
 
-    Rewrites every `transactions` row and `merchant_map` row that references `subcategory_id` to
-    reference `into_id` (and `into_id`'s category) instead, then marks `subcategory_id` as
-    `merged`, recording `merged_into`. Future cache and rule hits resolve straight to `into_id`.
+    Rewrites every `transactions` row, `merchant_map` row and `rules` row that references
+    `subcategory_id` to reference `into_id` (and `into_id`'s category) instead, then marks
+    `subcategory_id` as `merged`, recording `merged_into`. Future cache and rule hits resolve
+    straight to `into_id`. A transaction the user edited by hand is *remapped* like any other —
+    it keeps its `classified_by='user'`, `confidence` and `needs_review`, and just follows the
+    category it pointed at into its new home; a merge never resets an edit.
 
     Raises:
         ConfigError: either id does not exist, or `into_id` is itself already merged away.
@@ -843,6 +820,12 @@ def merge_subcategory(session: Session, subcategory_id: int, *, into_id: int) ->
         row.subcategory_id = target.id
         row.category_id = target.category_id
         row.updated_at = now
+
+    for rule_row in session.execute(
+        select(Rule).where(Rule.subcategory_id == subcategory_id)
+    ).scalars():
+        rule_row.subcategory_id = target.id
+        rule_row.category_id = target.category_id
 
     source.status = "merged"
     source.merged_into = target.id
@@ -907,7 +890,8 @@ def _classify_deterministic(
         if user_map is not None:
             if not dry_run:
                 user_map.hit_count += 1
-            return _outcome_from_map(session, user_map, classified_by="user")
+            # Recorded as a rule result, never as a one-time edit (`classified_by='user'`).
+            return _outcome_from_map(session, user_map, classified_by="user_rule")
 
     for rule in builtin_rules:
         if rule_matches(rule, txn.merchant_key):
@@ -1201,7 +1185,6 @@ __all__ = [
     "AcceptResult",
     "AcceptUndo",
     "ClassifyResult",
-    "MerchantMapSnapshot",
     "RuleSnapshot",
     "TransactionSnapshot",
     "accept_review",

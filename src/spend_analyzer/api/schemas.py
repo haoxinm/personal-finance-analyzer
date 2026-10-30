@@ -244,10 +244,16 @@ class TransactionIds(_Model):
 
 
 class TransactionPatch(_Model):
+    """A one-time edit of one transaction: it changes only that transaction and always wins over
+    every rule and re-run. Nothing is remembered about the merchant unless `create_rule` is set."""
+
     category_key: str | None = None
     subcategory_key: str | None = None
     kind: Kind | None = None
     notes: str | None = None
+    #: Also save an exact user rule for this transaction's merchant ("always categorize this
+    #: merchant this way"), for future transactions. Needs a category and subcategory. Off by
+    #: default: an edit is otherwise a one-time patch.
     create_rule: bool = False
 
 
@@ -266,17 +272,6 @@ class TransactionSnapshot(_Model):
     merchant_canonical: str | None
 
 
-class MerchantMapSnapshot(_Model):
-    merchant_key: str
-    existed: bool
-    merchant_canonical: str | None = None
-    category_id: int | None = None
-    subcategory_id: int | None = None
-    source: str | None = None
-    confidence: float | None = None
-    hit_count: int = 0
-
-
 class RuleSnapshot(_Model):
     rule_id: int
     existed: bool
@@ -287,10 +282,10 @@ class RuleSnapshot(_Model):
 
 
 class AcceptUndo(_Model):
-    """Opaque undo token for one Review accept (everything the accept changed)."""
+    """Opaque undo token for one Review accept (everything the accept changed): each patched
+    transaction as it was and, for an "always categorize" accept, the merchant's rule."""
 
     transactions: list[TransactionSnapshot]
-    merchant_map: MerchantMapSnapshot | None = None
     rule: RuleSnapshot | None = None
 
 
@@ -317,6 +312,8 @@ class ReviewUndoResponse(_Model):
 
 
 class BulkUpdateRequest(_Model):
+    """Edit every listed transaction one time each (no rule, no merchant memory)."""
+
     transaction_ids: list[int]
     category_key: str | None = None
     subcategory_key: str | None = None

@@ -10,6 +10,7 @@ from sqlalchemy import select
 from spend_analyzer.api import schemas
 from spend_analyzer.api.deps import JobRunnerDep, SessionDep, SessionFactoryDep, SettingsDep
 from spend_analyzer.api.services import crud, gateway
+from spend_analyzer.core.types import USER_CLASSIFIED
 from spend_analyzer.db.models import Transaction
 from spend_analyzer.jobs.runner import JobProgress
 
@@ -25,7 +26,7 @@ def run_classify(
     session_factory: SessionFactoryDep,
 ) -> schemas.ClassifyRunResponse:
     # A hand-corrected transaction is final: a re-run never reconsiders it.
-    stmt = select(Transaction.id).where(Transaction.classified_by.is_distinct_from("user"))
+    stmt = select(Transaction.id).where(Transaction.classified_by.is_distinct_from(USER_CLASSIFIED))
     if body.user_id is not None:
         stmt = stmt.where(Transaction.user_id == body.user_id)
     if body.statement_id is not None:

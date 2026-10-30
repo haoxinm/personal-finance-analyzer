@@ -87,7 +87,7 @@ def test_accept_applies_to_similar_pending_rows_of_the_same_merchant_only(
     assert untouched is not None and untouched.needs_review is True
 
 
-def test_undo_restores_rows_needs_review_merchant_map_and_rule(
+def test_undo_restores_rows_needs_review_and_removes_the_rule_it_created(
     client: TestClient, session: Session
 ) -> None:
     seed = base(session)
@@ -98,7 +98,6 @@ def test_undo_restores_rows_needs_review_merchant_map_and_rule(
 
     body = _accept(client, first.id, create_rule=True, similar_ids=[second.id])
     session.expire_all()
-    assert session.get(MerchantMap, "trader joes") is not None
     assert session.execute(select(Rule).where(Rule.pattern == "trader joes")).scalars().all()
 
     undone = client.post("/api/review/undo", json=body["undo"])
@@ -112,7 +111,6 @@ def test_undo_restores_rows_needs_review_merchant_map_and_rule(
         assert (txn.category_id, txn.subcategory_id) == uncategorized
         assert txn.needs_review is True
         assert txn.classified_by == "llm"
-    assert session.get(MerchantMap, "trader joes") is None
     assert session.execute(select(Rule).where(Rule.pattern == "trader joes")).scalars().all() == []
 
 
@@ -134,21 +132,12 @@ def test_undo_restores_a_transaction_that_had_no_category(
     assert txn.needs_review is True
 
 
-def test_undo_puts_back_a_previous_merchant_map_entry_and_existing_rule(
+def test_undo_puts_back_the_previous_version_of_an_existing_rule(
     client: TestClient, session: Session
 ) -> None:
     seed = base(session)
     grocery = category_ids(session, *GROCERY)
     first = _pending(session, 1, seed, merchant_key="trader joes")
-    session.add(
-        MerchantMap(
-            merchant_key="trader joes",
-            category_id=grocery[0],
-            subcategory_id=grocery[1],
-            source="llm",
-            confidence=0.5,
-        )
-    )
     session.commit()
     fuel = category_ids(session, "fuel", "gasoline")
 
@@ -164,9 +153,7 @@ def test_undo_puts_back_a_previous_merchant_map_entry_and_existing_rule(
     session.expire_all()
     rule = session.execute(select(Rule).where(Rule.pattern == "trader joes")).scalar_one()
     assert (rule.category_id, rule.subcategory_id) == grocery  # back to the first accept's rule
-    row = session.get(MerchantMap, "trader joes")
-    assert row is not None and row.source == "user"
-    assert (row.category_id, row.subcategory_id) == grocery
+    assert session.get(MerchantMap, "trader joes") is None  # accepting never writes a pin
 
 
 def test_accept_rejects_unknown_category_and_missing_transaction(

@@ -21,6 +21,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from spend_analyzer.core.paths import statements_dir
+from spend_analyzer.core.types import USER_CLASSIFIED
 from spend_analyzer.db.models import (
     Account,
     Category,
@@ -291,7 +292,7 @@ def unclassified_clause() -> ColumnElement[bool]:
     still flagged `needs_review`, but never one the user corrected by hand (those are final)."""
     return and_(
         or_(uncategorized_clause(), Transaction.needs_review.is_(True)),
-        Transaction.classified_by.is_distinct_from("user"),
+        Transaction.classified_by.is_distinct_from(USER_CLASSIFIED),
     )
 
 
@@ -418,10 +419,15 @@ def subcategory_key_of(session: Session, transaction: Transaction) -> str | None
 def update_transaction_fields(
     session: Session, transaction: Transaction, *, kind: str | None, notes: str | None
 ) -> Transaction:
-    """Update fields that are plain CRUD (not routed through `apply_user_correction`)."""
-    if kind is not None:
+    """Update fields that are plain CRUD (not routed through `apply_user_correction`).
+
+    Changing `kind` is a one-time edit of this transaction, so it is marked
+    `classified_by='user'` and no automated pass reverts it; `notes` never lock a row.
+    """
+    if kind is not None and kind != transaction.kind:
         transaction.kind = kind
         transaction.is_spend = kind in ("purchase", "fee", "interest")
+        transaction.classified_by = USER_CLASSIFIED
     if notes is not None:
         transaction.notes = notes
     transaction.updated_at = utcnow_iso()

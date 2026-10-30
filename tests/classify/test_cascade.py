@@ -233,11 +233,12 @@ def test_payment_and_transfer_kinds_short_circuit_to_payments_transfers(
 # --------------------------------------------------------------------------------------------
 
 
-def test_user_correction_beats_builtin_rule(session: Session, engine: Engine) -> None:
+def test_legacy_user_pin_beats_builtin_rule(session: Session, engine: Engine) -> None:
     account = _account(session)
     statement = _statement(session)
-    # "STARBUCKS" matches a builtin rule (-> restaurant/dine_in), but a user correction for the
-    # same merchant_key exists and must win (I6, A28).
+    # "STARBUCKS" matches a builtin rule (-> restaurant/dine_in), but a legacy user pin
+    # (`merchant_map.source='user'`, written by older versions) for the same merchant_key still
+    # outranks it (A28). It is recorded as a rule result, never as a one-time edit.
     txn = _txn(
         session,
         account=account,
@@ -271,7 +272,7 @@ def test_user_correction_beats_builtin_rule(session: Session, engine: Engine) ->
     session.expire_all()
     refreshed = session.get(Transaction, txn.id)
     assert refreshed is not None
-    assert refreshed.classified_by == "user"
+    assert refreshed.classified_by == "user_rule"
     category = session.get(Category, refreshed.category_id)
     assert category is not None and category.key == "grocery"
 
@@ -585,68 +586,6 @@ def test_empty_merchant_key_is_never_written_to_merchant_map(
 # --------------------------------------------------------------------------------------------
 
 
-def test_user_correction_survives_a_subsequent_classify_run(
-    session: Session, engine: Engine
-) -> None:
-    account = _account(session)
-    statement = _statement(session)
-    txn = _txn(
-        session,
-        account=account,
-        statement=statement,
-        description="MYSTERY MERCHANT CO",
-        merchant_key="mystery merchant co",
-    )
-    session.commit()
-
-    cascade.apply_user_correction(
-        session,
-        txn.id,
-        category_key="travel",
-        subcategory_key="hotels",
-        kind=None,
-        create_rule=True,
-    )
-    session.commit()
-
-    refreshed = session.get(Transaction, txn.id)
-    assert refreshed is not None
-    assert refreshed.classified_by == "user"
-    category = session.get(Category, refreshed.category_id)
-    assert category is not None and category.key == "travel"
-
-    rule = session.execute(
-        select(Rule).where(Rule.source == "user", Rule.pattern == "mystery merchant co")
-    ).scalar_one_or_none()
-    assert rule is not None
-
-    def _must_not_be_called(*args: object, **kwargs: object) -> ClassifyRunResult:
-        raise AssertionError("a user correction must never be re-classified by the LLM")
-
-    monkeypatch = pytest.MonkeyPatch()
-    monkeypatch.setattr(cascade, "classify_all", _must_not_be_called)
-    try:
-        cascade.classify_transactions(
-            make_session_factory(engine),
-            [txn.id],
-            cfg=_no_provider_cfg(),
-            group_id="g10",
-            progress_cb=_noop_progress,
-        )
-    finally:
-        monkeypatch.undo()
-        session.expire_all()
-
-    refreshed_again = session.get(Transaction, txn.id)
-    assert refreshed_again is not None
-    # `create_rule=True` above also created a matching user rule (step 2), which now fires
-    # before the merchant_map correction (step 3) is even checked -- both are "the user's own
-    # classification" and neither is the LLM, so either label is correct here.
-    assert refreshed_again.classified_by in ("user", "user_rule")
-    category_again = session.get(Category, refreshed_again.category_id)
-    assert category_again is not None and category_again.key == "travel"
-
-
 def test_apply_user_correction_unknown_category_raises(session: Session, engine: Engine) -> None:
     account = _account(session)
     statement = _statement(session)
@@ -916,3 +855,400 @@ def test_preview_egress_deduplicates_by_merchant_key_with_modal_representative(
     assert "B MODAL" in payload
     assert "A SHORT ONE" not in payload
     assert "C ANOTHER" not in payload
+
+
+# --------------------------------------------------------------------------------------------
+# One-time edits (`classified_by='user'`) are final; user rules outrank legacy pins.
+# --------------------------------------------------------------------------------------------
+
+
+def _patch_txn(session: Session, txn: Transaction, category: str, subcategory: str) -> None:
+    cascade.apply_user_correction(
+        session,
+        txn.id,
+        category_key=category,
+        subcategory_key=subcategory,
+        kind=None,
+        create_rule=False,
+    )
+    session.commit()
+
+
+def _category_key_of(session: Session, txn: Transaction) -> str | None:
+    session.expire_all()
+    refreshed = session.get(Transaction, txn.id)
+    assert refreshed is not None
+    category = session.get(Category, refreshed.category_id) if refreshed.category_id else None
+    return category.key if category is not None else None
+
+
+def test_apply_user_correction_is_a_one_time_patch_without_merchant_memory(
+    session: Session, engine: Engine
+) -> None:
+    account = _account(session)
+    statement = _statement(session)
+    txn = _txn(session, account=account, statement=statement, merchant_key="acme widgets")
+    other = _txn(session, account=account, statement=statement, merchant_key="acme widgets")
+    session.commit()
+
+    rule = cascade.apply_user_correction(
+        session,
+        txn.id,
+        category_key="travel",
+        subcategory_key="hotels",
+        kind=None,
+        create_rule=False,
+    )
+    session.commit()
+
+    assert rule is None
+    assert session.execute(select(MerchantMap)).scalars().all() == []
+    assert session.execute(select(Rule).where(Rule.source == "user")).scalars().all() == []
+    patched = session.get(Transaction, txn.id)
+    assert patched is not None and patched.classified_by == "user"
+    untouched = session.get(Transaction, other.id)
+    assert untouched is not None and untouched.category_id is None
+
+
+def test_apply_user_correction_with_create_rule_saves_a_rule_and_still_patches(
+    session: Session, engine: Engine
+) -> None:
+    account = _account(session)
+    statement = _statement(session)
+    txn = _txn(session, account=account, statement=statement, merchant_key="acme widgets")
+    session.commit()
+
+    rule = cascade.apply_user_correction(
+        session,
+        txn.id,
+        category_key="travel",
+        subcategory_key="hotels",
+        kind=None,
+        create_rule=True,
+    )
+    session.commit()
+
+    assert rule is not None and rule.match_type == "exact" and rule.pattern == "acme widgets"
+    assert session.execute(select(MerchantMap)).scalars().all() == []
+    patched = session.get(Transaction, txn.id)
+    assert patched is not None and patched.classified_by == "user"
+
+
+def test_classify_never_reconsiders_a_patched_row_even_when_asked_to(
+    session: Session, engine: Engine
+) -> None:
+    account = _account(session)
+    statement = _statement(session)
+    # A merchant that a builtin rule, a user rule, a legacy pin and a cache row would all claim.
+    txn = _txn(
+        session,
+        account=account,
+        statement=statement,
+        description="STARBUCKS STORE #1",
+        merchant_key="starbucks store seattle wa",
+    )
+    session.commit()
+    _patch_txn(session, txn, "travel", "hotels")
+
+    grocery = _category_subcategory(session, "grocery", "grocery_stores")
+    fuel = _category_subcategory(session, "fuel", "gasoline")
+    session.add_all(
+        [
+            Rule(
+                match_type="exact",
+                pattern="starbucks store seattle wa",
+                category_id=grocery[0],
+                subcategory_id=grocery[1],
+                priority=1,
+                source="user",
+            ),
+            MerchantMap(
+                merchant_key="starbucks store seattle wa",
+                category_id=fuel[0],
+                subcategory_id=fuel[1],
+                source="user",
+                confidence=1.0,
+                updated_at="2026-01-01T00:00:00+00:00",
+            ),
+        ]
+    )
+    session.commit()
+
+    def _must_not_be_called(*args: object, **kwargs: object) -> ClassifyRunResult:
+        raise AssertionError("a one-time edit must never be re-classified by the LLM")
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(cascade, "classify_all", _must_not_be_called)
+    try:
+        result = cascade.classify_transactions(
+            make_session_factory(engine),
+            [txn.id],
+            cfg=_cfg(),
+            group_id="g-patched",
+            progress_cb=_noop_progress,
+        )
+    finally:
+        monkeypatch.undo()
+
+    assert result.classified == 0 and result.llm_requests == 0
+    assert _category_key_of(session, txn) == "travel"
+    refreshed = session.get(Transaction, txn.id)
+    assert refreshed is not None and refreshed.classified_by == "user"
+
+
+def test_a_patched_payment_row_is_not_forced_back_to_payments_transfers(
+    session: Session, engine: Engine
+) -> None:
+    account = _account(session)
+    statement = _statement(session)
+    txn = _txn(session, account=account, statement=statement, kind="payment")
+    session.commit()
+    _patch_txn(session, txn, "travel", "hotels")
+
+    cascade.classify_transactions(
+        make_session_factory(engine),
+        [txn.id],
+        cfg=_no_provider_cfg(),
+        group_id="g-pay",
+        progress_cb=_noop_progress,
+    )
+    assert _category_key_of(session, txn) == "travel"
+
+
+def test_an_edit_made_while_the_llm_runs_is_not_overwritten(
+    session: Session, engine: Engine
+) -> None:
+    account = _account(session)
+    statement = _statement(session)
+    txn = _txn(
+        session,
+        account=account,
+        statement=statement,
+        description="BRAND NEW MERCHANT",
+        merchant_key="brand new merchant",
+    )
+    other = _txn(
+        session,
+        account=account,
+        statement=statement,
+        description="BRAND NEW MERCHANT",
+        merchant_key="brand new merchant",
+    )
+    session.commit()
+    _calls, inner = _fake_classify_all_factory({"BRAND NEW MERCHANT": _item(1)})
+
+    def _edit_then_answer(
+        descriptions: list[str], cfg: LLMConfig, **kwargs: object
+    ) -> ClassifyRunResult:
+        # The user edits one of the rows while the model is still working.
+        with make_session_factory(engine)() as other_session:
+            cascade.apply_user_correction(
+                other_session,
+                txn.id,
+                category_key="travel",
+                subcategory_key="hotels",
+                kind=None,
+                create_rule=False,
+            )
+            other_session.commit()
+        return inner(descriptions, cfg, **kwargs)  # type: ignore[operator, no-any-return]
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(cascade, "classify_all", _edit_then_answer)
+    try:
+        cascade.classify_transactions(
+            make_session_factory(engine),
+            [txn.id, other.id],
+            cfg=_cfg(),
+            group_id="g-race",
+            progress_cb=_noop_progress,
+        )
+    finally:
+        monkeypatch.undo()
+
+    assert _category_key_of(session, txn) == "travel"
+    assert _category_key_of(session, other) == "grocery"  # the LLM still classified the other one
+
+
+def test_preview_egress_leaves_out_patched_rows(session: Session, engine: Engine) -> None:
+    account = _account(session)
+    statement = _statement(session)
+    patched = _txn(
+        session,
+        account=account,
+        statement=statement,
+        description="PATCHED MERCHANT XYZ",
+        merchant_key="patched merchant xyz",
+    )
+    plain = _txn(
+        session,
+        account=account,
+        statement=statement,
+        description="PLAIN MERCHANT XYZ",
+        merchant_key="plain merchant xyz",
+    )
+    session.commit()
+    _patch_txn(session, patched, "travel", "hotels")
+
+    payload = cascade.preview_egress(session, [patched.id, plain.id])
+    assert "PATCHED MERCHANT" not in payload
+    assert "PLAIN MERCHANT XYZ" in payload
+
+
+def test_user_rule_outranks_a_legacy_merchant_pin(session: Session, engine: Engine) -> None:
+    account = _account(session)
+    statement = _statement(session)
+    txn = _txn(session, account=account, statement=statement, merchant_key="acme widgets")
+    grocery = _category_subcategory(session, "grocery", "grocery_stores")
+    fuel = _category_subcategory(session, "fuel", "gasoline")
+    session.add_all(
+        [
+            MerchantMap(
+                merchant_key="acme widgets",
+                category_id=fuel[0],
+                subcategory_id=fuel[1],
+                source="user",
+                confidence=1.0,
+                updated_at="2026-01-01T00:00:00+00:00",
+            ),
+            Rule(
+                match_type="contains",
+                pattern="widgets",
+                category_id=grocery[0],
+                subcategory_id=grocery[1],
+                priority=900,  # even a very low-priority rule beats a legacy pin
+                source="user",
+            ),
+        ]
+    )
+    session.commit()
+
+    cascade.classify_transactions(
+        make_session_factory(engine),
+        [txn.id],
+        cfg=_no_provider_cfg(),
+        group_id="g-pin-rule",
+        progress_cb=_noop_progress,
+    )
+    assert _category_key_of(session, txn) == "grocery"
+    refreshed = session.get(Transaction, txn.id)
+    assert refreshed is not None and refreshed.classified_by == "user_rule"
+
+
+def test_a_legacy_pin_still_decides_when_no_rule_matches_but_is_not_a_one_time_edit(
+    session: Session, engine: Engine
+) -> None:
+    account = _account(session)
+    statement = _statement(session)
+    txn = _txn(session, account=account, statement=statement, merchant_key="acme widgets")
+    fuel = _category_subcategory(session, "fuel", "gasoline")
+    session.add(
+        MerchantMap(
+            merchant_key="acme widgets",
+            category_id=fuel[0],
+            subcategory_id=fuel[1],
+            source="user",
+            confidence=1.0,
+            updated_at="2026-01-01T00:00:00+00:00",
+        )
+    )
+    session.commit()
+
+    cascade.classify_transactions(
+        make_session_factory(engine),
+        [txn.id],
+        cfg=_no_provider_cfg(),
+        group_id="g-pin",
+        progress_cb=_noop_progress,
+    )
+    assert _category_key_of(session, txn) == "fuel"
+    refreshed = session.get(Transaction, txn.id)
+    # Recorded as a rule result: a later change of the pin or a rule can still re-decide it.
+    assert refreshed is not None and refreshed.classified_by == "user_rule"
+
+
+def test_merge_remaps_a_patched_transaction_and_its_rules_without_resetting_the_edit(
+    session: Session, engine: Engine
+) -> None:
+    category = session.execute(
+        select(Category).where(Category.key == "online_shopping")
+    ).scalar_one()
+    source_sub = Subcategory(
+        category_id=category.id,
+        key="teh_store",
+        label="Teh Store",
+        is_dynamic=True,
+        status="pending_approval",
+    )
+    target_sub = Subcategory(
+        category_id=category.id,
+        key="the_store",
+        label="The Store",
+        is_dynamic=True,
+        status="pending_approval",
+    )
+    session.add_all([source_sub, target_sub])
+    session.flush()
+    account = _account(session)
+    statement = _statement(session)
+    txn = _txn(session, account=account, statement=statement, merchant_key="teh store")
+    session.commit()
+    cascade.apply_user_correction(
+        session,
+        txn.id,
+        category_key="online_shopping",
+        subcategory_key="teh_store",
+        kind=None,
+        create_rule=True,
+    )
+    session.commit()
+
+    cascade.merge_subcategory(session, source_sub.id, into_id=target_sub.id)
+    session.commit()
+
+    session.expire_all()
+    refreshed = session.get(Transaction, txn.id)
+    assert refreshed is not None
+    assert refreshed.subcategory_id == target_sub.id  # remapped, not reset
+    assert refreshed.category_id == category.id
+    assert refreshed.classified_by == "user" and refreshed.confidence == 1.0
+    rule = session.execute(select(Rule).where(Rule.pattern == "teh store")).scalar_one()
+    assert rule.subcategory_id == target_sub.id  # future rule hits follow the merge
+
+
+def test_approving_a_pending_subcategory_leaves_a_patched_transaction_alone(
+    session: Session, engine: Engine
+) -> None:
+    category = session.execute(
+        select(Category).where(Category.key == "online_shopping")
+    ).scalar_one()
+    sub = Subcategory(
+        category_id=category.id,
+        key="temu",
+        label="Temu",
+        is_dynamic=True,
+        status="pending_approval",
+    )
+    session.add(sub)
+    session.flush()
+    account = _account(session)
+    statement = _statement(session)
+    txn = _txn(session, account=account, statement=statement, merchant_key="temu")
+    session.commit()
+    _patch_txn(session, txn, "online_shopping", "temu")
+    before = session.get(Transaction, txn.id)
+    assert before is not None
+    snapshot = (before.category_id, before.subcategory_id, before.classified_by, before.confidence)
+
+    cascade.approve_subcategory(session, sub.id)
+    session.commit()
+
+    session.expire_all()
+    after = session.get(Transaction, txn.id)
+    assert after is not None
+    assert (
+        after.category_id,
+        after.subcategory_id,
+        after.classified_by,
+        after.confidence,
+    ) == snapshot

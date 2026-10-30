@@ -1,9 +1,10 @@
 """`/api/review/*`: the Review queue's accept and undo.
 
-Accepting is a user correction (`classify.cascade.apply_user_correction`) plus, optionally, the
-same answer for the merchant's other pending rows; the response carries an opaque undo token (every
-row, merchant-map entry and rule the accept touched, as it was before) that `POST /review/undo`
-replays. The token is held by the client, not stored: nothing about it is trusted beyond ids the
+Accepting is a one-time edit of that transaction (`classify.cascade.apply_user_correction`):
+it remembers nothing about the merchant unless `create_rule` is set ("always categorize this
+merchant this way"). Optionally the same answer is applied, as further one-time edits, to the
+merchant's other pending rows; the response carries an opaque undo token (every row and the rule
+the accept touched, as it was before) that `POST /review/undo` replays. The token is held by the client, not stored: nothing about it is trusted beyond ids the
 caller could already patch through `PATCH /transactions/{id}`.
 """
 
@@ -55,11 +56,6 @@ def undo_review(body: schemas.AcceptUndo, session: SessionDep) -> schemas.Review
     undo = cascade.AcceptUndo(
         transactions=tuple(
             cascade.TransactionSnapshot(**t.model_dump()) for t in body.transactions
-        ),
-        merchant_map=(
-            cascade.MerchantMapSnapshot(**body.merchant_map.model_dump())
-            if body.merchant_map is not None
-            else None
         ),
         rule=cascade.RuleSnapshot(**body.rule.model_dump()) if body.rule is not None else None,
     )
