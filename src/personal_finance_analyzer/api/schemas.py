@@ -368,6 +368,9 @@ class ReviewAcceptRequest(_Model):
     #: Other pending rows of the same merchant to categorize the same way; ids that do not
     #: qualify (different merchant, no longer pending, hand-corrected) are skipped.
     similar_ids: list[int] = Field(default_factory=list)
+    #: Also set this transaction's kind (a suggestion from a rule with a kind override carries
+    #: one). Applies to `transaction_id` only, never to `similar_ids`.
+    kind: Kind | None = None
 
 
 class ReviewAcceptResponse(_Model):

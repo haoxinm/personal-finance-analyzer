@@ -10010,6 +10010,16 @@
             },
             "type": "array",
             "title": "Similar Ids"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Kind"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",

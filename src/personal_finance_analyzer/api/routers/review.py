@@ -40,6 +40,7 @@ def accept_review(
             subcategory_key=body.subcategory_key,
             create_rule=body.create_rule,
             similar_ids=body.similar_ids,
+            kind=body.kind.value if body.kind is not None else None,
         )
     except ConfigError as exc:
         session.rollback()

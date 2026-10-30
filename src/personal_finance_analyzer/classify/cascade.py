@@ -809,6 +809,7 @@ def accept_review(
     subcategory_key: str,
     create_rule: bool,
     similar_ids: Sequence[int] = (),
+    kind: Kind | None = None,
 ) -> AcceptResult:
     """Accept one Review-queue transaction as `category_key/subcategory_key`.
 
@@ -822,6 +823,11 @@ def accept_review(
     A `similar_ids` entry is skipped unless it exists, has the accepted row's non-empty
     `merchant_key`, is still `needs_review`, and was not already edited by hand. Returns the ids
     actually applied and an `AcceptUndo` that `undo_accept` can replay. Does not commit.
+
+    `kind` (optional) is also set on the accepted transaction itself, as a one-time edit, so a
+    one-click suggestion from a rule with a kind override does what that rule would; it never
+    reaches `similar_ids`. Accepting is also how a suggestion (`classify.candidates`) is applied
+    with an undo token: it is the same one-time patch as `PATCH /transactions/{id}`.
 
     Raises:
         ConfigError: the transaction or taxonomy pair does not exist (see `apply_user_correction`).
@@ -854,7 +860,7 @@ def accept_review(
         transaction_id,
         category_key=category_key,
         subcategory_key=subcategory_key,
-        kind=None,
+        kind=kind,
         create_rule=create_rule,
     )
     snapshots = [TransactionSnapshot(txn.id, before_main, _state_of(txn), txn.dedupe_hash)]

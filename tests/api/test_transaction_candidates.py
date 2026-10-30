@@ -287,3 +287,45 @@ def test_applying_a_suggestion_is_a_one_time_edit_that_survives_and_stays_listed
     assert stored is not None and stored.classified_by == "user"
     assert client.get("/api/transactions", params={"conflict": True}).json()["total"] == 0
     assert fake_llm.requests == []
+
+
+def test_applying_a_suggestion_through_accept_carries_the_kind_and_undoes_cleanly(
+    client: TestClient, session: Session, fake_llm: FakeLLM
+) -> None:
+    """The UI applies a chip with `POST /review/accept` (the same one-time edit as the PATCH, but
+    it returns an undo token), passing the rule's kind override along."""
+    rows = _seed_conflicts(session)
+    txn_id = rows["conflict"].id
+
+    accepted = client.post(
+        "/api/review/accept",
+        json={
+            "transaction_id": txn_id,
+            "category_key": "grocery",
+            "subcategory_key": "wholesale_clubs",
+            "create_rule": False,
+            "similar_ids": [],
+            "kind": "refund",
+        },
+    )
+
+    assert accepted.status_code == 200, accepted.text
+    body = accepted.json()
+    assert body["transaction"]["kind"] == "refund"
+    assert body["transaction"]["subcategory_key"] == "wholesale_clubs"
+    session.expire_all()
+    stored = session.get(Transaction, txn_id)
+    assert stored is not None and stored.classified_by == "user" and not stored.is_spend
+
+    undone = client.post("/api/review/undo", json=body["undo"])
+
+    assert undone.status_code == 200, undone.text
+    session.expire_all()
+    restored = session.get(Transaction, txn_id)
+    assert restored is not None
+    assert (restored.kind, restored.classified_by, restored.is_spend) == (
+        "purchase",
+        "user_rule",
+        True,
+    )
+    assert fake_llm.requests == []

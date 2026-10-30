@@ -2701,6 +2701,7 @@ export interface components {
             create_rule: boolean;
             /** Similar Ids */
             similar_ids?: number[];
+            kind?: components["schemas"]["Kind"] | null;
         };
         /** ReviewAcceptResponse */
         ReviewAcceptResponse: {
