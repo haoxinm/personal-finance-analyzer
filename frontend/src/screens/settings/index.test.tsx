@@ -42,6 +42,8 @@ vi.mock("./lib/hooks", () => ({
   useUpdateAccount: () => ({ mutate: vi.fn(), isPending: false }),
   useSetApiKey: () => ({ mutate: vi.fn(), isPending: false }),
   useClearApiKey: () => ({ mutate: vi.fn(), isPending: false }),
+  useTaxParametersQuery: () => ({ data: undefined, isPending: true, isError: false, error: null }),
+  useRefreshTaxParameters: () => ({ mutate: vi.fn(), isPending: false, isError: false, data: undefined }),
   useTestLlm: () => ({ mutate: vi.fn(), isPending: false, isError: false, error: null }),
   useClassifyPreview: () => ({ isPending: false, isError: false, isSuccess: true, data: [] }),
 }));
@@ -72,6 +74,7 @@ describe("SettingsScreen", () => {
     expect(screen.getByText("Users and accounts")).toBeInTheDocument();
     expect(screen.getByText("LLM provider")).toBeInTheDocument();
     expect(screen.getByText("Privacy")).toBeInTheDocument();
+    expect(screen.getByText("Tax parameters")).toBeInTheDocument();
     expect(screen.getByText("Preview what will be sent")).toBeInTheDocument();
     expect(screen.getByText("Backup & restore")).toBeInTheDocument();
   });
