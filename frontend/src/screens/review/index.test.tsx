@@ -1,9 +1,9 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { createApiFetchMock, makeCategory, makeTransaction } from "./test-support";
+import { createApiFetchMock, makeCategory, makeTransaction, type AcceptBody } from "./test-support";
 import type { Category, Transaction } from "./types";
 
 /**
@@ -16,6 +16,9 @@ async function renderScreen(
     transactions: Transaction[];
     categories: Category[];
     users?: Array<{ id: number; name: string; is_default: boolean }>;
+    settings?: { llm: { mode: string } };
+    uncategorizedTotal?: number;
+    reclassifyCount?: number;
   },
   initialEntry = "/spending/review",
 ) {
@@ -25,6 +28,7 @@ async function renderScreen(
 
   const { default: ReviewScreen } = await import("./index");
   const { ToastContextProvider } = await import("@/components/ui/toast-provider");
+  const { Toaster } = await import("@/components/ui/toaster");
   const { WithUserSwitcher } = await import("@/test/with-user-switcher");
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 
@@ -35,6 +39,7 @@ async function renderScreen(
           <WithUserSwitcher>
             <ReviewScreen />
           </WithUserSwitcher>
+          <Toaster />
         </ToastContextProvider>
       </MemoryRouter>
     </QueryClientProvider>,
@@ -59,11 +64,13 @@ const CATEGORIES: Category[] = [
   }),
 ];
 
-function lastPatchBody(fetchMock: ReturnType<typeof vi.fn>): Promise<Record<string, unknown>> {
-  const call = [...fetchMock.mock.calls].reverse().find((c) => (c[0] as Request).method === "PATCH");
+function lastAcceptBody(fetchMock: ReturnType<typeof vi.fn>): Promise<AcceptBody> {
+  const call = [...fetchMock.mock.calls]
+    .reverse()
+    .find((c) => (c[0] as Request).method === "POST" && new URL((c[0] as Request).url).pathname === "/api/review/accept");
   const request = call?.[0] as Request | undefined;
-  if (!request) throw new Error("no PATCH request was made");
-  return request.clone().json() as Promise<Record<string, unknown>>;
+  if (!request) throw new Error("no accept request was made");
+  return request.clone().json() as Promise<AcceptBody>;
 }
 
 describe("ReviewScreen", () => {
@@ -106,7 +113,7 @@ describe("ReviewScreen", () => {
     await waitFor(() => expect(screen.getByText("Coffee Shop")).toBeInTheDocument());
   });
 
-  it("a digit stages a category, and Enter accepts it (PATCH + queue shrinks)", async () => {
+  it("a digit stages a category, and Enter accepts it (accept request + queue shrinks)", async () => {
     const { fetchMock } = await renderScreen({
       transactions: [
         makeTransaction({ id: 1, description_clean: "Coffee Shop", category_key: null, subcategory_key: null }),
@@ -122,7 +129,7 @@ describe("ReviewScreen", () => {
     fireEvent.keyDown(document, { key: "Enter" });
 
     await waitFor(async () => {
-      const body = await lastPatchBody(fetchMock);
+      const body = await lastAcceptBody(fetchMock);
       expect(body).toMatchObject({ category_key: "dining", subcategory_key: "dining", create_rule: false });
     });
     await waitFor(() => expect(screen.getByText("1 need review")).toBeInTheDocument());
@@ -139,7 +146,7 @@ describe("ReviewScreen", () => {
     fireEvent.keyDown(document, { key: "r" });
 
     await waitFor(async () => {
-      const body = await lastPatchBody(fetchMock);
+      const body = await lastAcceptBody(fetchMock);
       expect(body.create_rule).toBe(true);
     });
     await waitFor(() => expect(screen.getByText("Nothing needs review")).toBeInTheDocument());
@@ -219,5 +226,146 @@ describe("ReviewScreen", () => {
       .reverse()
       .find((u) => u.pathname === "/api/transactions");
     expect(last?.searchParams.getAll("user_ids")).toEqual(["2"]);
+  });
+
+  it("labels the rule button by what it does, naming the merchant", async () => {
+    await renderScreen({
+      transactions: [makeTransaction({ id: 1, merchant_key: "trader joes", category_key: "groceries", subcategory_key: "groceries" })],
+      categories: CATEGORIES,
+    });
+    expect(await screen.findByRole("button", { name: "Always categorize “trader joes” this way (r)" })).toBeEnabled();
+    expect(screen.queryByText(/Accept \+ create rule/)).not.toBeInTheDocument();
+  });
+
+  it("cannot make a rule for a row with no merchant name to match", async () => {
+    await renderScreen({
+      transactions: [makeTransaction({ id: 1, merchant_key: "", category_key: "groceries", subcategory_key: "groceries" })],
+      categories: CATEGORIES,
+    });
+    expect(await screen.findByRole("button", { name: "Always categorize this way (r)" })).toBeDisabled();
+  });
+
+  it("offers to apply an accept to the merchant's other pending rows and says how many it covered", async () => {
+    const { fetchMock } = await renderScreen({
+      transactions: [
+        makeTransaction({ id: 1, merchant_key: "trader joes", category_key: "groceries", subcategory_key: "groceries" }),
+        makeTransaction({ id: 2, merchant_key: "trader joes", description_clean: "Trader Joes #2" }),
+        makeTransaction({ id: 3, merchant_key: "shell", description_clean: "Shell Oil" }),
+      ],
+      categories: CATEGORIES,
+    });
+    await waitFor(() => expect(screen.getByText("3 need review")).toBeInTheDocument());
+    expect(
+      screen.getByLabelText("Also apply to 1 other pending transaction from this merchant"),
+    ).toBeChecked();
+
+    fireEvent.keyDown(document, { key: "Enter" });
+
+    await waitFor(async () => expect((await lastAcceptBody(fetchMock)).similar_ids).toEqual([2]));
+    await waitFor(() => expect(screen.getByText("1 need review")).toBeInTheDocument());
+    expect(await screen.findByText(/Applied to 1 more from this merchant/)).toBeInTheDocument();
+  });
+
+  it("does not apply to the others when the checkbox is cleared", async () => {
+    const { fetchMock } = await renderScreen({
+      transactions: [
+        makeTransaction({ id: 1, merchant_key: "trader joes", category_key: "groceries", subcategory_key: "groceries" }),
+        makeTransaction({ id: 2, merchant_key: "trader joes" }),
+      ],
+      categories: CATEGORIES,
+    });
+    const checkbox = await screen.findByLabelText("Also apply to 1 other pending transaction from this merchant");
+    fireEvent.click(checkbox);
+    fireEvent.keyDown(document, { key: "Enter" });
+
+    await waitFor(async () => expect((await lastAcceptBody(fetchMock)).similar_ids).toEqual([]));
+    await waitFor(() => expect(screen.getByText("1 need review")).toBeInTheDocument());
+  });
+
+  it("undo does not show a developer note", async () => {
+    await renderScreen({
+      transactions: [makeTransaction({ id: 1, category_key: "groceries", subcategory_key: "groceries" })],
+      categories: CATEGORIES,
+    });
+    await waitFor(() => expect(screen.getByText("1 need review")).toBeInTheDocument());
+    fireEvent.keyDown(document, { key: "Enter" });
+    await waitFor(() => expect(screen.getByText("Nothing needs review")).toBeInTheDocument());
+    fireEvent.keyDown(document, { key: "u" });
+    await waitFor(() => expect(screen.getByText("1 need review")).toBeInTheDocument());
+    expect(document.body.textContent).not.toMatch(/index\.tsx|survive reload/);
+  });
+
+  it("links the empty state onward to Import and Transactions", async () => {
+    await renderScreen({ transactions: [], categories: CATEGORIES });
+    expect(await screen.findByText("Nothing needs review")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Import statements" })).toHaveAttribute("href", "/spending/import");
+    expect(screen.getByRole("link", { name: "Browse transactions" })).toHaveAttribute("href", "/spending/transactions");
+  });
+
+  it("explains that no LLM is set up when many transactions are uncategorized", async () => {
+    await renderScreen({
+      transactions: [makeTransaction({ id: 1 })],
+      categories: CATEGORIES,
+      settings: { llm: { mode: "none" } },
+      uncategorizedTotal: 47,
+    });
+    const hint = await screen.findByTestId("llm-off-hint");
+    expect(hint).toHaveTextContent("47 transactions could not be categorized automatically");
+    expect(within(hint).getByRole("link", { name: /Settings/ })).toHaveAttribute("href", "/settings");
+  });
+
+  it("shows no LLM hint when a model is configured, or when only a few rows are uncategorized", async () => {
+    await renderScreen({
+      transactions: [makeTransaction({ id: 1 })],
+      categories: CATEGORIES,
+      settings: { llm: { mode: "remote" } },
+      uncategorizedTotal: 47,
+    });
+    await waitFor(() => expect(screen.getByText("1 need review")).toBeInTheDocument());
+    expect(screen.queryByTestId("llm-off-hint")).not.toBeInTheDocument();
+  });
+
+  it("stays quiet about the LLM when few rows are uncategorized", async () => {
+    await renderScreen({
+      transactions: [makeTransaction({ id: 1 })],
+      categories: CATEGORIES,
+      settings: { llm: { mode: "none" } },
+      uncategorizedTotal: 3,
+    });
+    await waitFor(() => expect(screen.getByText("1 need review")).toBeInTheDocument());
+    expect(screen.queryByTestId("llm-off-hint")).not.toBeInTheDocument();
+  });
+
+  it("re-classifies uncategorized rows from the header, then reloads the queue", async () => {
+    const { fetchMock } = await renderScreen({
+      transactions: [makeTransaction({ id: 1 })],
+      categories: CATEGORIES,
+      reclassifyCount: 12,
+    });
+    await waitFor(() => expect(screen.getByText("1 need review")).toBeInTheDocument());
+    const queueFetches = () =>
+      fetchMock.mock.calls.filter((c) => {
+        const url = new URL((c[0] as Request).url);
+        return url.pathname === "/api/transactions" && url.searchParams.get("needs_review") === "true";
+      }).length;
+    const before = queueFetches();
+
+    fireEvent.click(screen.getByRole("button", { name: "Re-classify uncategorized" }));
+
+    expect(await screen.findByText("Re-classified 12 transactions")).toBeInTheDocument();
+    const run = fetchMock.mock.calls.find((c) => new URL((c[0] as Request).url).pathname === "/api/classify/run");
+    expect(await (run?.[0] as Request).clone().json()).toMatchObject({ only_unclassified: true });
+    await waitFor(() => expect(queueFetches()).toBeGreaterThan(before));
+  });
+
+  it("says so when there is nothing to re-classify", async () => {
+    await renderScreen({
+      transactions: [makeTransaction({ id: 1 })],
+      categories: CATEGORIES,
+      reclassifyCount: 0,
+    });
+    await waitFor(() => expect(screen.getByText("1 need review")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Re-classify uncategorized" }));
+    expect(await screen.findByText("Nothing to re-classify")).toBeInTheDocument();
   });
 });

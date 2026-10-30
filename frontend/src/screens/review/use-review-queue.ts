@@ -2,7 +2,7 @@ import * as React from "react";
 
 import { useToast } from "@/components/ui/use-toast";
 
-import { fetchNeedsReviewQueue, patchTransaction } from "./api";
+import { acceptReview, fetchNeedsReviewQueue, undoReview } from "./api";
 import type { Transaction, UndoEntry } from "./types";
 
 export interface StagedPick {
@@ -25,21 +25,26 @@ export interface UseReviewQueueResult {
   /** Stages a category/subcategory pick for the current transaction, without saving it yet. */
   stage: (categoryKey: string, subcategoryKey: string) => void;
   stagedForCurrent: StagedPick | undefined;
+  /** The other queue rows from the same merchant as the current one (same non-empty
+   * `merchant_key`): what "apply to the rest" would also categorize. */
+  similarForCurrent: Transaction[];
+  /** Whether an accept also applies to `similarForCurrent` (default on). */
+  applyToSimilar: boolean;
+  setApplyToSimilar: (apply: boolean) => void;
   /**
    * Accepts the current transaction: the staged pick if one was made, otherwise whatever
-   * category the cascade already proposed. Optimistically removes it from the queue; on a
-   * failed `PATCH` it is reinserted at its original position and the user is told why (rollback).
-   * `createRule` mirrors the `r` key — "promote the accept into a rule" (§P3-B) — via
-   * `TransactionPatch.create_rule`.
+   * category the cascade already proposed — and, when `applyToSimilar` is on, the same for the
+   * merchant's other queue rows. Optimistically removes the current row from the queue; on a
+   * failed request it is reinserted at its original position and the user is told why (rollback).
+   * `createRule` mirrors the `r` key — "always categorize this merchant this way" (§P3-B) — via
+   * `POST /review/accept`'s `create_rule`.
    */
   accept: (options?: { createRule?: boolean }) => Promise<void>;
   /**
-   * Reverts the single most recent `accept`: `PATCH`es the transaction back to the category,
-   * subcategory and kind it had before, and reinserts it into the visible queue at its old
-   * position. This restores the classification but cannot restore the server's `needs_review`
-   * flag — `TransactionPatch` (§3.12) has no field for it, so on reload the transaction will not
-   * reappear in the queue on its own. See the module doc in `index.tsx` for the contract change
-   * this asks for.
+   * Reverts the single most recent `accept` through the server's undo token: every row it touched
+   * returns to its previous category (or to none), `needs_review` flag and kind, and the
+   * merchant-map entry and rule it wrote are removed or restored. The rows return to the queue
+   * where they were, and survive a reload because the server state is genuinely restored.
    */
   undo: () => Promise<void>;
   refetch: () => void;
@@ -48,7 +53,7 @@ export interface UseReviewQueueResult {
 /**
  * Drives the review queue: loads every `needs_review` transaction (`fetchNeedsReviewQueue`,
  * `api.ts`) and manages the session's local cursor, staged category picks, optimistic
- * accept/undo, and the one-entry-deep undo stack that `index.tsx` wires to the `u` key.
+ * accept/undo, and the undo stack that `index.tsx` wires to the `u` key.
  *
  * The queue lives in local component state rather than the TanStack Query cache: once loaded,
  * accept/undo mutate this array directly (removing or reinserting rows) so the visible order and
@@ -64,6 +69,7 @@ export function useReviewQueue(userIds?: number[], enabled = true): UseReviewQue
   const [staged, setStaged] = React.useState<Record<number, StagedPick>>({});
   const [isMutating, setIsMutating] = React.useState(false);
   const [canUndo, setCanUndo] = React.useState(false);
+  const [applyToSimilar, setApplyToSimilar] = React.useState(true);
   const undoStack = React.useRef<UndoEntry[]>([]);
 
   // Stable dependency: callers pass a fresh array each render.
@@ -97,6 +103,14 @@ export function useReviewQueue(userIds?: number[], enabled = true): UseReviewQue
   }, [queue.length]);
 
   const current = queue[index] ?? null;
+
+  const similarForCurrent = React.useMemo(
+    () =>
+      current && current.merchant_key !== ""
+        ? queue.filter((t) => t.id !== current.id && t.merchant_key === current.merchant_key)
+        : [],
+    [queue, current],
+  );
 
   const next = React.useCallback(() => {
     setIndex((i) => Math.min(i + 1, Math.max(queue.length - 1, 0)));
@@ -132,25 +146,32 @@ export function useReviewQueue(userIds?: number[], enabled = true): UseReviewQue
 
       const snapshot = txn;
       const queueIndexAtAccept = index;
+      const similar = applyToSimilar ? similarForCurrent : [];
+      const positions = new Map(queue.map((t, position) => [t.id, position]));
 
       // Optimistic: the row leaves the queue immediately.
       setQueue((prevQueue) => prevQueue.filter((t) => t.id !== txn.id));
       setIsMutating(true);
       try {
-        await patchTransaction(txn.id, {
-          category_key: categoryKey,
-          subcategory_key: subcategoryKey,
-          create_rule: createRule,
+        const result = await acceptReview({
+          transactionId: txn.id,
+          categoryKey,
+          subcategoryKey,
+          createRule,
+          similarIds: similar.map((t) => t.id),
         });
+        // The server skips any row that no longer qualifies; only the applied ones leave the queue.
+        const applied = new Set(result.similar_ids);
+        setQueue((prevQueue) => prevQueue.filter((t) => !applied.has(t.id)));
+        const appliedRows = similar.filter((t) => applied.has(t.id));
         undoStack.current = [
           ...undoStack.current,
           {
-            transactionId: txn.id,
-            previousCategoryKey: txn.category_key,
-            previousSubcategoryKey: txn.subcategory_key,
-            previousKind: txn.kind,
-            queueIndex: queueIndexAtAccept,
-            transactionSnapshot: snapshot,
+            undo: result.undo,
+            removed: [
+              { queueIndex: queueIndexAtAccept, transaction: snapshot },
+              ...appliedRows.map((t) => ({ queueIndex: positions.get(t.id) ?? 0, transaction: t })),
+            ].sort((a, b) => a.queueIndex - b.queueIndex),
           },
         ];
         setCanUndo(true);
@@ -162,6 +183,10 @@ export function useReviewQueue(userIds?: number[], enabled = true): UseReviewQue
         });
         toast({
           title: createRule ? "Accepted — rule created" : "Accepted",
+          description:
+            appliedRows.length > 0
+              ? `Applied to ${appliedRows.length} more from this merchant. Press u to undo.`
+              : undefined,
           variant: "success",
         });
       } catch (caught) {
@@ -181,7 +206,7 @@ export function useReviewQueue(userIds?: number[], enabled = true): UseReviewQue
         setIsMutating(false);
       }
     },
-    [current, index, staged, toast],
+    [current, index, staged, queue, applyToSimilar, similarForCurrent, toast],
   );
 
   const undo = React.useCallback(async () => {
@@ -189,23 +214,20 @@ export function useReviewQueue(userIds?: number[], enabled = true): UseReviewQue
     if (!entry) return;
     setIsMutating(true);
     try {
-      await patchTransaction(entry.transactionId, {
-        category_key: entry.previousCategoryKey,
-        subcategory_key: entry.previousSubcategoryKey,
-        kind: entry.previousKind,
-        create_rule: false,
-      });
+      await undoReview(entry.undo);
       undoStack.current = undoStack.current.slice(0, -1);
       setCanUndo(undoStack.current.length > 0);
       setQueue((prevQueue) => {
+        // Ascending original positions put each row back where it sat before the accept.
         const restored = [...prevQueue];
-        restored.splice(Math.min(entry.queueIndex, restored.length), 0, entry.transactionSnapshot);
+        for (const { queueIndex, transaction } of entry.removed) {
+          restored.splice(Math.min(queueIndex, restored.length), 0, transaction);
+        }
         return restored;
       });
-      setIndex(entry.queueIndex);
+      setIndex(entry.removed[0]?.queueIndex ?? 0);
       toast({
-        title: "Undone",
-        description: "Restored for this session — see index.tsx if it should survive reload.",
+        title: entry.removed.length > 1 ? `Undone — ${entry.removed.length} transactions restored` : "Undone",
       });
     } catch (caught) {
       toast({
@@ -230,6 +252,9 @@ export function useReviewQueue(userIds?: number[], enabled = true): UseReviewQue
     previous,
     stage,
     stagedForCurrent: current ? staged[current.id] : undefined,
+    similarForCurrent,
+    applyToSimilar,
+    setApplyToSimilar,
     accept,
     undo,
     refetch: load,

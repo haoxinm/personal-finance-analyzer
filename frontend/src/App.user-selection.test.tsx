@@ -53,7 +53,7 @@ function makeFetch(users: Array<typeof ALEX>) {
     }
     if (url.pathname.startsWith("/api/settings")) return jsonResponse({ llm: { mode: "none" } });
     if (url.pathname === "/api/net-worth/summary") return jsonResponse(EMPTY_NET_WORTH);
-    if (request.method === "PATCH" || url.pathname === "/api/taxonomy") return base(request);
+    if (url.pathname.startsWith("/api/review/") || url.pathname === "/api/taxonomy") return base(request);
     return jsonResponse([]);
   });
 }
@@ -231,16 +231,19 @@ describe("compare mode", () => {
     await within(left!).findByText("Coffee Shop");
     await within(right!).findByText("Grocery Store");
 
-    const patched = () =>
-      fetchMock.mock.calls
-        .map(([r]) => r as Request)
-        .filter((r) => r.method === "PATCH")
-        .map((r) => new URL(r.url).pathname);
+    // Ids of the transactions the Review screen has accepted so far (`POST /review/accept`).
+    const accepted = async () =>
+      Promise.all(
+        fetchMock.mock.calls
+          .map(([r]) => r as Request)
+          .filter((r) => r.method === "POST" && new URL(r.url).pathname === "/api/review/accept")
+          .map(async (r) => ((await r.clone().json()) as { transaction_id: number }).transaction_id),
+      );
 
-    // Left pane is active by default: stage a category and accept; only transaction 1 is patched.
+    // Left pane is active by default: stage a category and accept; only transaction 1 is accepted.
     fireEvent.keyDown(document, { key: "1" });
     fireEvent.keyDown(document, { key: "Enter" });
-    await waitFor(() => expect(patched()).toEqual(["/api/transactions/1"]));
+    await waitFor(async () => expect(await accepted()).toEqual([1]));
     expect(within(right!).getByText("Grocery Store")).toBeInTheDocument();
 
     // Activate the right pane; now the same keys only affect transaction 2.
@@ -248,6 +251,6 @@ describe("compare mode", () => {
     expect(within(right!).getByTestId("shortcut-badge")).toHaveTextContent("active");
     fireEvent.keyDown(document, { key: "1" });
     fireEvent.keyDown(document, { key: "Enter" });
-    await waitFor(() => expect(patched()).toEqual(["/api/transactions/1", "/api/transactions/2"]));
+    await waitFor(async () => expect(await accepted()).toEqual([1, 2]));
   });
 });
