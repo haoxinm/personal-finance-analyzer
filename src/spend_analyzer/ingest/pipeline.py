@@ -52,7 +52,12 @@ from spend_analyzer.core.errors import ParserError, SpendAnalyzerError, Unsuppor
 from spend_analyzer.core.logging import get_logger
 from spend_analyzer.core.paths import ensure_home, statements_dir
 from spend_analyzer.core.pii import merge_entries
-from spend_analyzer.core.types import ExtractedDoc, ParsedStatement, StatementParser
+from spend_analyzer.core.types import (
+    USER_CLASSIFIED,
+    ExtractedDoc,
+    ParsedStatement,
+    StatementParser,
+)
 from spend_analyzer.db.models import Account, Issuer, LayoutSpec, Statement, Transaction
 from spend_analyzer.db.pii_terms import user_pii_terms
 from spend_analyzer.ingest import issuer_match
@@ -953,7 +958,9 @@ def reparse(
         raise
 
     # Rebuild: this statement's own rows are cleared first, so the standard dedupe-insert path
-    # below only ever collides with *other* statements' rows on the same account (§3.5).
+    # below only ever collides with *other* statements' rows on the same account (§3.5). A row the
+    # user edited by hand is remembered first and restored onto its rebuilt twin afterwards.
+    kept_edits = _user_edits_of_statement(session, statement.id)
     session.execute(delete(Transaction).where(Transaction.statement_id == statement.id))
     session.flush()
 
@@ -967,7 +974,80 @@ def reparse(
         layout_spec_id=layout_spec_id,
         remember=False,  # reparse is an explicit override; it never rewrites the remembered spec
     )
+    _restore_user_edits(session, account.id, kept_edits)
     return result
+
+
+@dataclass(frozen=True, slots=True)
+class _UserEdit:
+    """A one-time user edit of a transaction (`classified_by='user'`), as it must survive the
+    transaction being rebuilt or merged into a duplicate."""
+
+    category_id: int | None
+    subcategory_id: int | None
+    confidence: float | None
+    needs_review: bool
+    kind: str
+    is_spend: bool
+    merchant_canonical: str | None
+    notes: str | None
+
+
+def _user_edit_of(txn: Transaction) -> _UserEdit:
+    return _UserEdit(
+        category_id=txn.category_id,
+        subcategory_id=txn.subcategory_id,
+        confidence=txn.confidence,
+        needs_review=txn.needs_review,
+        kind=txn.kind,
+        is_spend=txn.is_spend,
+        merchant_canonical=txn.merchant_canonical,
+        notes=txn.notes,
+    )
+
+
+def _apply_user_edit(txn: Transaction, edit: _UserEdit) -> None:
+    txn.category_id = edit.category_id
+    txn.subcategory_id = edit.subcategory_id
+    txn.confidence = edit.confidence
+    txn.needs_review = edit.needs_review
+    txn.kind = edit.kind
+    txn.is_spend = edit.is_spend
+    txn.merchant_canonical = edit.merchant_canonical
+    if edit.notes is not None:
+        txn.notes = edit.notes
+    txn.classified_by = USER_CLASSIFIED
+    txn.updated_at = _utcnow_iso()
+
+
+def _user_edits_of_statement(session: Session, statement_id: int) -> dict[str, _UserEdit]:
+    """The statement's hand-edited rows, keyed by `dedupe_hash` (a rebuilt row of the same
+    transaction on the same account hashes the same)."""
+    return {
+        txn.dedupe_hash: _user_edit_of(txn)
+        for txn in session.execute(
+            select(Transaction).where(
+                Transaction.statement_id == statement_id,
+                Transaction.classified_by == USER_CLASSIFIED,
+            )
+        ).scalars()
+    }
+
+
+def _restore_user_edits(session: Session, account_id: int, edits: dict[str, _UserEdit]) -> None:
+    """Put each remembered one-time edit back on the rebuilt row with the same `dedupe_hash`.
+    Runs right after the rebuild, before anything can classify the new rows, which are then
+    skipped as hand-edited. Does not commit."""
+    if not edits:
+        return
+    for txn in session.execute(
+        select(Transaction).where(
+            Transaction.account_id == account_id, Transaction.dedupe_hash.in_(list(edits))
+        )
+    ).scalars():
+        if txn.classified_by != USER_CLASSIFIED:
+            _apply_user_edit(txn, edits[txn.dedupe_hash])
+    session.commit()
 
 
 def reassign(
@@ -1028,6 +1108,12 @@ def reassign(
             .first()
         )
         if collision is not None:
+            if txn.classified_by == USER_CLASSIFIED:
+                # The surviving twin is the same real transaction: it inherits the user's edit
+                # unless it carries one of its own.
+                survivor = session.get(Transaction, collision)
+                if survivor is not None and survivor.classified_by != USER_CLASSIFIED:
+                    _apply_user_edit(survivor, _user_edit_of(txn))
             session.delete(txn)
             duplicates_deleted += 1
             continue
