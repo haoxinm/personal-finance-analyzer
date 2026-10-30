@@ -62,7 +62,7 @@ Run at commit reachable from `wp/P4-E`, against the full test suite (610 passed 
 
 ## Tax-form and net-worth additions
 
-The income & tax feature (W-2 / 1099 / 1040 import, see [TAX.md](TAX.md)) and Dashboard net worth
+The income & tax feature (W-2 / 1099 / 1040 import, see [TAX.md](TAX.md)) and the Net worth page
 introduced two new kinds of sensitive local data: tax identifiers and account balances. Neither has
 an egress path. Same table style as above; the evidence names the code and the test that enforces
 it. These rows were written against the code on the `feat/income-tax-analysis` branch; line numbers

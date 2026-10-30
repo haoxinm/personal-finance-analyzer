@@ -17,8 +17,8 @@ the [README's privacy model](../README.md#privacy-model).
 $ spend-analyzer tax import w2-2024.pdf 1099-composite-2024.pdf return-2024.pdf
 ```
 
-or use the **Income & Tax** screen in the web UI (`spend-analyzer serve`), which uploads the same
-files. Import is a single step: there is no preview-and-confirm phase, because there is nothing to
+or use **Income & Tax › Import** in the web UI (`spend-analyzer serve`), which uploads the same
+files (the imported documents are then listed under **Income & Tax › Documents**). Import is a single step: there is no preview-and-confirm phase, because there is nothing to
 choose (no issuer, no layout; the optional LLM fallback is a setting, not a step). A file is either recognised and stored, or reported as
 unsupported or unreadable.
 
@@ -29,7 +29,7 @@ Requirements:
   parsers key on the printed box and line labels, so a hand-filled form that has been scanned
   won't work.
 - Each file is imported for one **user** (`--user-id`, defaulting to the default user). In the web
-  UI the Income & Tax screen follows the same user chips as the Dashboard.
+  UI the Income & Tax pages follow the same user bar as the Spending pages.
 
 A file may hold several forms (two employers' W-2s, a consolidated 1099 with several accounts).
 Each is stored separately.
@@ -383,7 +383,7 @@ turning the fallback on when an LLM is configured but it is off, or entering the
 
 ### Reading chosen pages on demand
 
-With an LLM configured, a document in the Tax screen offers **Read pages with LLM...** (whatever
+With an LLM configured, a document in **Income & Tax › Documents** offers **Read pages with LLM...** (whatever
 `tax_llm_fallback` says): page thumbnails to pick from (preselected = the pages the automatic
 fallback would send), a collapsed **Show what would be sent** preview of the exact redacted text
 (no network call), and **Send selected pages to LLM** after a confirmation. Form 1040 pages and

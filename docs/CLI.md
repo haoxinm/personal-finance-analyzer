@@ -70,7 +70,7 @@ odd-statement.pdf: statement #8 awaiting_extractor ...; confirm with:
 $ spend-analyzer import odd-statement.pdf --user-id 1 --parser-id llm --pages 2-3
 ```
 
-To see the exact text that would be sent first, use the Import screen's preview
+To see the exact text that would be sent first, use the Spending › Import screen's preview
 (`GET /api/statements/{id}/llm-preview`). Set `spend-analyzer llm set --default-extractor llm` to
 make the LLM the default for new imports.
 
