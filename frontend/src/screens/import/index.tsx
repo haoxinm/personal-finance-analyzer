@@ -243,4 +243,4 @@ function ImportScreen() {
 
 export default ImportScreen;
 
-export const screenMeta = { path: "/import", title: "Import" };
+export const screenMeta = { path: "/spending/import", title: "Import" };

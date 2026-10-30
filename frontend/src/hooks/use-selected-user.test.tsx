@@ -81,7 +81,7 @@ describe("useSelectedUser", () => {
   });
 
   it("reports loading, then resolves from the URL", async () => {
-    const { result } = renderHook(useBoth, { wrapper: makeWrapper("/?user=2") });
+    const { result } = renderHook(useBoth, { wrapper: makeWrapper("/spending?user=2") });
     expect(result.current.sel.isLoading).toBe(true);
     expect(result.current.sel.selectedUserId).toBeNull();
     await waitFor(() => expect(result.current.sel.isLoading).toBe(false));
@@ -92,12 +92,12 @@ describe("useSelectedUser", () => {
 
   it("restores from localStorage when the URL has no param", async () => {
     window.localStorage.setItem(SELECTED_USER_STORAGE_KEY, "1");
-    const { result } = renderHook(useBoth, { wrapper: makeWrapper("/") });
+    const { result } = renderHook(useBoth, { wrapper: makeWrapper("/spending") });
     await waitFor(() => expect(result.current.sel.selectedUserId).toBe(1));
   });
 
   it("is All users (userIds undefined) by default with several users", async () => {
-    const { result } = renderHook(useBoth, { wrapper: makeWrapper("/") });
+    const { result } = renderHook(useBoth, { wrapper: makeWrapper("/spending") });
     await waitFor(() => expect(result.current.sel.isLoading).toBe(false));
     expect(result.current.sel.selectedUserId).toBeNull();
     expect(result.current.sel.userIds).toBeUndefined();
@@ -110,14 +110,14 @@ describe("useSelectedUser", () => {
     vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
       throw new Error("blocked");
     });
-    const { result } = renderHook(useBoth, { wrapper: makeWrapper("/") });
+    const { result } = renderHook(useBoth, { wrapper: makeWrapper("/spending") });
     await waitFor(() => expect(result.current.sel.isLoading).toBe(false));
     act(() => result.current.sel.setSelectedUserId(2));
     expect(result.current.sel.selectedUserId).toBe(2);
   });
 
   it("setSelectedUserId updates URL, keeps other params, and writes storage", async () => {
-    const { result } = renderHook(useBoth, { wrapper: makeWrapper("/?date_from=2025-01-01") });
+    const { result } = renderHook(useBoth, { wrapper: makeWrapper("/spending?date_from=2025-01-01") });
     await waitFor(() => expect(result.current.sel.isLoading).toBe(false));
 
     act(() => result.current.sel.setSelectedUserId(2));
@@ -139,14 +139,14 @@ describe("useCompareUser", () => {
   }
 
   it("drops ?compare from the URL when it equals the primary user", async () => {
-    const { result } = renderHook(() => useCompare(1), { wrapper: makeWrapper("/?user=1&compare=1") });
+    const { result } = renderHook(() => useCompare(1), { wrapper: makeWrapper("/spending?user=1&compare=1") });
     await waitFor(() => expect(result.current.sp[0].get("compare")).toBeNull());
     expect(result.current.compare.active).toBe(false);
     expect(result.current.sp[0].get("user")).toBe("1");
   });
 
   it("keeps a valid ?compare", () => {
-    const { result } = renderHook(() => useCompare(1), { wrapper: makeWrapper("/?user=1&compare=2") });
+    const { result } = renderHook(() => useCompare(1), { wrapper: makeWrapper("/spending?user=1&compare=2") });
     expect(result.current.compare.active).toBe(true);
     expect(result.current.sp[0].get("compare")).toBe("2");
   });

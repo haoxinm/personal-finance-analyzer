@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import * as React from "react";
+import { MemoryRouter, useLocation } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { apiClient } from "@/api/client";
@@ -26,13 +27,26 @@ const patch = apiClient.PATCH as unknown as ReturnType<typeof vi.fn>;
 const del = apiClient.DELETE as unknown as ReturnType<typeof vi.fn>;
 
 let client: QueryClient;
+let initialEntry = "/tax/documents";
+
+function LocationProbe() {
+  const { pathname, search } = useLocation();
+  return <div data-testid="location">{pathname + search}</div>;
+}
+
 function Wrapper({ children }: { children: React.ReactNode }) {
   return (
     <QueryClientProvider client={client}>
-      <ToastContextProvider>
-        {children}
-        <Toaster />
-      </ToastContextProvider>
+      <MemoryRouter
+        initialEntries={[initialEntry]}
+        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+      >
+        <ToastContextProvider>
+          {children}
+          <Toaster />
+        </ToastContextProvider>
+        <LocationProbe />
+      </MemoryRouter>
     </QueryClientProvider>
   );
 }
@@ -42,6 +56,7 @@ const ok = (data: unknown) => Promise.resolve({ data, error: undefined });
 
 beforeEach(() => {
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  initialEntry = "/tax/documents";
   for (const m of [get, post, patch, del]) m.mockReset();
   detailForms = [formDetail()];
   get.mockImplementation((path: string) =>
@@ -54,9 +69,14 @@ beforeEach(() => {
   del.mockImplementation(() => ok(undefined));
 });
 
-function renderPanel(docs = [document()]) {
+function renderPanel(docs = [document()], year: number | null = null) {
   return render(
-    <DocumentsPanel documents={docs} users={USERS} selectedUserId={1} />,
+    <DocumentsPanel
+      documents={docs}
+      users={USERS}
+      selectedUserId={1}
+      year={year}
+    />,
     { wrapper: Wrapper },
   );
 }
@@ -491,7 +511,7 @@ describe("manual entry", () => {
     expect(
       await screen.findByText("Enter the tax year first"),
     ).toBeInTheDocument();
-    await userEvent.type(screen.getByLabelText(/Tax year \(only/), "2024");
+    await userEvent.type(screen.getByLabelText("Tax year"), "2024");
     await userEvent.click(
       screen.getByRole("button", { name: "Enter figures without a PDF" }),
     );
@@ -500,50 +520,89 @@ describe("manual entry", () => {
         body: { user_id: 1, tax_year: 2024 },
       }),
     );
+    // The new document is addressed through the URL; its row opens the editor once it is listed.
+    await waitFor(() =>
+      expect(screen.getByTestId("location")).toHaveTextContent(
+        "doc=9&add=1",
+      ),
+    );
     rerender(
       <DocumentsPanel documents={docs} users={USERS} selectedUserId={1} />,
     );
     expect(
       await screen.findByRole("form", { name: "Add form" }),
     ).toBeInTheDocument();
+    // `add` is consumed so a reload does not reopen the editor; the document stays addressed.
+    await waitFor(() =>
+      expect(screen.getByTestId("location")).not.toHaveTextContent("add=1"),
+    );
+    expect(screen.getByTestId("location")).toHaveTextContent("doc=9");
+  });
+
+  it("prefills the manual-entry year from the year filter", () => {
+    renderPanel([], 2023);
+    expect(screen.getByLabelText("Tax year")).toHaveValue(2023);
+  });
+
+  it("asks which user to add for when All users is selected", () => {
+    render(
+      <DocumentsPanel documents={[]} users={USERS} selectedUserId={null} />,
+      { wrapper: Wrapper },
+    );
+    expect(
+      screen.getByRole("combobox", { name: "Add for user" }),
+    ).toBeInTheDocument();
   });
 });
 
-describe("upload outcome", () => {
-  it("lists skipped-from files and warnings, and offers manual entry for failures", async () => {
-    post.mockImplementation(() =>
-      ok({
-        document: document({ id: 7 }),
-        status: "parsed",
-        inserted_forms: 1,
-        skipped_duplicate_forms: 1,
-        skipped_from: [
-          { document_id: 1, original_name: "x.pdf", form_type: "w2" },
-        ],
-        income_item_count: 1,
-        tax_item_count: 0,
-        warnings: ["Payer name was inferred from the page header."],
-        error: null,
-      }),
-    );
-    renderPanel();
-    const input = screen.getByLabelText("Choose tax form PDFs");
-    await userEvent.upload(
-      input,
-      new File(["x"], "new.pdf", { type: "application/pdf" }),
-    );
-    const list = await screen.findByTestId("upload-outcomes");
-    expect(
-      within(list).getByText("Imported 1 form.", { exact: false }),
-    ).toBeInTheDocument();
-    expect(
-      within(list).getByText(
-        '1 form was already imported from "x.pdf" and was skipped.',
+describe("deep link and year filter", () => {
+  it("opens the add-form editor for ?doc=<id>&add=1", async () => {
+    initialEntry = "/tax/documents?doc=5&add=1";
+    detailForms = [];
+    const failed = document({
+      id: 5,
+      original_name: "scan.pdf",
+      status: "unsupported",
+      form_types: [],
+      tax_year: 2024,
+    });
+    renderPanel([document(), failed]);
+    const form = await screen.findByRole("form", { name: "Add form" });
+    expect(form).toBeInTheDocument();
+    // Only the addressed document opens.
+    expect(screen.getAllByRole("form", { name: "Add form" })).toHaveLength(1);
+    await waitFor(() =>
+      expect(screen.getByTestId("location")).toHaveTextContent(
+        "/tax/documents?doc=5",
       ),
-    ).toBeInTheDocument();
-    expect(
-      within(list).getByText("Payer name was inferred from the page header."),
-    ).toBeInTheDocument();
+    );
+    expect(screen.getByTestId("location")).not.toHaveTextContent("add=1");
+  });
+
+  it("lists only the filtered year, but never hides the addressed document", () => {
+    initialEntry = "/tax/documents?doc=3";
+    const docs = [
+      document({ id: 1, original_name: "a-2024.pdf", tax_year: 2024 }),
+      document({ id: 2, original_name: "b-2023.pdf", tax_year: 2023 }),
+      document({ id: 3, original_name: "c-2022.pdf", tax_year: 2022 }),
+    ];
+    render(
+      <DocumentsPanel
+        documents={docs}
+        users={USERS}
+        selectedUserId={1}
+        year={2024}
+      />,
+      { wrapper: Wrapper },
+    );
+    expect(screen.getByText("a-2024.pdf")).toBeInTheDocument();
+    expect(screen.queryByText("b-2023.pdf")).not.toBeInTheDocument();
+    expect(screen.getByText("c-2022.pdf")).toBeInTheDocument();
+  });
+
+  it("says so when the filtered year has no documents", () => {
+    renderPanel([document()], 2020);
+    expect(screen.getByText("No tax documents for 2020.")).toBeInTheDocument();
   });
 });
 

@@ -81,7 +81,7 @@ export function StatementPicker() {
         {sorted.map((statement) => (
           <li key={statement.id}>
             <Link
-              to={`/layout-mapper?statement_id=${statement.id}`}
+              to={`/spending/layout-mapper?statement_id=${statement.id}`}
               className="flex items-center justify-between gap-3 rounded-md border border-border px-3 py-2 text-sm hover:bg-muted/50"
             >
               <span>

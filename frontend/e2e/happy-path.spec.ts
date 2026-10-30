@@ -5,7 +5,7 @@ import { expect, test } from "@playwright/test";
 
 /**
  * D9's Playwright happy path (§2, Phase 3 Gate 3): import the generated `layout_b_credit`
- * fixture, confirm its extractor, land in the review queue, and read a chart on the dashboard —
+ * fixture, confirm its extractor, land in the review queue, and read a chart on the Spending overview —
  * end to end against the real backend `e2e/global-setup.ts` boots.
  */
 
@@ -28,14 +28,17 @@ function baseUrl(): string {
   return url;
 }
 
-test("import a statement, confirm the extractor, review it, and see a dashboard chart", async ({
+test("import a statement, confirm the extractor, review it, and see an overview chart", async ({
   page,
 }) => {
   await page.goto(baseUrl());
   await expect(page.getByRole("heading", { name: "Spend Analyzer" }).or(page.locator("body"))).toBeVisible();
+  // `/` lands on the Spending section.
+  await expect(page).toHaveURL(/\/spending$/);
 
   // --- Import -------------------------------------------------------------------------------
   await page.getByRole("link", { name: "Import", exact: true }).click();
+  await expect(page).toHaveURL(/\/spending\/import/);
   await expect(page.getByRole("heading", { name: "Import statements" })).toBeVisible();
 
   await page.getByLabel("Choose statement PDFs").setInputFiles(FIXTURE_PDF);
@@ -58,8 +61,9 @@ test("import a statement, confirm the extractor, review it, and see a dashboard 
   await expect(page.getByRole("heading", { name: "Review" })).toBeVisible();
   await expect(page.getByText(/\d+ need review/)).toBeVisible({ timeout: 15_000 });
 
-  // --- Dashboard ------------------------------------------------------------------------------
-  await page.getByRole("link", { name: "Dashboard", exact: true }).click();
+  // --- Overview -------------------------------------------------------------------------------
+  await page.getByRole("link", { name: "Overview", exact: true }).click();
+  await expect(page).toHaveURL(/\/spending$/);
   const chart = page.getByTestId("category-stacked-bar");
   await expect(chart).toBeVisible();
   await expect(chart.locator("svg.recharts-surface").first()).toBeVisible();

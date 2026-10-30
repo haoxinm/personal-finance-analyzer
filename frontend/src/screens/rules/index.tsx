@@ -69,4 +69,4 @@ export default function RulesScreen() {
   );
 }
 
-export const screenMeta = { path: "/rules", title: "Rules" };
+export const screenMeta = { path: "/spending/rules", title: "Rules" };

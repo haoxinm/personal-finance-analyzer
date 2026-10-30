@@ -1,4 +1,4 @@
-import type * as React from "react";
+import * as React from "react";
 import { NavLink, Route, Routes, useLocation } from "react-router-dom";
 
 import { Toaster } from "@/components/ui/toaster";
@@ -6,53 +6,51 @@ import { ToastContextProvider } from "@/components/ui/toast-provider";
 import { ErrorBoundary } from "@/components/primitives/error-boundary";
 import { cn } from "@/utils";
 import { ComparePanes } from "@/components/shell/compare-panes";
+import { RedirectKeepingSearch } from "@/components/shell/redirect-keeping-search";
+import { SectionTabs } from "@/components/shell/section-tabs";
 import { UserBar } from "@/components/shell/user-bar";
-import { COMPARE_USER_PARAM, useCompareUser, useSelectedUser } from "@/hooks/use-selected-user";
+import { useCompareUser, useSelectedUser } from "@/hooks/use-selected-user";
+import { APP_NAME, HOME_PATH, LEGACY_REDIRECTS, SECTIONS, carriedSearch, routeInfo } from "@/navigation";
 import { ComponentGallery } from "@/routes/gallery";
 
 import DashboardScreen, { screenMeta as dashboardMeta } from "@/screens/dashboard";
 import ImportScreen, { screenMeta as importMeta } from "@/screens/import";
 import ReviewScreen, { screenMeta as reviewMeta } from "@/screens/review";
 import TransactionsScreen, { screenMeta as transactionsMeta } from "@/screens/transactions";
-import TaxScreen, { screenMeta as taxMeta } from "@/screens/tax";
+import TaxDocumentsScreen, { screenMeta as taxDocumentsMeta } from "@/screens/tax/documents-screen";
+import TaxImportScreen, { screenMeta as taxImportMeta } from "@/screens/tax/import-screen";
+import TaxOverviewScreen, { screenMeta as taxOverviewMeta } from "@/screens/tax/overview-screen";
+import NetWorthScreen, { screenMeta as netWorthMeta } from "@/screens/net-worth";
 import RulesScreen, { screenMeta as rulesMeta } from "@/screens/rules";
 import SettingsScreen, { screenMeta as settingsMeta } from "@/screens/settings";
 import LayoutMapperScreen, { screenMeta as layoutMapperMeta } from "@/screens/layout-mapper";
 
 /**
- * The Phase 3 screens (plus Income & Tax), in the order they appear in the main nav. `screenMeta.path` on each
- * screen is the source of truth for its route; this array is only display order.
+ * Every screen and its route. `screenMeta.path` on each screen is the source of truth for its
+ * route; what the shell does with a route (nav placement, user bar, compare, notes) comes from
+ * `SECTIONS` in `navigation.ts`.
  */
 const SCREENS = [
   { meta: dashboardMeta, Component: DashboardScreen },
-  { meta: importMeta, Component: ImportScreen },
-  { meta: reviewMeta, Component: ReviewScreen },
   { meta: transactionsMeta, Component: TransactionsScreen },
-  { meta: taxMeta, Component: TaxScreen },
+  { meta: reviewMeta, Component: ReviewScreen },
+  { meta: importMeta, Component: ImportScreen },
   { meta: rulesMeta, Component: RulesScreen },
-  { meta: settingsMeta, Component: SettingsScreen },
   { meta: layoutMapperMeta, Component: LayoutMapperScreen },
+  { meta: taxOverviewMeta, Component: TaxOverviewScreen },
+  { meta: taxDocumentsMeta, Component: TaxDocumentsScreen },
+  { meta: taxImportMeta, Component: TaxImportScreen },
+  { meta: netWorthMeta, Component: NetWorthScreen },
+  { meta: settingsMeta, Component: SettingsScreen },
 ] as const;
 
 /**
- * The app shell: nav, providers, error boundary, and every screen's route, wired from each
- * screen's own `screenMeta` (§ Phase 3 screen contract) plus the `/gallery` route P1-F's
- * Accepts criteria requires. The Layout mapper is reachable only as a deep link from Import's
- * `unsupported_layout` failure (and from Rules' Extractors tab), so it stays out of the primary
- * nav to avoid suggesting it is a everyday destination. `/gallery` (a developer tool, not a
- * user-facing screen) is left off the nav entirely — the route itself still works as a direct
- * link — rather than appended to it, so it never reads as an eighth "screen" alongside the app's
- * real ones.
+ * The app shell: top nav (sections), the active section's sub-tabs, the user bar, providers, error
+ * boundary and every route. The sub-tabs live here rather than in a layout route because compare
+ * mode renders `routes` twice (once per pane), which would duplicate any chrome rendered inside a
+ * route. Old flat paths (`/review`, `/import`, ...) redirect to their section, keeping the query.
+ * `/gallery` (a developer tool, not a user-facing screen) is routable but left out of the nav.
  */
-/** Routes with no per-user view at all: the global user bar is hidden there. */
-const NO_USER_BAR_PATHS: readonly string[] = [settingsMeta.path, "/gallery"];
-/** Screens that can be rendered twice (left/right) in compare mode. */
-const COMPARE_PATHS: readonly string[] = [dashboardMeta.path, reviewMeta.path, transactionsMeta.path, taxMeta.path];
-/** Per-route clarifications shown next to the user bar. */
-const ROUTE_NOTES: Record<string, string> = {
-  [rulesMeta.path]: "Rules apply to all users.",
-};
-
 export function App() {
   return (
     <ToastContextProvider>
@@ -67,10 +65,14 @@ function Shell() {
   const sel = useSelectedUser();
   const compare = useCompareUser(sel.selectedUserId, sel.users, sel.isLoading);
 
-  const showBar = !NO_USER_BAR_PATHS.includes(pathname);
-  const compareSupported = COMPARE_PATHS.includes(pathname);
+  const info = routeInfo(pathname);
+  const showBar = info.userBar;
+  const compareSupported = info.compare;
   const comparing = showBar && compareSupported && compare.active;
-  const compareParam = new URLSearchParams(search).get(COMPARE_USER_PARAM);
+
+  React.useEffect(() => {
+    document.title = info.title;
+  }, [info.title]);
 
   function changePrimary(id: number | null) {
     // Picking the user already on the right swaps the panes instead of showing one user twice.
@@ -85,6 +87,10 @@ function Shell() {
   const routes = (
     <ErrorBoundary>
       <Routes>
+        <Route path="/" element={<RedirectKeepingSearch to={HOME_PATH} />} />
+        {Object.entries(LEGACY_REDIRECTS).map(([from, to]) => (
+          <Route key={from} path={from} element={<RedirectKeepingSearch to={to} />} />
+        ))}
         {SCREENS.map(({ meta, Component }) => (
           <Route key={meta.path} path={meta.path} element={<Component />} />
         ))}
@@ -99,23 +105,31 @@ function Shell() {
     <div className="flex min-h-screen flex-col">
       <header className="sticky top-0 z-30 bg-background">
         <div className="border-b border-border">
-          <nav className="mx-auto flex max-w-screen-2xl flex-wrap items-center gap-4 px-4 py-3">
-            <span className="text-sm font-semibold tracking-tight">Spend Analyzer</span>
-            {SCREENS.filter((s) => s.meta.path !== "/layout-mapper").map((s) => (
-              <NavItem
-                key={s.meta.path}
-                to={{
-                  pathname: s.meta.path,
-                  // Keep an active compare across the screens that support it.
-                  search: compareParam && COMPARE_PATHS.includes(s.meta.path) ? `?${COMPARE_USER_PARAM}=${compareParam}` : "",
-                }}
-                end={s.meta.path === "/"}
-              >
-                {s.meta.title}
-              </NavItem>
-            ))}
+          <nav
+            aria-label="Main"
+            className="mx-auto flex max-w-screen-2xl flex-wrap items-center gap-4 px-4 py-3"
+          >
+            <span className="text-sm font-semibold tracking-tight">{APP_NAME}</span>
+            {SECTIONS.filter((section) => !section.hidden).map((section) => {
+              const first = section.tabs[0]!;
+              return (
+                <NavItem
+                  key={section.key}
+                  to={{
+                    pathname: first.path,
+                    // Keep an active compare across the screens that support it.
+                    search: carriedSearch(first, search, false),
+                  }}
+                  active={info.section?.key === section.key}
+                  className={section.pushRight ? "ml-auto" : undefined}
+                >
+                  {section.label}
+                </NavItem>
+              );
+            })}
           </nav>
         </div>
+        {info.section ? <SectionTabs section={info.section} /> : null}
         {showBar ? (
           <UserBar
             users={sel.users}
@@ -127,7 +141,7 @@ function Shell() {
             compareUserId={compare.compareUserId}
             onCompareToggle={compare.setEnabled}
             onCompareUserChange={changeCompare}
-            note={ROUTE_NOTES[pathname]}
+            note={info.note}
           />
         ) : null}
       </header>
@@ -139,7 +153,7 @@ function Shell() {
       >
         {comparing ? (
           <ComparePanes
-            showShortcutBadge={pathname === reviewMeta.path}
+            showShortcutBadge={info.tab?.path === reviewMeta.path}
             panes={[
               { side: "left", userId: sel.selectedUserId, name: nameOf(sel.selectedUserId), setUserId: changePrimary },
               { side: "right", userId: compare.compareUserId, name: nameOf(compare.compareUserId), setUserId: changeCompare },
@@ -155,17 +169,27 @@ function Shell() {
   );
 }
 
-function NavItem({ to, end, children }: { to: React.ComponentProps<typeof NavLink>["to"]; end: boolean; children: React.ReactNode }) {
+function NavItem({
+  to,
+  active,
+  className,
+  children,
+}: {
+  to: React.ComponentProps<typeof NavLink>["to"];
+  active: boolean;
+  className?: string;
+  children: React.ReactNode;
+}) {
   return (
     <NavLink
       to={to}
-      end={end}
-      className={({ isActive }) =>
-        cn(
-          "rounded-md px-2 py-1 text-sm text-muted-foreground transition-colors hover:text-foreground",
-          isActive && "bg-muted text-foreground",
-        )
-      }
+      // The section is active across all its tabs (including hidden ones), which NavLink's own
+      // path matching cannot express.
+      className={cn(
+        "rounded-md px-2 py-1 text-sm text-muted-foreground transition-colors hover:text-foreground",
+        active && "bg-muted text-foreground",
+        className,
+      )}
     >
       {children}
     </NavLink>

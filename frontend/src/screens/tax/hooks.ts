@@ -1,4 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import * as React from "react";
+import { useSearchParams } from "react-router-dom";
 
 import {
   ApiError,
@@ -8,9 +10,58 @@ import {
 } from "@/api/client";
 import { useSettings } from "@/api/hooks";
 
+import { resolveYear } from "./logic";
+
 const ROOT_KEY = ["tax"] as const;
 /** Root key of every LLM "what would be sent" preview (tax and statements). */
 const PREVIEW_KEY = ["llm-preview"] as const;
+
+/** URL search param holding the tax year being viewed, shared by the Overview and Documents tabs. */
+export const TAX_YEAR_PARAM = "year";
+
+/** Search params that deep-link a document: `?doc=<id>&add=1` opens its add-form editor. */
+export const DOCUMENT_PARAM = "doc";
+export const ADD_PARAM = "add";
+
+function parseYearParam(raw: string | null): number | null {
+  const year = raw === null ? NaN : Number(raw);
+  return Number.isInteger(year) ? year : null;
+}
+
+function useYearParamSetter() {
+  const [, setSearchParams] = useSearchParams();
+  return React.useCallback(
+    (year: number | null) =>
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          if (year === null) next.delete(TAX_YEAR_PARAM);
+          else next.set(TAX_YEAR_PARAM, String(year));
+          return next;
+        },
+        { replace: true },
+      ),
+    [setSearchParams],
+  );
+}
+
+/**
+ * The year shown on the Overview: `?year=` if it is one of `years`, else the newest. Lives in the
+ * URL so a year is linkable and survives moving between the Income & Tax tabs. In compare mode both
+ * panes read the same `?year=` (the year is a view setting, like the date filters, not per user).
+ */
+export function useTaxYear(years: readonly number[]): [number | null, (year: number) => void] {
+  const [searchParams] = useSearchParams();
+  const setYear = useYearParamSetter();
+  const year = resolveYear(parseYearParam(searchParams.get(TAX_YEAR_PARAM)), years);
+  return [year, setYear];
+}
+
+/** The Documents tab's year filter: the raw `?year=` (`null` = every year, including undated). */
+export function useTaxYearFilter(): [number | null, (year: number | null) => void] {
+  const [searchParams] = useSearchParams();
+  return [parseYearParam(searchParams.get(TAX_YEAR_PARAM)), useYearParamSetter()];
+}
 
 export type TaxImportResponse = components["schemas"]["TaxImportResponse"];
 

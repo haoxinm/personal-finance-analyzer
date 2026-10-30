@@ -93,7 +93,18 @@ describe("global user bar", () => {
     vi.restoreAllMocks();
   });
 
-  it.each(["/", "/import", "/review", "/transactions", "/tax", "/rules", "/layout-mapper"])(
+  it.each([
+    "/spending",
+    "/spending/import",
+    "/spending/review",
+    "/spending/transactions",
+    "/spending/rules",
+    "/spending/layout-mapper",
+    "/tax",
+    "/tax/documents",
+    "/tax/import",
+    "/net-worth",
+  ])(
     "is shown on %s",
     async (path) => {
       await renderApp(path);
@@ -109,7 +120,7 @@ describe("global user bar", () => {
   });
 
   it("shows a static, labelled chip for a single user (no switcher, no compare)", async () => {
-    await renderApp("/", [ALEX]);
+    await renderApp("/spending", [ALEX]);
     await waitFor(() => expect(within(bar()).getByTestId("user-chip")).toHaveTextContent("Alex"));
     expect(within(bar()).getByText("Viewing:")).toBeInTheDocument();
     expect(within(bar()).queryByRole("radiogroup")).not.toBeInTheDocument();
@@ -118,7 +129,7 @@ describe("global user bar", () => {
 
   it("switching user updates the URL, the chip and the screen's queries", async () => {
     const user = userEvent.setup();
-    const { fetchMock } = await renderApp("/transactions");
+    const { fetchMock } = await renderApp("/spending/transactions");
     expect(await screen.findByText("Coffee Shop")).toBeInTheDocument();
     expect(screen.getByText("Grocery Store")).toBeInTheDocument();
 
@@ -135,15 +146,15 @@ describe("global user bar", () => {
   });
 
   it("says rules are global on the Rules screen", async () => {
-    await renderApp("/rules");
+    await renderApp("/spending/rules");
     expect(await within(await screen.findByTestId("user-bar")).findByText("Rules apply to all users.")).toBeInTheDocument();
   });
 
   it("disables Compare with an explanation where the screen cannot be split", async () => {
-    await renderApp("/rules");
+    await renderApp("/spending/rules");
     const button = await within(await screen.findByTestId("user-bar")).findByRole("button", { name: "Compare" });
     expect(button).toBeDisabled();
-    expect(button).toHaveAttribute("title", expect.stringContaining("Dashboard"));
+    expect(button).toHaveAttribute("title", expect.stringContaining("Spending"));
   });
 });
 
@@ -159,7 +170,7 @@ describe("compare mode", () => {
 
   it("the Compare button adds ?compare= with another user and renders two panes", async () => {
     const user = userEvent.setup();
-    await renderApp("/transactions?user=1");
+    await renderApp("/spending/transactions?user=1");
     await screen.findByText("Coffee Shop");
     await user.click(await within(bar()).findByRole("button", { name: "Compare" }));
 
@@ -174,7 +185,7 @@ describe("compare mode", () => {
   });
 
   it("renders each pane for its own user with a header chip and no duplicate ids", async () => {
-    await renderApp("/?user=1&compare=2");
+    await renderApp("/net-worth?user=1&compare=2");
     const panes = await screen.findAllByTestId("compare-pane");
     expect(panes).toHaveLength(2);
     expect(within(panes[0]!).getAllByTestId("user-chip")[0]).toHaveTextContent("Alex");
@@ -189,7 +200,7 @@ describe("compare mode", () => {
   });
 
   it("each transactions pane is scoped to its own user", async () => {
-    await renderApp("/transactions?user=1&compare=2");
+    await renderApp("/spending/transactions?user=1&compare=2");
     const [left, right] = await screen.findAllByTestId("compare-pane");
     expect(await within(left!).findByText("Coffee Shop")).toBeInTheDocument();
     expect(within(left!).queryByText("Grocery Store")).not.toBeInTheDocument();
@@ -199,7 +210,7 @@ describe("compare mode", () => {
 
   it("choosing the other pane's user swaps the panes", async () => {
     const user = userEvent.setup();
-    await renderApp("/transactions?user=1&compare=2");
+    await renderApp("/spending/transactions?user=1&compare=2");
     await screen.findAllByTestId("compare-pane");
     const left = within(bar()).getByRole("radiogroup", { name: "Left user" });
     await user.click(within(left).getByRole("radio", { name: "Sam" }));
@@ -208,14 +219,14 @@ describe("compare mode", () => {
   });
 
   it("ignores ?compare= on screens that cannot be split", async () => {
-    await renderApp("/rules?user=1&compare=2");
+    await renderApp("/spending/rules?user=1&compare=2");
     await within(await screen.findByTestId("user-bar")).findByText("Viewing:");
     expect(screen.queryByTestId("compare-panes")).not.toBeInTheDocument();
   });
 
   it("Review keyboard shortcuts act in the active pane only", async () => {
     const user = userEvent.setup();
-    const { fetchMock } = await renderApp("/review?user=1&compare=2");
+    const { fetchMock } = await renderApp("/spending/review?user=1&compare=2");
     const [left, right] = await screen.findAllByTestId("compare-pane");
     await within(left!).findByText("Coffee Shop");
     await within(right!).findByText("Grocery Store");

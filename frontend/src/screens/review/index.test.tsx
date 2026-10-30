@@ -17,7 +17,7 @@ async function renderScreen(
     categories: Category[];
     users?: Array<{ id: number; name: string; is_default: boolean }>;
   },
-  initialEntry = "/review",
+  initialEntry = "/spending/review",
 ) {
   vi.resetModules();
   const fetchMock = vi.fn(createApiFetchMock(state));
@@ -189,7 +189,7 @@ describe("ReviewScreen", () => {
           { id: 2, name: "Sam", is_default: false },
         ],
       },
-      "/review?user=2",
+      "/spending/review?user=2",
     );
 
     await waitFor(() => expect(screen.getByText("1 need review (Sam)")).toBeInTheDocument());

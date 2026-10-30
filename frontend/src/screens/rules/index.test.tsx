@@ -25,7 +25,7 @@ describe("RulesScreen", () => {
 
   it("exports the screen contract (default component + screenMeta)", async () => {
     const mod = await import("./index");
-    expect(mod.screenMeta).toEqual({ path: "/rules", title: "Rules" });
+    expect(mod.screenMeta).toEqual({ path: "/spending/rules", title: "Rules" });
     expect(typeof mod.default).toBe("function");
   });
 

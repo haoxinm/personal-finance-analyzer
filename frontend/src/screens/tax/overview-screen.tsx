@@ -1,15 +1,15 @@
-import * as React from "react";
+import { Link } from "react-router-dom";
 
 import {
   EmptyState,
   ErrorState,
   LoadingState,
 } from "@/components/primitives/states";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useSelectedUser } from "@/hooks/use-selected-user";
 
 import { BasisBanner } from "./components/basis-banner";
-import { DocumentsPanel } from "./components/documents-panel";
 import { IncomeBreakdown } from "./components/income-breakdown";
 import { IncomeByPayer } from "./components/income-by-payer";
 import { SummaryCards } from "./components/summary-cards";
@@ -17,66 +17,44 @@ import { TaxBreakdown } from "./components/tax-breakdown";
 import { YearOverYear } from "./components/year-over-year";
 import { YearPicker } from "./components/year-picker";
 import {
-  useTaxDocuments,
   useTaxIncomeByPayer,
   useTaxSummary,
+  useTaxYear,
   useTaxYears,
 } from "./hooks";
-import { resolveYear } from "./logic";
 
-export const screenMeta = { path: "/tax", title: "Income & Tax" };
+export const screenMeta = { path: "/tax", title: "Overview" };
 
 const EMPTY_TEXT = "Import a W-2, 1099 or 1040 to see income and tax";
 
 /**
- * Income & Tax: per-year income by category and payer, withholding / FICA / liability, effective
- * rates and imported documents. Amounts are neutral (income and tax are not "spending").
+ * Income & Tax overview: per-year income by category and payer, withholding / FICA / liability,
+ * effective rates and the year-over-year trend. Amounts are neutral (income and tax are not
+ * "spending"). The documents behind the numbers live on the Documents tab.
  */
-export default function TaxScreen() {
+export default function TaxOverviewScreen() {
   const sel = useSelectedUser();
   const ready = !sel.isLoading;
   const yearsQuery = useTaxYears(sel.userIds, ready);
   const summaryQuery = useTaxSummary(sel.userIds, ready);
   const payersQuery = useTaxIncomeByPayer(sel.userIds, ready);
-  const documentsQuery = useTaxDocuments(sel.selectedUserId, ready);
 
-  const [pickedYear, setPickedYear] = React.useState<number | null>(null);
   const years = yearsQuery.data ?? [];
-  const year = resolveYear(pickedYear, years);
+  const [year, setYear] = useTaxYear(years);
   const summaries = summaryQuery.data ?? [];
   const summary = summaries.find((s) => s.tax_year === year) ?? null;
 
   const error = yearsQuery.error ?? summaryQuery.error;
   const loading =
     sel.isLoading || yearsQuery.isLoading || summaryQuery.isLoading;
-  const documents = documentsQuery.data ?? [];
   const hasData = years.length > 0 && summaries.length > 0;
-
-  const documentsCard = (
-    <Card>
-      <CardHeader>
-        <CardTitle>Documents</CardTitle>
-      </CardHeader>
-      <CardContent>
-        {documentsQuery.error ? (
-          <ErrorState description={documentsQuery.error.message} />
-        ) : (
-          <DocumentsPanel
-            documents={documents}
-            users={sel.users}
-            selectedUserId={sel.selectedUserId}
-          />
-        )}
-      </CardContent>
-    </Card>
-  );
 
   return (
     <div className="flex flex-col gap-6 py-2">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1 className="text-xl font-semibold tracking-tight">
-            {screenMeta.title}
+            Income &amp; Tax
           </h1>
           <p className="text-sm text-muted-foreground">
             Income, withholding and tax from your W-2, 1099 and 1040 forms.
@@ -90,21 +68,44 @@ export default function TaxScreen() {
       {error ? (
         <ErrorState
           description={error instanceof Error ? error.message : String(error)}
+          onRetry={() => {
+            void yearsQuery.refetch();
+            void summaryQuery.refetch();
+          }}
         />
       ) : loading ? (
         <LoadingState rows={4} />
       ) : !hasData ? (
         <EmptyState
           title={EMPTY_TEXT}
-          description="Upload tax form PDFs below to get started."
+          description="Upload tax form PDFs to get started."
+          action={
+            <Button asChild size="sm" variant="outline">
+              <Link to="/tax/import">Import tax forms</Link>
+            </Button>
+          }
         />
       ) : (
         <>
-          <YearPicker years={years} value={year} onChange={setPickedYear} />
+          <YearPicker years={years} value={year} onChange={setYear} />
           {summary ? (
             <>
               <BasisBanner summary={summary} />
               <SummaryCards summary={summary} />
+            </>
+          ) : null}
+          {summaries.length > 1 ? (
+            <Card>
+              <CardHeader>
+                <CardTitle>Year over year</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <YearOverYear summaries={summaries} />
+              </CardContent>
+            </Card>
+          ) : null}
+          {summary ? (
+            <>
               <div className="grid items-start gap-4 lg:grid-cols-2">
                 <Card>
                   <CardHeader>
@@ -129,7 +130,10 @@ export default function TaxScreen() {
                 </CardHeader>
                 <CardContent>
                   {payersQuery.error ? (
-                    <ErrorState description={payersQuery.error.message} />
+                    <ErrorState
+                      description={payersQuery.error.message}
+                      onRetry={() => void payersQuery.refetch()}
+                    />
                   ) : (
                     <IncomeByPayer
                       rows={payersQuery.data ?? []}
@@ -140,20 +144,8 @@ export default function TaxScreen() {
               </Card>
             </>
           ) : null}
-          {summaries.length > 1 ? (
-            <Card>
-              <CardHeader>
-                <CardTitle>Year over year</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <YearOverYear summaries={summaries} />
-              </CardContent>
-            </Card>
-          ) : null}
         </>
       )}
-
-      {documentsCard}
     </div>
   );
 }

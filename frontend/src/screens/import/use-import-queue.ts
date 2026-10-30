@@ -268,7 +268,7 @@ export function shouldAutoConfirm(item: ImportItem): boolean {
  *
  * Also invalidates every other screen's cached queries (`invalidateQueries()` with no key
  * filter — screens each own their own query-key namespace, so there is no single shared key to
- * target). Without this, a screen visited earlier in the same session — the Dashboard, most
+ * target). Without this, a screen visited earlier in the same session — the Spending overview, most
  * visibly — keeps showing the "before this import" snapshot it cached, for as long as TanStack
  * Query's 30 s `staleTime` (§4) has not yet elapsed, even though new transactions now exist.
  */

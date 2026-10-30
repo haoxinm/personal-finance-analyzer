@@ -1,28 +1,26 @@
 import * as React from "react";
+import { useSearchParams } from "react-router-dom";
 
 import type { components } from "@/api/client";
 import { UserSwitcher } from "@/components/primitives/user-switcher";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { FileDropZone } from "@/components/primitives/file-drop-zone";
 
 import { useToast } from "@/components/ui/use-toast";
 
 import {
+  ADD_PARAM,
+  DOCUMENT_PARAM,
   useCreateManualDocument,
   useDeleteTaxDocument,
   useLlmReadAvailable,
   useReassignTaxDocument,
-  useUploadTaxDocument,
-  type TaxImportResponse,
 } from "../hooks";
 import {
-  TAX_PRIVACY_NOTE,
   documentStatusLabel,
   errorMessage,
   formTypeLabel,
-  skippedFromMessages,
   type TaxDocument,
 } from "../logic";
 import { DocumentDetail } from "./document-detail";
@@ -35,61 +33,16 @@ export interface DocumentsPanelProps {
   users: readonly User[];
   /** Selected user, or null for "All users". */
   selectedUserId: number | null;
-}
-
-interface UploadOutcome {
-  name: string;
-  status: TaxImportResponse["status"] | "failed";
-  message: string;
-  /** Extra detail lines: forms skipped as already imported, parser warnings. */
-  details: string[];
-  /** Set when a document row exists that figures can be added to by hand. */
-  documentId?: number;
-}
-
-function outcomeFor(file: File, r: TaxImportResponse): UploadOutcome {
-  const skipped = skippedFromMessages(r.skipped_from ?? []);
-  if (skipped.length === 0 && r.skipped_duplicate_forms > 0) {
-    skipped.push(
-      `${r.skipped_duplicate_forms} duplicate form${r.skipped_duplicate_forms === 1 ? " was" : "s were"} skipped.`,
-    );
-  }
-  const details = [...skipped, ...r.warnings];
-  switch (r.status) {
-    case "parsed":
-      return {
-        name: file.name,
-        status: r.status,
-        message: `Imported ${r.inserted_forms} form${r.inserted_forms === 1 ? "" : "s"}.`,
-        details,
-      };
-    case "duplicate":
-      return {
-        name: file.name,
-        status: r.status,
-        message: "Already imported; nothing changed.",
-        details,
-      };
-    default:
-      return {
-        name: file.name,
-        status: r.status,
-        message: r.error ?? "This file could not be read as a tax form.",
-        details,
-        documentId: r.document.id,
-      };
-  }
+  /** Year filter (`?year=`): only that year's documents are listed; `null` lists every year. */
+  year?: number | null;
 }
 
 function DocumentRow({
   d: rowDoc,
   users,
-  request,
 }: {
   d: TaxDocument;
   users: readonly User[];
-  /** A request (from the upload outcome or manual creation) to open this row's add-form editor. */
-  request: { id: number; n: number } | null;
 }) {
   // The owner the server confirmed after a move; the documents list catches up on refetch. Until
   // then every id-addressed call must already use the new owner (the old one would 404).
@@ -112,14 +65,28 @@ function DocumentRow({
   const llmId = `tax-doc-llm-${d.id}-${uid}`;
   const [llmOpen, setLlmOpen] = React.useState(false);
   const canReadWithLlm = useLlmReadAvailable(d);
-  const requestN = request?.id === d.id ? request.n : 0;
+  // `?doc=<id>&add=1` (from an upload outcome or manual creation) opens this row's add-form editor.
+  // `add` is consumed once handled so a reload or a later remount does not reopen it.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const rowRef = React.useRef<HTMLLIElement>(null);
+  const addRequested =
+    searchParams.get(DOCUMENT_PARAM) === String(d.id) &&
+    searchParams.get(ADD_PARAM) === "1";
 
   React.useEffect(() => {
-    if (requestN > 0) {
-      setOpen(true);
-      setAdding(true);
-    }
-  }, [requestN]);
+    if (!addRequested) return;
+    setOpen(true);
+    setAdding(true);
+    rowRef.current?.scrollIntoView?.({ block: "nearest" });
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        next.delete(ADD_PARAM);
+        return next;
+      },
+      { replace: true },
+    );
+  }, [addRequested, setSearchParams]);
 
   async function onDelete() {
     try {
@@ -165,7 +132,7 @@ function DocumentRow({
   const failed = d.status !== "parsed";
   const otherUsers = users.filter((u) => u.id !== d.user_id);
   return (
-    <li className="flex flex-col gap-2 p-3" data-testid="tax-document">
+    <li ref={rowRef} className="flex flex-col gap-2 p-3" data-testid="tax-document">
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-sm font-medium">{d.original_name}</span>
         {d.form_types.map((f) => (
@@ -324,29 +291,66 @@ export function DocumentsPanel({
   documents,
   users,
   selectedUserId,
+  year = null,
 }: DocumentsPanelProps) {
-  const upload = useUploadTaxDocument();
+  const [searchParams] = useSearchParams();
+  const requestedDoc = Number(searchParams.get(DOCUMENT_PARAM));
+  // A year filter hides other years' documents, but never the one a deep link points at.
+  const shown =
+    year === null
+      ? documents
+      : documents.filter((d) => d.tax_year === year || d.id === requestedDoc);
+
+  return (
+    <div className="flex flex-col gap-4" data-testid="tax-documents">
+      <ManualEntry
+        users={users}
+        selectedUserId={selectedUserId}
+        defaultYear={year}
+      />
+      {documents.length === 0 ? (
+        <p className="text-sm text-muted-foreground">
+          No tax documents imported yet.
+        </p>
+      ) : shown.length === 0 ? (
+        <p className="text-sm text-muted-foreground">
+          No tax documents for {year}.
+        </p>
+      ) : (
+        <ul className="flex flex-col divide-y divide-border rounded-md border border-border">
+          {shown.map((d) => (
+            <DocumentRow key={d.id} d={d} users={users} />
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+/** "Enter figures without a PDF": creates an empty document, then opens its add-form editor. */
+function ManualEntry({
+  users,
+  selectedUserId,
+  defaultYear,
+}: {
+  users: readonly User[];
+  selectedUserId: number | null;
+  defaultYear: number | null;
+}) {
   const createManual = useCreateManualDocument();
   const { toast } = useToast();
-  // The drop zone needs one concrete user; with "All users" selected the user picks one here.
-  const [uploadUser, setUploadUser] = React.useState<number | null>(null);
-  const targetUserId = selectedUserId ?? uploadUser ?? users[0]?.id ?? null;
-  const [taxYear, setTaxYear] = React.useState("");
-  const [outcomes, setOutcomes] = React.useState<UploadOutcome[]>([]);
-  const [uploading, setUploading] = React.useState(false);
-  const [request, setRequest] = React.useState<{
-    id: number;
-    n: number;
-  } | null>(null);
+  const [, setSearchParams] = useSearchParams();
+  // One concrete user is needed; with "All users" selected the user picks one here.
+  const [forUser, setForUser] = React.useState<number | null>(null);
+  const targetUserId = selectedUserId ?? forUser ?? users[0]?.id ?? null;
+  const [taxYear, setTaxYear] = React.useState(
+    defaultYear === null ? "" : String(defaultYear),
+  );
 
   const yearNumber = taxYear.trim() === "" ? undefined : Number(taxYear);
   const yearInvalid =
     yearNumber !== undefined &&
     (!Number.isInteger(yearNumber) || yearNumber < 1990 || yearNumber > 2100);
-
-  function openAdd(id: number) {
-    setRequest((r) => ({ id, n: (r?.n ?? 0) + 1 }));
-  }
 
   async function onManual() {
     if (targetUserId === null) return;
@@ -354,7 +358,7 @@ export function DocumentsPanel({
       toast({
         variant: "destructive",
         title: "Enter the tax year first",
-        description: "Fill in the tax year field above.",
+        description: "Fill in the tax year field next to the button.",
       });
       return;
     }
@@ -363,7 +367,15 @@ export function DocumentsPanel({
         user_id: targetUserId,
         tax_year: yearNumber,
       });
-      openAdd(doc.id);
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          next.set(DOCUMENT_PARAM, String(doc.id));
+          next.set(ADD_PARAM, "1");
+          return next;
+        },
+        { replace: true },
+      );
     } catch (e) {
       toast({
         variant: "destructive",
@@ -373,137 +385,42 @@ export function DocumentsPanel({
     }
   }
 
-  async function onFiles(files: File[]) {
-    if (targetUserId === null || yearInvalid) return;
-    setUploading(true);
-    const results: UploadOutcome[] = [];
-    for (const file of files) {
-      try {
-        const r = await upload.mutateAsync({
-          file,
-          userId: targetUserId,
-          taxYear: yearNumber,
-        });
-        results.push(outcomeFor(file, r));
-      } catch (e) {
-        results.push({
-          name: file.name,
-          status: "failed",
-          message: errorMessage(e, "Upload failed."),
-          details: [],
-        });
-      }
-    }
-    setOutcomes(results);
-    setUploading(false);
-  }
-
   return (
-    <div className="flex flex-col gap-4" data-testid="tax-documents">
-      <div className="flex flex-col gap-2">
-        {selectedUserId === null && users.length > 1 ? (
-          <label className="flex items-center gap-2 text-sm">
-            <span className="text-muted-foreground">Upload for</span>
-            <UserSwitcher
-              users={users}
-              value={targetUserId}
-              onChange={setUploadUser}
-              allowAll={false}
-              variant="select"
-              aria-label="Upload for user"
-            />
-          </label>
-        ) : null}
-        <FileDropZone
-          onFiles={(f) => void onFiles(f)}
-          disabled={uploading || targetUserId === null || yearInvalid}
-          title="Drag tax forms here, or click to browse"
-          hint="W-2, 1099 and 1040 PDFs with a text layer. Scanned forms can’t be read."
-          inputLabel="Choose tax form PDFs"
-        />
-        <label className="flex items-center gap-2 text-xs text-muted-foreground">
-          Tax year (only if a form doesn’t print one)
-          <Input
-            type="number"
-            inputMode="numeric"
-            min={1990}
-            max={2100}
-            value={taxYear}
-            onChange={(e) => setTaxYear(e.target.value)}
-            aria-invalid={yearInvalid}
-            className="h-8 w-24"
+    <div className="flex flex-wrap items-center gap-3">
+      {selectedUserId === null && users.length > 1 ? (
+        <label className="flex items-center gap-2 text-sm">
+          <span className="text-muted-foreground">Add for</span>
+          <UserSwitcher
+            users={users}
+            value={targetUserId}
+            onChange={setForUser}
+            allowAll={false}
+            variant="select"
+            aria-label="Add for user"
           />
         </label>
-        <p
-          className="text-xs text-muted-foreground"
-          data-testid="tax-privacy-note"
-        >
-          {TAX_PRIVACY_NOTE}
-        </p>
-        <div>
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={targetUserId === null || createManual.isPending}
-            onClick={() => void onManual()}
-          >
-            Enter figures without a PDF
-          </Button>
-        </div>
-        {uploading ? (
-          <p role="status" className="text-sm">
-            Reading tax forms…
-          </p>
-        ) : null}
-        {outcomes.length > 0 ? (
-          <ul
-            className="flex flex-col gap-1 text-sm"
-            data-testid="upload-outcomes"
-          >
-            {outcomes.map((o, i) => (
-              <li
-                key={`${o.name}-${i}`}
-                className={
-                  o.status === "parsed" || o.status === "duplicate"
-                    ? ""
-                    : "text-destructive"
-                }
-              >
-                <span className="font-medium">{o.name}</span>: {o.message}
-                {o.documentId !== undefined ? (
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="ml-2"
-                    onClick={() => openAdd(o.documentId!)}
-                  >
-                    Add figures manually
-                  </Button>
-                ) : null}
-                {o.details.length > 0 ? (
-                  <ul className="list-disc pl-5 text-xs text-muted-foreground">
-                    {o.details.map((t, j) => (
-                      <li key={j}>{t}</li>
-                    ))}
-                  </ul>
-                ) : null}
-              </li>
-            ))}
-          </ul>
-        ) : null}
-      </div>
-
-      {documents.length === 0 ? (
-        <p className="text-sm text-muted-foreground">
-          No tax documents imported yet.
-        </p>
-      ) : (
-        <ul className="flex flex-col divide-y divide-border rounded-md border border-border">
-          {documents.map((d) => (
-            <DocumentRow key={d.id} d={d} users={users} request={request} />
-          ))}
-        </ul>
-      )}
+      ) : null}
+      <label className="flex items-center gap-2 text-xs text-muted-foreground">
+        Tax year
+        <Input
+          type="number"
+          inputMode="numeric"
+          min={1990}
+          max={2100}
+          value={taxYear}
+          onChange={(e) => setTaxYear(e.target.value)}
+          aria-invalid={yearInvalid}
+          className="h-8 w-24"
+        />
+      </label>
+      <Button
+        size="sm"
+        variant="outline"
+        disabled={targetUserId === null || createManual.isPending}
+        onClick={() => void onManual()}
+      >
+        Enter figures without a PDF
+      </Button>
     </div>
   );
 }

@@ -13,7 +13,6 @@ import { MonthOverMonth } from "./components/month-over-month";
 import { TopMerchants } from "./components/top-merchants";
 import { TrendLine } from "./components/trend-line";
 import { UserComparison } from "./components/user-comparison";
-import { NetWorthSection } from "../net-worth/net-worth-section";
 import {
   type DashboardFilters,
   useAccounts,
@@ -25,7 +24,7 @@ import {
 import { computeMonthOverMonthDelta, detectOtherCurrencies, toTrendPoints, totalsByUser } from "./logic";
 
 /**
- * The Dashboard screen (P3-D): period selector, category composition over time, an overall
+ * The Spending Overview screen (P3-D): period selector, category composition over time, an overall
  * trend line, top merchants, the most recent period-over-period change, a per-user comparison
  * when more than one user exists, and the D5 mixed-currency banner. Every chart degrades to an
  * `EmptyState` before any data exists, rather than rendering an empty axis.
@@ -88,7 +87,7 @@ export default function DashboardScreen() {
     <div className="flex flex-col gap-6 py-2">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">Dashboard</h1>
+          <h1 className="text-xl font-semibold tracking-tight">Overview</h1>
           <p className="text-sm text-muted-foreground">
             Spending by category over time, top merchants, and how this period compares to the last.
             {users.length > 1 && sel.selectedUser ? ` Showing ${sel.selectedUser.name}.` : ""}
@@ -108,8 +107,6 @@ export default function DashboardScreen() {
 
       <CurrencyBanner currencies={otherCurrencies} selectedCurrency={currency} />
 
-      {ready ? <NetWorthSection userId={sel.selectedUserId} users={users} currency={currency} /> : null}
-
       {anyError ? (
         <ErrorState description={anyError instanceof Error ? anyError.message : String(anyError)} />
       ) : anyLoading ? (
@@ -117,7 +114,7 @@ export default function DashboardScreen() {
       ) : !hasAnyData ? (
         <EmptyState
           title="No data yet"
-          description="Import a statement and classify its transactions to see your dashboard."
+          description="Import a statement and classify its transactions to see your spending overview."
         />
       ) : (
         <div className="grid gap-4 lg:grid-cols-2">
@@ -177,4 +174,4 @@ export default function DashboardScreen() {
   );
 }
 
-export const screenMeta = { path: "/", title: "Dashboard" };
+export const screenMeta = { path: "/spending", title: "Overview" };

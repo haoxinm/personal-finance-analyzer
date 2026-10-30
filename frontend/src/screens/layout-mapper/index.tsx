@@ -206,4 +206,4 @@ function TabButton({
   );
 }
 
-export const screenMeta = { path: "/layout-mapper", title: "Layout mapper" };
+export const screenMeta = { path: "/spending/layout-mapper", title: "Layout mapper" };
