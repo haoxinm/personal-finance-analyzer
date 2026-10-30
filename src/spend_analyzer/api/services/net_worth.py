@@ -48,8 +48,22 @@ def list_entries(
 
 def upsert_entry(session: Session, body: schemas.BalanceEntryUpsert) -> tuple[BalanceEntry, bool]:
     """Insert or update the (user, category, account, year, month) row. The account name is
-    canonicalised: an existing row whose name matches case-insensitively keeps its spelling."""
+    canonicalised: any existing row of the same user and category, in *any* month, whose name
+    matches case-insensitively keeps its spelling (the newest one wins), so "chase" typed in March
+    continues the account "Chase" entered in January instead of starting a second account."""
     name = normalize_account_name(body.account_name)
+    known = session.scalar(
+        select(BalanceEntry.account_name)
+        .where(
+            BalanceEntry.user_id == body.user_id,
+            BalanceEntry.category == body.category,
+            func.lower(BalanceEntry.account_name) == name.lower(),
+        )
+        .order_by(BalanceEntry.year.desc(), BalanceEntry.month.desc())
+        .limit(1)
+    )
+    if known is not None:
+        name = known
     existing = session.scalar(
         select(BalanceEntry).where(
             BalanceEntry.user_id == body.user_id,

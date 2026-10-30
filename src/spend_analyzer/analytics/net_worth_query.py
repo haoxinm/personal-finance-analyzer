@@ -2,8 +2,10 @@
 
 Data volume is tiny (a handful of accounts x months), so rows are loaded and aggregated in
 Python. With `carry_forward` an account's value for month M is its latest entry at or before M,
-flagged `carried` when that entry is from an earlier month; an account has no value (not zero)
-before its first entry. Totals sum magnitudes per category; net worth = assets - liabilities.
+flagged `carried` when that entry is from an earlier month and `stale` when it is more than
+`STALE_AFTER_MONTHS` months old (`months_old` says how many; the balance is still counted: the flag
+only tells the UI the figure may be out of date); an account has no value (not zero) before its
+first entry. Account names that differ only in case are one account (the newest spelling is shown). Totals sum magnitudes per category; net worth = assets - liabilities.
 
 The series covers the months of the data: ``period_from`` / ``period_to`` can only narrow the range
 between the first and last entry (never widen it), and at most `MAX_SERIES_MONTHS` months, the most
@@ -30,6 +32,8 @@ from spend_analyzer.db.models import BalanceEntry
 _PERIOD_RE = re.compile(r"^(\d{4})-(\d{2})$")
 #: Upper bound on the number of monthly points in a series.
 MAX_SERIES_MONTHS = 1200
+#: A carried-forward balance older than this many months is flagged `stale`.
+STALE_AFTER_MONTHS = 3
 
 
 @dataclass(frozen=True)
@@ -58,6 +62,8 @@ class AccountBalance:
     signed_minor: int
     as_of: str
     carried: bool
+    stale: bool
+    months_old: int
 
 
 @dataclass(frozen=True)
@@ -178,13 +184,14 @@ def run_net_worth_query(session: Session, q: NetWorthQuery) -> NetWorthResult:
         return NetWorthResult(q.currency, q.user_id, [], [], [], None)
 
     accounts: dict[_Key, _Account] = {}
+    names: dict[_Key, str] = {}  # display spelling: the newest entry's (rows are oldest first)
     real: set[int] = set()
     for r in rows:
         i = _idx(r.year, r.month)
         real.add(i)
-        accounts.setdefault((r.user_id, r.category, r.account_name), _Account()).add(
-            i, r.balance_minor
-        )
+        key = (r.user_id, r.category, r.account_name.casefold())
+        names[key] = r.account_name
+        accounts.setdefault(key, _Account()).add(i, r.balance_minor)
     real_sorted = sorted(real)
     carry = q.carry_forward
 
@@ -208,7 +215,7 @@ def run_net_worth_query(session: Session, q: NetWorthQuery) -> NetWorthResult:
             if hit is not None:
                 points.append(AccountPoint(_label(i), hit[0], hit[1] != i))
         if points:
-            account_series.append(AccountSeries(key[0], key[1], key[2], points))
+            account_series.append(AccountSeries(key[0], key[1], names[key], points))
 
     snap_idx = _idx(*snap_ym) if snap_ym else real_sorted[-1]
     by_cat, assets, liabilities, net = _totals(accounts, snap_idx, carry)
@@ -223,11 +230,13 @@ def run_net_worth_query(session: Session, q: NetWorthQuery) -> NetWorthResult:
                 AccountBalance(
                     user_id=key[0],
                     category=key[1],
-                    account_name=key[2],
+                    account_name=names[key],
                     balance_minor=hit[0],
                     signed_minor=signed_balance(key[1], hit[0]),
                     as_of=_label(hit[1]),
                     carried=hit[1] != snap_idx,
+                    stale=snap_idx - hit[1] > STALE_AFTER_MONTHS,
+                    months_old=snap_idx - hit[1],
                 )
             )
     snapshot = Snapshot(
