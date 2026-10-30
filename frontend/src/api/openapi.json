@@ -4235,6 +4235,452 @@
         }
       }
     },
+    "/net-worth/forecast/baseline": {
+      "get": {
+        "tags": [
+          "net-worth"
+        ],
+        "summary": "Baseline",
+        "operationId": "baseline_api_net_worth_forecast_baseline_get",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "User Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ForecastBaseline"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/net-worth/history": {
+      "get": {
+        "tags": [
+          "net-worth"
+        ],
+        "summary": "List History",
+        "operationId": "list_history_api_net_worth_history_get",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "User Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/NetWorthHistory"
+                  },
+                  "title": "Response List History Api Net Worth History Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/net-worth/history/{user_id}/{year}": {
+      "get": {
+        "tags": [
+          "net-worth"
+        ],
+        "summary": "Get History",
+        "operationId": "get_history_api_net_worth_history__user_id___year__get",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "description": "User id.",
+              "title": "User Id"
+            },
+            "description": "User id."
+          },
+          {
+            "name": "year",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "maximum": 2300,
+              "minimum": 1900,
+              "description": "Calendar year.",
+              "title": "Year"
+            },
+            "description": "Calendar year."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NetWorthHistory"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "net-worth"
+        ],
+        "summary": "Put History",
+        "operationId": "put_history_api_net_worth_history__user_id___year__put",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "description": "User id.",
+              "title": "User Id"
+            },
+            "description": "User id."
+          },
+          {
+            "name": "year",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "maximum": 2300,
+              "minimum": 1900,
+              "description": "Calendar year.",
+              "title": "Year"
+            },
+            "description": "Calendar year."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NetWorthHistoryPut"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NetWorthHistory"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "net-worth"
+        ],
+        "summary": "Delete History",
+        "operationId": "delete_history_api_net_worth_history__user_id___year__delete",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "description": "User id.",
+              "title": "User Id"
+            },
+            "description": "User id."
+          },
+          {
+            "name": "year",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "maximum": 2300,
+              "minimum": 1900,
+              "description": "Calendar year.",
+              "title": "Year"
+            },
+            "description": "Calendar year."
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/net-worth/forecast/presets": {
+      "get": {
+        "tags": [
+          "net-worth"
+        ],
+        "summary": "List Presets",
+        "description": "Built-in presets plus the saved ones visible to `user_id`: shared presets and that user's\nown. Without `user_id` (the all-users view), shared presets only.",
+        "operationId": "list_presets_api_net_worth_forecast_presets_get",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "User Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ForecastPresetList"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "net-worth"
+        ],
+        "summary": "Create Preset",
+        "operationId": "create_preset_api_net_worth_forecast_presets_post",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ForecastPresetCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ForecastPreset"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/net-worth/forecast/presets/{id}": {
+      "put": {
+        "tags": [
+          "net-worth"
+        ],
+        "summary": "Update Preset",
+        "operationId": "update_preset_api_net_worth_forecast_presets__id__put",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ForecastPresetUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ForecastPreset"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "net-worth"
+        ],
+        "summary": "Delete Preset",
+        "operationId": "delete_preset_api_net_worth_forecast_presets__id__delete",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/tax/documents": {
       "post": {
         "tags": [
@@ -6292,6 +6738,33 @@
         ],
         "title": "Body_upload_tax_document_api_tax_documents_post"
       },
+      "BuiltinForecastPreset": {
+        "properties": {
+          "key": {
+            "type": "string",
+            "title": "Key"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description"
+          },
+          "params": {
+            "$ref": "#/components/schemas/ForecastParams"
+          }
+        },
+        "type": "object",
+        "required": [
+          "key",
+          "name",
+          "description",
+          "params"
+        ],
+        "title": "BuiltinForecastPreset"
+      },
       "BulkUpdateRequest": {
         "properties": {
           "transaction_ids": {
@@ -6574,6 +7047,617 @@
           "auto_confirmed"
         ],
         "title": "ExtractorProposal"
+      },
+      "ForecastBaseline": {
+        "properties": {
+          "currency": {
+            "type": "string",
+            "const": "USD",
+            "title": "Currency"
+          },
+          "user_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User Id"
+          },
+          "history": {
+            "items": {
+              "$ref": "#/components/schemas/ForecastHistoryRow"
+            },
+            "type": "array",
+            "title": "History"
+          },
+          "defaults": {
+            "$ref": "#/components/schemas/ForecastDefaults"
+          }
+        },
+        "type": "object",
+        "required": [
+          "currency",
+          "user_id",
+          "history",
+          "defaults"
+        ],
+        "title": "ForecastBaseline"
+      },
+      "ForecastDefaults": {
+        "properties": {
+          "net_worth_minor": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Net Worth Minor"
+          },
+          "net_worth_year": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Net Worth Year"
+          },
+          "annual_income_minor": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Annual Income Minor"
+          },
+          "income_year": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Income Year"
+          },
+          "effective_tax_rate_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective Tax Rate Pct"
+          },
+          "annual_spending_minor": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Annual Spending Minor"
+          },
+          "spending_year": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Spending Year"
+          },
+          "spending_annualized": {
+            "type": "boolean",
+            "title": "Spending Annualized"
+          },
+          "income_growth_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Income Growth Pct"
+          },
+          "spending_growth_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Spending Growth Pct"
+          },
+          "savings_rate_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Savings Rate Pct"
+          }
+        },
+        "type": "object",
+        "required": [
+          "net_worth_minor",
+          "net_worth_year",
+          "annual_income_minor",
+          "income_year",
+          "effective_tax_rate_pct",
+          "annual_spending_minor",
+          "spending_year",
+          "spending_annualized",
+          "income_growth_pct",
+          "spending_growth_pct",
+          "savings_rate_pct"
+        ],
+        "title": "ForecastDefaults",
+        "description": "Values suggested from history; each is None when the data does not support it."
+      },
+      "ForecastEvent": {
+        "properties": {
+          "year": {
+            "type": "integer",
+            "maximum": 2300.0,
+            "minimum": 1900.0,
+            "title": "Year"
+          },
+          "amount_minor": {
+            "type": "integer",
+            "exclusiveMaximum": 10000000000000.0,
+            "exclusiveMinimum": -10000000000000.0,
+            "title": "Amount Minor"
+          },
+          "label": {
+            "type": "string",
+            "maxLength": 100,
+            "title": "Label",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "year",
+          "amount_minor"
+        ],
+        "title": "ForecastEvent"
+      },
+      "ForecastHistoryRow": {
+        "properties": {
+          "year": {
+            "type": "integer",
+            "title": "Year"
+          },
+          "net_worth_minor": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Net Worth Minor"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "entries",
+                  "manual"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source"
+          },
+          "as_of": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "As Of"
+          },
+          "manual_net_worth_minor": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Manual Net Worth Minor"
+          },
+          "manual_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Manual Note"
+          },
+          "income_minor": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Income Minor"
+          },
+          "tax_minor": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tax Minor"
+          },
+          "income_basis": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "source_documents",
+                  "return",
+                  "none",
+                  "mixed"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Income Basis"
+          },
+          "spending_minor": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Spending Minor"
+          },
+          "spending_months": {
+            "type": "integer",
+            "title": "Spending Months"
+          },
+          "savings_minor": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Savings Minor"
+          }
+        },
+        "type": "object",
+        "required": [
+          "year",
+          "net_worth_minor",
+          "source",
+          "as_of",
+          "manual_net_worth_minor",
+          "manual_note",
+          "income_minor",
+          "tax_minor",
+          "income_basis",
+          "spending_minor",
+          "spending_months",
+          "savings_minor"
+        ],
+        "title": "ForecastHistoryRow"
+      },
+      "ForecastParams": {
+        "properties": {
+          "horizon_years": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 60.0,
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Horizon Years"
+          },
+          "start_net_worth_minor": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "exclusiveMaximum": 10000000000000.0,
+                "exclusiveMinimum": -10000000000000.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Start Net Worth Minor"
+          },
+          "annual_income_minor": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "exclusiveMaximum": 10000000000000.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Annual Income Minor"
+          },
+          "income_growth_pct": {
+            "type": "number",
+            "maximum": 50.0,
+            "minimum": -50.0,
+            "title": "Income Growth Pct",
+            "default": 3.0
+          },
+          "tax_rate_pct": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 100.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tax Rate Pct"
+          },
+          "annual_spending_minor": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "exclusiveMaximum": 10000000000000.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Annual Spending Minor"
+          },
+          "spending_growth_pct": {
+            "type": "number",
+            "maximum": 50.0,
+            "minimum": -50.0,
+            "title": "Spending Growth Pct",
+            "default": 2.5
+          },
+          "spending_change_minor": {
+            "type": "integer",
+            "exclusiveMaximum": 10000000000000.0,
+            "exclusiveMinimum": -10000000000000.0,
+            "title": "Spending Change Minor",
+            "default": 0
+          },
+          "return_pct": {
+            "type": "number",
+            "maximum": 30.0,
+            "minimum": -20.0,
+            "title": "Return Pct",
+            "default": 6.0
+          },
+          "inflation_pct": {
+            "type": "number",
+            "maximum": 30.0,
+            "minimum": -10.0,
+            "title": "Inflation Pct",
+            "default": 2.5
+          },
+          "retirement_year": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 2300.0,
+                "minimum": 1900.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Retirement Year"
+          },
+          "retirement_income_minor": {
+            "type": "integer",
+            "exclusiveMaximum": 10000000000000.0,
+            "minimum": 0.0,
+            "title": "Retirement Income Minor",
+            "default": 0
+          },
+          "events": {
+            "items": {
+              "$ref": "#/components/schemas/ForecastEvent"
+            },
+            "type": "array",
+            "maxItems": 50,
+            "title": "Events"
+          }
+        },
+        "type": "object",
+        "title": "ForecastParams",
+        "description": "One forecast scenario. A None starting value means \"use the figure derived from history\"."
+      },
+      "ForecastPreset": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "user_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "params": {
+            "$ref": "#/components/schemas/ForecastParams"
+          },
+          "created_at": {
+            "type": "string",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "user_id",
+          "name",
+          "params",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "ForecastPreset"
+      },
+      "ForecastPresetCreate": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 60,
+            "minLength": 1,
+            "title": "Name"
+          },
+          "user_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User Id"
+          },
+          "params": {
+            "$ref": "#/components/schemas/ForecastParams"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "params"
+        ],
+        "title": "ForecastPresetCreate"
+      },
+      "ForecastPresetList": {
+        "properties": {
+          "builtin": {
+            "items": {
+              "$ref": "#/components/schemas/BuiltinForecastPreset"
+            },
+            "type": "array",
+            "title": "Builtin"
+          },
+          "saved": {
+            "items": {
+              "$ref": "#/components/schemas/ForecastPreset"
+            },
+            "type": "array",
+            "title": "Saved"
+          }
+        },
+        "type": "object",
+        "required": [
+          "builtin",
+          "saved"
+        ],
+        "title": "ForecastPresetList"
+      },
+      "ForecastPresetUpdate": {
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 60,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "params": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ForecastParams"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "title": "ForecastPresetUpdate",
+        "description": "Rename and/or replace the parameters; omitted fields are left as they are."
       },
       "HTTPValidationError": {
         "properties": {
@@ -7828,6 +8912,83 @@
           "signed_minor"
         ],
         "title": "NetWorthCategoryTotal"
+      },
+      "NetWorthHistory": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "user_id": {
+            "type": "integer",
+            "title": "User Id"
+          },
+          "year": {
+            "type": "integer",
+            "title": "Year"
+          },
+          "amount_minor": {
+            "type": "integer",
+            "title": "Amount Minor"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "created_at": {
+            "type": "string",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "user_id",
+          "year",
+          "amount_minor",
+          "note",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "NetWorthHistory"
+      },
+      "NetWorthHistoryPut": {
+        "properties": {
+          "amount_minor": {
+            "type": "integer",
+            "exclusiveMaximum": 10000000000000.0,
+            "exclusiveMinimum": -10000000000000.0,
+            "title": "Amount Minor"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 500
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          }
+        },
+        "type": "object",
+        "required": [
+          "amount_minor"
+        ],
+        "title": "NetWorthHistoryPut"
       },
       "NetWorthPoint": {
         "properties": {
