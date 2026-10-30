@@ -1,5 +1,6 @@
 import { Link } from "react-router-dom";
 
+import { Page, PageHeader } from "@/components/primitives/page";
 import { EmptyState, ErrorState, LoadingState } from "@/components/primitives/states";
 import { Button } from "@/components/ui/button";
 import { useSelectedUser } from "@/hooks/use-selected-user";
@@ -29,15 +30,11 @@ export default function TaxEstimateScreen() {
   const error = yearsQuery.error;
 
   return (
-    <div className="flex flex-col gap-6 py-2">
-      <div>
-        <h1 className="text-xl font-semibold tracking-tight">Tax estimate</h1>
-        <p className="text-sm text-muted-foreground">
-          A planning estimate of federal income tax from your source forms and a few inputs. Not tax advice and
-          not a substitute for your return.
-          {sel.users.length > 1 && sel.selectedUser ? ` Showing ${sel.selectedUser.name}.` : ""}
-        </p>
-      </div>
+    <Page>
+      <PageHeader
+        title="Tax estimate"
+        description="A planning estimate of federal income tax from your source forms and a few inputs. Not tax advice and not a substitute for your return."
+      />
 
       {error ? (
         <ErrorState
@@ -72,6 +69,6 @@ export default function TaxEstimateScreen() {
           )}
         </>
       )}
-    </div>
+    </Page>
   );
 }

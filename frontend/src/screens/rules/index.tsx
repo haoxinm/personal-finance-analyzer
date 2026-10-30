@@ -1,6 +1,7 @@
 import * as React from "react";
 import { useSearchParams } from "react-router-dom";
 
+import { Page, PageHeader } from "@/components/primitives/page";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/utils";
 
@@ -54,15 +55,13 @@ export default function RulesScreen() {
   }
 
   return (
-    <div className="flex flex-col gap-6 p-6">
-      <div>
-        <h1 className="text-xl font-semibold tracking-tight">Rules & Taxonomy</h1>
-        <p className="text-sm text-muted-foreground">
-          Manage classification rules, extractor specs and issuers, and the category taxonomy.
-        </p>
-      </div>
+    <Page>
+      <PageHeader
+        title="Rules & taxonomy"
+        description="Manage classification rules, extractor specs and issuers, and the category taxonomy."
+      />
 
-      <div role="tablist" aria-label="Rules & Taxonomy sections" className="flex gap-1 border-b border-border">
+      <div role="tablist" aria-label="Rules & taxonomy sections" className="flex gap-1 border-b border-border">
         {TABS.map((tab, i) => (
           <Button
             key={tab.id}
@@ -102,7 +101,7 @@ export default function RulesScreen() {
           {tab.id === "taxonomy" && activeTab === "taxonomy" ? <TaxonomyTab /> : null}
         </div>
       ))}
-    </div>
+    </Page>
   );
 }
 

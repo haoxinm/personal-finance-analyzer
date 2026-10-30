@@ -1,7 +1,10 @@
 import * as React from "react";
+import { Link } from "react-router-dom";
 
 import type { DateRange } from "@/components/primitives/date-range-picker";
+import { Page, PageHeader } from "@/components/primitives/page";
 import { EmptyState, ErrorState, LoadingState } from "@/components/primitives/states";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useSelectedUser } from "@/hooks/use-selected-user";
 import { useSpendQueryParams } from "@/hooks/use-spend-query-params";
@@ -84,16 +87,11 @@ export default function DashboardScreen() {
     (topMerchantsQuery.data?.length ?? 0) > 0;
 
   return (
-    <div className="flex flex-col gap-6 py-2">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h1 className="text-xl font-semibold tracking-tight">Overview</h1>
-          <p className="text-sm text-muted-foreground">
-            Spending by category over time, top merchants, and how this period compares to the last.
-            {users.length > 1 && sel.selectedUser ? ` Showing ${sel.selectedUser.name}.` : ""}
-          </p>
-        </div>
-      </div>
+    <Page>
+      <PageHeader
+        title="Spending overview"
+        description="Spending by category over time, top merchants, and how this period compares to the last."
+      />
 
       <FiltersBar
         dateRange={dateRange}
@@ -108,13 +106,25 @@ export default function DashboardScreen() {
       <CurrencyBanner currencies={otherCurrencies} selectedCurrency={currency} />
 
       {anyError ? (
-        <ErrorState description={anyError instanceof Error ? anyError.message : String(anyError)} />
+        <ErrorState
+          description={anyError instanceof Error ? anyError.message : String(anyError)}
+          onRetry={() => {
+            void categoryQuery.refetch();
+            void trendQuery.refetch();
+            void topMerchantsQuery.refetch();
+          }}
+        />
       ) : anyLoading ? (
         <LoadingState rows={4} />
       ) : !hasAnyData ? (
         <EmptyState
           title="No data yet"
           description="Import a statement and classify its transactions to see your spending overview."
+          action={
+            <Button asChild size="sm" variant="outline">
+              <Link to="/spending/import">Import statements</Link>
+            </Button>
+          }
         />
       ) : (
         <div className="grid gap-4 lg:grid-cols-2">
@@ -170,7 +180,7 @@ export default function DashboardScreen() {
           ) : null}
         </div>
       )}
-    </div>
+    </Page>
   );
 }
 

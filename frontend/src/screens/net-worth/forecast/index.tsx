@@ -1,5 +1,6 @@
 import * as React from "react";
 
+import { Page, PageHeader } from "@/components/primitives/page";
 import { EmptyState, ErrorState, LoadingState } from "@/components/primitives/states";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useSelectedUser } from "@/hooks/use-selected-user";
@@ -35,23 +36,19 @@ const MODERATE: PresetRef = { kind: "builtin", key: "moderate" };
  */
 export default function ForecastScreen() {
   const sel = useSelectedUser();
-  const userName = sel.selectedUser?.name;
   return (
-    <div className="flex flex-col gap-6 py-2">
-      <div>
-        <h1 className="text-xl font-semibold tracking-tight">Net worth forecast</h1>
-        <p className="text-sm text-muted-foreground">
-          Project net worth to a future year from your history and the assumptions below.
-          {sel.users.length > 1 ? ` Showing ${userName ?? "everyone combined"}.` : ""}
-        </p>
-      </div>
+    <Page>
+      <PageHeader
+        title="Net worth forecast"
+        description="Project net worth to a future year from your history and the assumptions below."
+      />
       <p role="note" className="rounded-md border border-border bg-muted/40 p-3 text-sm text-muted-foreground">
         This is an illustrative projection, not financial, tax or investment advice. It is deterministic: it assumes
         every rate stays constant, and real returns, income and spending will vary. All figures are in USD and stay on
         this computer.
       </p>
       {sel.isLoading ? null : <ForecastBody key={sel.selectedUserId ?? "all"} userId={sel.selectedUserId} />}
-    </div>
+    </Page>
   );
 }
 

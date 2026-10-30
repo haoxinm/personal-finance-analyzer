@@ -1,3 +1,4 @@
+import { Page, PageHeader } from "@/components/primitives/page";
 import { ErrorState, LoadingState } from "@/components/primitives/states";
 import { useToast } from "@/components/ui/use-toast";
 
@@ -26,16 +27,31 @@ function SettingsScreen() {
   const settingsQuery = useSettingsQuery();
   const updateSettings = useUpdateSettings();
 
+  const header = (
+    <PageHeader
+      title="Settings"
+      description="Users, accounts, the LLM provider, privacy, tax parameters, exactly what would be sent to the LLM, and backup & restore."
+    />
+  );
+
   if (settingsQuery.isPending) {
-    return <LoadingState rows={6} />;
+    return (
+      <Page>
+        {header}
+        <LoadingState rows={6} />
+      </Page>
+    );
   }
   if (settingsQuery.isError || !settingsQuery.data) {
     return (
-      <ErrorState
-        title="Could not load settings"
-        description={settingsQuery.isError ? String(settingsQuery.error) : undefined}
-        onRetry={() => void settingsQuery.refetch()}
-      />
+      <Page>
+        {header}
+        <ErrorState
+          title="Could not load settings"
+          description={settingsQuery.isError ? String(settingsQuery.error) : undefined}
+          onRetry={() => void settingsQuery.refetch()}
+        />
+      </Page>
     );
   }
 
@@ -76,21 +92,15 @@ function SettingsScreen() {
   };
 
   return (
-    <div className="flex flex-col gap-6 py-2">
-      <div>
-        <h1 className="text-xl font-semibold tracking-tight">Settings</h1>
-        <p className="text-sm text-muted-foreground">
-          Users, accounts, the LLM provider, privacy, tax parameters, exactly what would be sent to the LLM, and
-          backup & restore.
-        </p>
-      </div>
+    <Page>
+      {header}
       <UsersAccountsSection />
       <LlmSettingsSection settings={settings} onSave={saveLlm} saving={updateSettings.isPending} />
       <PrivacySection settings={settings} onSave={savePrivacy} saving={updateSettings.isPending} />
       <TaxParametersSection settings={settings} onSave={saveTax} saving={updateSettings.isPending} />
       <EgressPreviewSection settings={settings} />
       <BackupSection />
-    </div>
+    </Page>
   );
 }
 

@@ -70,7 +70,7 @@ describe("DashboardScreen", () => {
     expect(screenMeta).toEqual({ path: "/spending", title: "Overview" });
     mockGet({ "/users": [{ id: 1, name: "Alex", is_default: true }] });
     render(<DashboardScreen />, { wrapper });
-    expect(await screen.findByRole("heading", { name: "Overview" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Spending overview" })).toBeInTheDocument();
     expect(screen.queryByTestId("net-worth-section")).not.toBeInTheDocument();
     const paths = (apiClient.GET as ReturnType<typeof vi.fn>).mock.calls.map(([path]) => path as string);
     expect(paths).not.toContain("/net-worth/summary");
@@ -88,6 +88,7 @@ describe("DashboardScreen", () => {
     render(<DashboardScreen />, { wrapper });
 
     expect(await screen.findByText("No data yet")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Import statements" })).toHaveAttribute("href", "/spending/import");
   });
 
   it("renders the category chart, trend, and top merchants once data exists", async () => {

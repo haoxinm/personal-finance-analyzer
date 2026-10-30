@@ -186,7 +186,7 @@ describe("ReviewScreen", () => {
     document.body.removeChild(input);
   });
 
-  it("scopes the queue to the user in ?user= and labels the subtitle", async () => {
+  it("scopes the queue to the user in ?user=", async () => {
     const { fetchMock } = await renderScreen(
       {
         transactions: [makeTransaction({ id: 1, description_clean: "Coffee Shop" })],
@@ -199,7 +199,7 @@ describe("ReviewScreen", () => {
       "/spending/review?user=2",
     );
 
-    await waitFor(() => expect(screen.getByText("1 need review (Sam)")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("1 need review")).toBeInTheDocument());
     const txnCalls = fetchMock.mock.calls
       .map((c) => new URL((c[0] as Request).url))
       .filter((u) => u.pathname === "/api/transactions");
@@ -220,7 +220,7 @@ describe("ReviewScreen", () => {
 
     fireEvent.click(screen.getByRole("radio", { name: "Sam" }));
 
-    await waitFor(() => expect(screen.getByText("1 need review (Sam)")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("1 need review")).toBeInTheDocument());
     const last = [...fetchMock.mock.calls]
       .map((c) => new URL((c[0] as Request).url))
       .reverse()
@@ -233,7 +233,7 @@ describe("ReviewScreen", () => {
       transactions: [makeTransaction({ id: 1, merchant_key: "trader joes", category_key: "groceries", subcategory_key: "groceries" })],
       categories: CATEGORIES,
     });
-    expect(await screen.findByRole("button", { name: "Always categorize “trader joes” this way (r)" })).toBeEnabled();
+    expect(await screen.findByRole("button", { name: "Always categorize “trader joes” this way" })).toBeEnabled();
     expect(screen.queryByText(/Accept \+ create rule/)).not.toBeInTheDocument();
   });
 
@@ -242,7 +242,7 @@ describe("ReviewScreen", () => {
       transactions: [makeTransaction({ id: 1, merchant_key: "trader joes", category_key: "groceries", subcategory_key: "groceries" })],
       categories: CATEGORIES,
     });
-    const accept = await screen.findByRole("button", { name: "Accept (Enter)" });
+    const accept = await screen.findByRole("button", { name: "Accept" });
     expect(accept).toHaveAttribute("title", expect.stringContaining("this transaction only"));
     const note = screen.getByText(/changes this transaction only; nothing is remembered about the merchant/);
     expect(note).toHaveTextContent(/second button also saves a rule/);
@@ -256,8 +256,31 @@ describe("ReviewScreen", () => {
       transactions: [makeTransaction({ id: 1, merchant_key: "trader joes", category_key: "groceries", subcategory_key: "groceries" })],
       categories: CATEGORIES,
     });
-    fireEvent.click(await screen.findByRole("button", { name: "Always categorize “trader joes” this way (r)" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Always categorize “trader joes” this way" }));
     await waitFor(async () => expect((await lastAcceptBody(fetchMock)).create_rule).toBe(true));
+  });
+
+  it("shows shortcut keys as visible hints and announces them via aria-keyshortcuts, keeping plain names", async () => {
+    await renderScreen({
+      transactions: [makeTransaction({ id: 1, merchant_key: "trader joes", category_key: "groceries", subcategory_key: "groceries" })],
+      categories: CATEGORIES,
+    });
+    expect(await screen.findByRole("heading", { level: 1, name: "Review transactions" })).toBeInTheDocument();
+    const accept = await screen.findByRole("button", { name: "Accept" });
+    expect(accept).toHaveAttribute("aria-keyshortcuts", "Enter");
+    expect(accept.querySelector("kbd")).toHaveTextContent("Enter");
+    const undo = screen.getByRole("button", { name: "Undo" });
+    expect(undo).toHaveAttribute("aria-keyshortcuts", "u");
+    expect(undo.querySelector("kbd")).toHaveTextContent("u");
+    const rule = screen.getByRole("button", { name: "Always categorize “trader joes” this way" });
+    expect(rule).toHaveAttribute("aria-keyshortcuts", "r");
+    expect(rule.querySelector("kbd")).toHaveTextContent("r");
+  });
+
+  it("calls the approval list \"New categories to approve\", not pending stores", async () => {
+    await renderScreen({ transactions: [], categories: CATEGORIES });
+    expect(await screen.findByRole("heading", { name: "New categories to approve" })).toBeInTheDocument();
+    expect(screen.queryByText(/pending stores/i)).not.toBeInTheDocument();
   });
 
   it("cannot make a rule for a row with no merchant name to match", async () => {
@@ -265,7 +288,7 @@ describe("ReviewScreen", () => {
       transactions: [makeTransaction({ id: 1, merchant_key: "", category_key: "groceries", subcategory_key: "groceries" })],
       categories: CATEGORIES,
     });
-    expect(await screen.findByRole("button", { name: "Always categorize this way (r)" })).toBeDisabled();
+    expect(await screen.findByRole("button", { name: "Always categorize this way" })).toBeDisabled();
   });
 
   it("offers to apply an accept to the merchant's other pending rows and says how many it covered", async () => {

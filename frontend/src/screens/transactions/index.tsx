@@ -1,6 +1,7 @@
 import * as React from "react";
 
 import { usePatchTransaction, useTaxonomy } from "@/api/hooks";
+import { Page, PageHeader } from "@/components/primitives/page";
 import { EmptyState, ErrorState, LoadingState } from "@/components/primitives/states";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/components/ui/use-toast";
@@ -202,37 +203,37 @@ export default function TransactionsScreen() {
   }
 
   return (
-    <div className="flex flex-col gap-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-xl font-semibold tracking-tight">Transactions</h1>
-          <p className="text-sm text-muted-foreground">
-            {grid.isLoading || sel.isLoading ? "Loading…" : `${total.toLocaleString()} transaction${total === 1 ? "" : "s"}`}
-          </p>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            disabled={exporting}
-            title="Exports the transactions matching the current filters and user view"
-            onClick={() => void handleExport("csv")}
-          >
-            Export CSV
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            disabled={exporting}
-            title="Exports the transactions matching the current filters and user view"
-            onClick={() => void handleExport("json")}
-          >
-            Export JSON
-          </Button>
-        </div>
-      </div>
+    <Page>
+      <PageHeader
+        title="Transactions"
+        description={
+          grid.isLoading || sel.isLoading ? "Loading…" : `${total.toLocaleString()} transaction${total === 1 ? "" : "s"}`
+        }
+        actions={
+          <>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={exporting}
+              title="Exports the transactions matching the current filters and user view"
+              onClick={() => void handleExport("csv")}
+            >
+              Export CSV
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={exporting}
+              title="Exports the transactions matching the current filters and user view"
+              onClick={() => void handleExport("json")}
+            >
+              Export JSON
+            </Button>
+          </>
+        }
+      />
 
       <FiltersBar
         filters={filters}
@@ -304,7 +305,7 @@ export default function TransactionsScreen() {
           saving={patchTransaction.isPending}
         />
       ) : null}
-    </div>
+    </Page>
   );
 }
 

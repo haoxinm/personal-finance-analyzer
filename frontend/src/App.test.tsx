@@ -161,6 +161,39 @@ describe("App shell nav", () => {
   });
 });
 
+describe("page headings", () => {
+  beforeEach(() => {
+    vi.resetModules();
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  // Every screen renders its one h1 through PageHeader, in its loading and error states too (the
+  // blanket mock answers every query with `[]`, which several screens treat as an error).
+  it.each([
+    ["/spending", "Spending overview"],
+    ["/spending/transactions", "Transactions"],
+    ["/spending/review", "Review transactions"],
+    ["/spending/import", "Import statements"],
+    ["/spending/rules", "Rules & taxonomy"],
+    ["/spending/layout-mapper", "Layout mapper"],
+    ["/tax", "Income & tax overview"],
+    ["/tax/estimate", "Tax estimate"],
+    ["/tax/documents", "Tax documents"],
+    ["/tax/import", "Import tax forms"],
+    ["/net-worth", "Net worth overview"],
+    ["/net-worth/forecast", "Net worth forecast"],
+    ["/settings", "Settings"],
+  ])("%s has a single h1 named %s", async (path, title) => {
+    await renderApp(path);
+    const main = screen.getByRole("main");
+    expect(await within(main).findByRole("heading", { level: 1, name: title })).toBeInTheDocument();
+    expect(within(main).getAllByRole("heading", { level: 1 })).toHaveLength(1);
+  });
+});
+
 describe("legacy paths", () => {
   beforeEach(() => {
     vi.resetModules();

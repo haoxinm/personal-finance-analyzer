@@ -1,5 +1,6 @@
 import * as React from "react";
 
+import { Page, PageHeader } from "@/components/primitives/page";
 import { ErrorState, LoadingState } from "@/components/primitives/states";
 import { Card, CardContent } from "@/components/ui/card";
 import { useSelectedUser } from "@/hooks/use-selected-user";
@@ -39,39 +40,33 @@ export default function TaxDocumentsScreen() {
   const yearOptions = year !== null && !years.includes(year) ? [year, ...years] : years;
 
   return (
-    <div className="flex flex-col gap-6 py-2">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h1 className="text-xl font-semibold tracking-tight">Documents</h1>
-          <p className="text-sm text-muted-foreground">
-            The tax forms behind your income and tax figures. Review what was read, correct it, or
-            enter figures by hand.
-            {sel.users.length > 1 && sel.selectedUser
-              ? ` Showing ${sel.selectedUser.name}.`
-              : ""}
-          </p>
-        </div>
-        {yearOptions.length > 0 ? (
-          <label className="flex items-center gap-2 text-sm text-muted-foreground">
-            Year
-            <select
-              aria-label="Filter by year"
-              className="h-9 rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm"
-              value={year ?? ""}
-              onChange={(e) =>
-                setYear(e.target.value === "" ? null : Number(e.target.value))
-              }
-            >
-              <option value="">All years</option>
-              {yearOptions.map((y) => (
-                <option key={y} value={y}>
-                  {y}
-                </option>
-              ))}
-            </select>
-          </label>
-        ) : null}
-      </div>
+    <Page>
+      <PageHeader
+        title="Tax documents"
+        description="The tax forms behind your income and tax figures. Review what was read, correct it, or enter figures by hand."
+        actions={
+          yearOptions.length > 0 ? (
+            <label className="flex items-center gap-2 text-sm text-muted-foreground">
+              Year
+              <select
+                aria-label="Filter by year"
+                className="h-9 rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm"
+                value={year ?? ""}
+                onChange={(e) =>
+                  setYear(e.target.value === "" ? null : Number(e.target.value))
+                }
+              >
+                <option value="">All years</option>
+                {yearOptions.map((y) => (
+                  <option key={y} value={y}>
+                    {y}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : null
+        }
+      />
 
       <Card>
         <CardContent className="pt-4">
@@ -93,6 +88,6 @@ export default function TaxDocumentsScreen() {
           )}
         </CardContent>
       </Card>
-    </div>
+    </Page>
   );
 }
