@@ -12,16 +12,19 @@ import typer
 from personal_finance_analyzer.config import (
     DEFAULT_PATHS,
     LLMConfig,
+    SecretStorageStatus,
     Settings,
     delete_api_key,
     get_llm_api_key,
     load_settings,
     save_settings,
+    secret_storage_status,
     set_api_key,
     without_stale_tax_consent,
 )
 from personal_finance_analyzer.core.paths import config_path
 from personal_finance_analyzer.llm.diagnostics import check_connection
+from personal_finance_analyzer.secret_store import SecretStorageError
 
 llm_app = typer.Typer(
     help=(
@@ -58,6 +61,21 @@ def _has_key(cfg: LLMConfig) -> bool:
         return get_llm_api_key(cfg) is not None
     except Exception:
         return False
+
+
+def describe_secret_storage(status: SecretStorageStatus) -> str:
+    """One line on where the current key comes from (or would be saved): shared with `pfa doctor`."""
+    if status.key_source == "env":
+        return f"environment variable {status.env_var}"
+    if status.key_source == "keychain":
+        return f"OS keychain ({status.keychain_name})"
+    if status.key_source == "file":
+        return f"plaintext file store ({status.file_store_path})"
+    if status.storage == "keychain":
+        return f"none saved (a saved key would go to the OS keychain: {status.keychain_name})"
+    if status.storage == "file":
+        return f"none saved (a saved key would go to the plaintext file {status.file_store_path})"
+    return "none (no usable keychain; see `pfa doctor`)"
 
 
 def _describe(settings: Settings) -> None:
@@ -101,6 +119,7 @@ def show() -> None:
     typer.echo(f"mode: {cfg.mode}")
     typer.echo(f"resolved_url: {cfg.resolved_url if cfg.base_url else ''}")
     typer.echo(f"api key on file: {'yes' if _has_key(cfg) else 'no'}")
+    typer.echo(f"api key source: {describe_secret_storage(secret_storage_status(cfg))}")
     typer.echo(f"[ingest] default_extractor: {settings.ingest.default_extractor}")
     typer.echo(f"[ingest] tax_llm_fallback: {json.dumps(settings.ingest.tax_llm_fallback)}")
 
@@ -273,17 +292,23 @@ def set_key(
         str | None, typer.Option("--base-url", help="Defaults to the saved base URL.")
     ] = None,
 ) -> None:
-    """Store the API key for the endpoint's host in the OS keychain (prompted, or from stdin)."""
+    """Store the API key for the endpoint's host in the OS keychain (prompted, or from stdin).
+
+    With no keychain (headless Linux, WSL, SSH) it fails with setup advice, unless
+    `[secrets] allow_file_store = true` opts in to a plaintext 0600 file."""
     account = _key_account(base_url, load_settings().llm)
     raw = typer.prompt("API key", hide_input=True) if sys.stdin.isatty() else sys.stdin.readline()
     key = raw.strip()
     if not key:
         raise _fail("no API key given")
     try:
-        set_api_key(account, key)
-    except Exception as exc:
+        where = set_api_key(account, key)
+    except SecretStorageError as exc:
         raise _fail(f"could not store the key: {exc}", 1) from None
-    typer.echo(f"API key stored for {account.removeprefix('llm:')}.")
+    target = "the OS keychain" if where == "keychain" else "the plaintext file store"
+    typer.echo(f"API key stored for {account.removeprefix('llm:')} in {target}.")
+    if where == "file":
+        typer.echo(f"WARNING: {secret_storage_status(None).warning}", err=True)
 
 
 @llm_app.command("clear-key")
@@ -294,7 +319,10 @@ def clear_key(
 ) -> None:
     """Remove the stored API key for the endpoint's host."""
     account = _key_account(base_url, load_settings().llm)
-    delete_api_key(account)
+    try:
+        delete_api_key(account)
+    except SecretStorageError as exc:
+        raise _fail(f"could not clear the key: {exc}", 1) from None
     typer.echo(f"API key cleared for {account.removeprefix('llm:')}.")
 
 

@@ -1,19 +1,26 @@
 """Settings model, load/save, and secret storage (§3.10, P0-2).
 
-`config.toml` holds every non-secret setting. Secrets (LLM provider API keys) live only in the
-OS keychain via `keyring` (I7) — never in `config.toml`, never in the database, never logged.
+`config.toml` holds every non-secret setting. Secrets (LLM provider API keys) live in the OS
+keychain via `keyring` (I7) — never in `config.toml`, never in the database, never logged. A key
+is resolved in this order: the `PFA_LLM_API_KEY` environment variable, the OS keychain, and, only
+if the user opted in with ``[secrets] allow_file_store = true``, a 0600 file in the data directory
+(`secret_store.py`; for machines with no keychain). Saving a key goes to the keychain, and to the
+file only when the keychain is unavailable *and* that opt-in is on; otherwise it fails with a
+message that says how to fix it.
 
-Every other module receives a `Settings` object; nothing outside this module reads `config.toml`
-or touches `keyring` directly.
+Every other module receives a `Settings` object; nothing outside `config.py`/`secret_store.py`
+reads `config.toml` or touches `keyring` directly.
 """
 
 from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import os
 import time
 import tomllib
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlsplit
@@ -25,6 +32,21 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from personal_finance_analyzer.core.native_locks import KEYRING_LOCK
 from personal_finance_analyzer.core.paths import config_path, ensure_home
+from personal_finance_analyzer.secret_store import (
+    FILE_STORE_WARNING,
+    SecretSource,
+    SecretStorageError,
+    delete_file_key,
+    explain_keyring_error,
+    file_store_has_keys,
+    file_store_path,
+    inspect_keychain,
+    platform_guidance,
+    read_file_key,
+    write_file_key,
+)
+
+_log = logging.getLogger(__name__)
 
 #: keyring service name; the account within it is the provider name (e.g. "anthropic").
 _KEYRING_SERVICE = "personal-finance-analyzer"
@@ -193,6 +215,15 @@ class ServerConfig(BaseModel):
     port: int = 8756
 
 
+class SecretsConfig(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    #: Opt-in: when the OS keychain is unavailable (headless Linux, WSL, SSH, containers) keep
+    #: API keys in `<data dir>/secrets/api_keys.toml` (0600, plaintext at rest) instead of
+    #: refusing to save them. Never used for saving while a keychain works, never enabled silently.
+    allow_file_store: bool = False
+
+
 class Settings(BaseModel):
     """The full set of non-secret settings, mirroring `config.toml` exactly."""
 
@@ -203,6 +234,7 @@ class Settings(BaseModel):
     ingest: IngestConfig = IngestConfig()
     tax: TaxConfig = TaxConfig()
     server: ServerConfig = ServerConfig()
+    secrets: SecretsConfig = SecretsConfig()
 
 
 def without_stale_tax_consent(settings: Settings) -> Settings:
@@ -252,7 +284,7 @@ def _apply_env_overrides(settings: Settings) -> Settings:
             section, _, field_name = key[len(prefix) :].partition("__")
             section = section.lower()
             field_name = field_name.lower()
-            if section not in ("llm", "privacy", "ingest", "tax", "server"):
+            if section not in ("llm", "privacy", "ingest", "tax", "server", "secrets"):
                 continue
             overrides.setdefault(section, {})[field_name] = value
 
@@ -328,11 +360,22 @@ LLM_API_KEY_ENV = "PFA_LLM_API_KEY"
 LEGACY_LLM_API_KEY_ENV = "SPEND_ANALYZER_LLM_API_KEY"
 
 
+def _allow_file_store() -> bool:
+    """The `[secrets] allow_file_store` opt-in (config.toml, or `PFA_SECRETS__ALLOW_FILE_STORE`).
+    A config.toml that cannot be read counts as "not opted in"."""
+    try:
+        return load_settings().secrets.allow_file_store
+    except (OSError, ValueError):
+        return False
+
+
 def get_api_key(account: str) -> str | None:
-    """Return the API key stored under keychain ``account``: checks the
-    ``{ACCOUNT}_API_KEY`` env var first (for a plain name like ``openai``), then the OS
-    keychain (service ``personal-finance-analyzer``). Never logs the value. A keychain backend that is
-    unavailable (no Secret Service on a headless Linux box) reads as "no key".
+    """Return the API key stored under ``account``: the ``{ACCOUNT}_API_KEY`` env var first (for a
+    plain name like ``openai``), then the OS keychain (service ``personal-finance-analyzer``),
+    then, only if the user opted in, the 0600 file store. Never logs the value. A keychain that
+    is unavailable or locked (no Secret Service on a headless Linux box, a macOS login keychain
+    that cannot be found) reads as "no key" and is reported by `pfa doctor` and the Settings
+    screen instead of crashing or prompting.
 
     A key saved under the pre-rename service (``spend-analyzer``) is moved to the new one on first
     read: copied, then the old entry deleted (both best-effort; the key is returned either way)."""
@@ -340,20 +383,34 @@ def get_api_key(account: str) -> str | None:
         env_value = os.environ.get(f"{account.upper().replace('-', '_')}_API_KEY")
         if env_value:
             return env_value
-    try:
-        with KEYRING_LOCK:
-            value = keyring.get_password(_KEYRING_SERVICE, account)
-            if value is None:
-                value = _adopt_legacy_key(account)
+    if inspect_keychain().usable:
+        try:
+            with KEYRING_LOCK:
+                value = keyring.get_password(_KEYRING_SERVICE, account)
+                if value is None:
+                    value = _adopt_legacy_key(account)
+        except keyring.errors.KeyringError as exc:
+            _log.warning("OS keychain unavailable: %s", explain_keyring_error(exc))
+            value = None
+        if value is not None:
             return value
-    except keyring.errors.KeyringError:
-        return None
+    if _allow_file_store():
+        try:
+            return read_file_key(account)
+        except SecretStorageError as exc:
+            _log.warning("%s", exc)
+    return None
 
 
 def _adopt_legacy_key(account: str) -> str | None:
     """Caller holds `KEYRING_LOCK`. Move ``account``'s key from the pre-rename keychain service to
-    the current one, so a user who saved a key before the rename keeps working."""
-    legacy = keyring.get_password(_LEGACY_KEYRING_SERVICE, account)
+    the current one, so a user who saved a key before the rename keeps working. Only reads the old
+    service (a lookup that finds nothing neither prompts nor writes); the copy and the delete happen
+    only when an old entry exists, and any failure along the way is tolerated."""
+    try:
+        legacy = keyring.get_password(_LEGACY_KEYRING_SERVICE, account)
+    except keyring.errors.KeyringError:
+        return None
     if legacy is None:
         return None
     try:
@@ -367,26 +424,173 @@ def _adopt_legacy_key(account: str) -> str | None:
 
 def get_llm_api_key(cfg: LLMConfig) -> str | None:
     """The API key for ``cfg``'s endpoint: `PFA_LLM_API_KEY`, else the key saved in
-    the OS keychain for ``cfg.base_url``'s host (see `LLMConfig.key_account`)."""
+    the OS keychain (or the opt-in file store) for ``cfg.base_url``'s host (see
+    `LLMConfig.key_account`)."""
     env_value = os.environ.get(LLM_API_KEY_ENV) or os.environ.get(LEGACY_LLM_API_KEY_ENV)
     if env_value:
         return env_value
     return get_api_key(cfg.key_account) if cfg.key_account else None
 
 
-def set_api_key(provider: str, key: str) -> None:
-    """Store ``key`` for ``provider`` in the OS keychain. Never written to `config.toml` or the
-    database."""
-    with KEYRING_LOCK:
-        keyring.set_password(_KEYRING_SERVICE, provider, key)
-        # A key under the pre-rename service would be stale now; drop it (best-effort).
-        with contextlib.suppress(keyring.errors.KeyringError):
-            keyring.delete_password(_LEGACY_KEYRING_SERVICE, provider)
+def set_api_key(provider: str, key: str) -> Literal["keychain", "file"]:
+    """Store ``key`` for ``provider`` and say where it went. Goes to the OS keychain; goes to the
+    0600 file store only when the keychain is unavailable *and* the user opted in. Never written to
+    `config.toml` or the database.
+
+    Raises:
+        SecretStorageError: no backend could take it; the message says why and how to fix it.
+    """
+    keychain = inspect_keychain()
+    if keychain.usable:
+        try:
+            with KEYRING_LOCK:
+                keyring.set_password(_KEYRING_SERVICE, provider, key)
+                # A key under the pre-rename service would be stale now; drop it (best-effort).
+                with contextlib.suppress(keyring.errors.KeyringError):
+                    keyring.delete_password(_LEGACY_KEYRING_SERVICE, provider)
+        except keyring.errors.KeyringError as exc:
+            failure = explain_keyring_error(exc)
+        else:
+            with contextlib.suppress(SecretStorageError):
+                delete_file_key(provider)  # never leave a stale plaintext copy behind
+            return "keychain"
+    else:
+        failure = (
+            f"The API key was not saved: there is no usable system keychain ({keychain.detail}). "
+            f"{platform_guidance()}"
+        )
+    if _allow_file_store():
+        _log.info("%s", FILE_STORE_WARNING.format(path=file_store_path()))
+        write_file_key(provider, key)
+        return "file"
+    if "allow_file_store" not in failure:
+        failure += (
+            " Or, on a machine with no keychain, set `[secrets] allow_file_store = true` in "
+            "config.toml to keep keys in a plaintext file (0600) instead."
+        )
+    raise SecretStorageError(failure)
 
 
 def delete_api_key(provider: str) -> None:
-    """Remove ``provider``'s key from the OS keychain, if present."""
-    with KEYRING_LOCK:
-        for service in (_KEYRING_SERVICE, _LEGACY_KEYRING_SERVICE):
-            with contextlib.suppress(keyring.errors.PasswordDeleteError):
-                keyring.delete_password(service, provider)
+    """Remove ``provider``'s key from the OS keychain and the file store, if present.
+
+    Raises:
+        SecretStorageError: the keychain exists but refused the delete (locked, unreachable)."""
+    refused: keyring.errors.KeyringError | None = None
+    if inspect_keychain().usable:
+        with KEYRING_LOCK:
+            for service in (_KEYRING_SERVICE, _LEGACY_KEYRING_SERVICE):
+                try:
+                    keyring.delete_password(service, provider)
+                except keyring.errors.PasswordDeleteError:
+                    pass  # not there
+                except keyring.errors.KeyringError as exc:
+                    refused = exc
+    delete_file_key(provider)  # plaintext is always removable, whatever the opt-in says
+    if refused is not None:
+        raise SecretStorageError(explain_keyring_error(refused))
+
+
+@dataclass(frozen=True)
+class SecretStorageStatus:
+    """Which secret backend is in play, for `pfa doctor` and the Settings screen. No key material."""
+
+    #: Where the current endpoint's key comes from right now (``none``: no key is available).
+    key_source: SecretSource
+    #: Where a newly saved key would go: the keychain, the file store, or nowhere (a save fails).
+    storage: Literal["keychain", "file", "none"]
+    keychain_name: str
+    keychain_usable: bool
+    keychain_detail: str
+    #: The environment variable that is supplying a key, if one is set.
+    env_var: str | None
+    file_store_enabled: bool
+    file_store_path: str
+    #: A key sits in the file store (it is still read while enabled; with a working keychain, new
+    #: keys go to the keychain, so saving the key again moves it).
+    file_store_has_keys: bool
+    #: Platform-specific setup advice; only filled in when no keychain is usable.
+    guidance: str
+    #: The plaintext warning; only filled in when the file store is enabled.
+    warning: str
+
+
+def secret_storage_status(cfg: LLMConfig | None = None) -> SecretStorageStatus:
+    """Resolve the secret backend in use for ``cfg``'s endpoint (read-only: it reads, at most, the
+    one key, and never writes anything)."""
+    keychain = inspect_keychain()
+    file_enabled = _allow_file_store()
+    env_var = next(
+        (n for n in (LLM_API_KEY_ENV, LEGACY_LLM_API_KEY_ENV) if os.environ.get(n)), None
+    )
+    path = file_store_path()
+
+    storage: Literal["keychain", "file", "none"] = (
+        "keychain" if keychain.usable else ("file" if file_enabled else "none")
+    )
+
+    source: SecretSource = "none"
+    if env_var is not None:
+        source = "env"
+    elif cfg is not None and cfg.key_account:
+        account = cfg.key_account
+        if keychain.usable:
+            try:
+                with KEYRING_LOCK:
+                    found = keyring.get_password(_KEYRING_SERVICE, account) is not None
+            except keyring.errors.KeyringError:
+                found = False
+            if found:
+                source = "keychain"
+        if source == "none" and file_enabled:
+            try:
+                if read_file_key(account) is not None:
+                    source = "file"
+            except SecretStorageError:
+                pass
+    return SecretStorageStatus(
+        key_source=source,
+        storage=storage,
+        keychain_name=keychain.name,
+        keychain_usable=keychain.usable,
+        keychain_detail=keychain.detail,
+        env_var=env_var,
+        file_store_enabled=file_enabled,
+        file_store_path=str(path),
+        file_store_has_keys=file_store_has_keys(),
+        guidance="" if keychain.usable else platform_guidance(),
+        warning=FILE_STORE_WARNING.format(path=path) if file_enabled else "",
+    )
+
+
+_PROBE_ACCOUNT = "pfa-doctor-check"
+
+
+def keychain_write_test() -> None:
+    """Round-trip a probe entry through the OS keychain (write, read back, delete), for
+    `pfa doctor --write-test`. Deliberately bypasses the file store and the env override: it tests
+    the keychain itself. This is the only code path that writes to the keychain on a diagnostic.
+
+    Raises:
+        SecretStorageError: no usable keychain, it refused the write, or it read back wrong.
+    """
+    keychain = inspect_keychain()
+    if not keychain.usable:
+        raise SecretStorageError(
+            f"there is no usable system keychain ({keychain.detail}). {platform_guidance()}"
+        )
+    value = "pfa-doctor-probe"
+    try:
+        with KEYRING_LOCK:
+            try:
+                keyring.set_password(_KEYRING_SERVICE, _PROBE_ACCOUNT, value)
+                round_tripped = keyring.get_password(_KEYRING_SERVICE, _PROBE_ACCOUNT) == value
+            finally:
+                with contextlib.suppress(keyring.errors.KeyringError):
+                    keyring.delete_password(_KEYRING_SERVICE, _PROBE_ACCOUNT)
+    except keyring.errors.KeyringError as exc:
+        raise SecretStorageError(explain_keyring_error(exc)) from None
+    if not round_tripped:
+        raise SecretStorageError(
+            "the keychain accepted the probe entry but returned a different value"
+        )

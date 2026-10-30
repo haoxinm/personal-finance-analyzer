@@ -9,7 +9,8 @@ Format (version 1): a zip file, optionally wrapped in `crypto.py`'s passphrase e
 - ``statements/<sha256>.pdf``: the kept PDF copies (and PDFs awaiting confirmation);
 - ``specs/...``: layout-spec mirrors, and ``config.toml``.
 
-Deliberately **not** in it: the LLM API key (it lives in the OS keychain and never leaves it), the
+Deliberately **not** in it: the LLM API key (it lives in the OS keychain and never leaves it; the
+opt-in plaintext key file ``secrets/api_keys.toml`` is not on the allow-list either), the
 extract cache and logs (rebuildable / per-machine), `tax_staging/` (never backed up by design), the
 ``jobs`` table of the snapshot (in-process queue state that means nothing on another machine) and
 the ``extra_headers`` / URL credentials of ``[llm]`` in ``config.toml`` (they can carry secrets).

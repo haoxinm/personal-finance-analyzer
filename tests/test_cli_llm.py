@@ -197,8 +197,12 @@ def test_test_command_failure_exits_1(
 
 
 def test_doctor_skips_llm_when_disabled(home: Path) -> None:
+    import keyring
+
+    assert type(keyring.get_keyring()).__name__ == "_MemoryKeyring"  # never the real keychain
     result = runner.invoke(app, ["doctor"])
     assert "SKIP  LLM connectivity (disabled" in result.output
+    assert keyring.get_keyring()._store == {}  # type: ignore[attr-defined]
 
 
 def test_doctor_checks_llm_when_enabled(

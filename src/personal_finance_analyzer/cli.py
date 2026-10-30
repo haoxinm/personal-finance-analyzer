@@ -580,9 +580,17 @@ def export(
 
 
 @app.command()
-def doctor() -> None:
+def doctor(
+    write_test: bool = typer.Option(
+        False,
+        "--write-test",
+        help="Also write, read back and delete a probe entry in the OS keychain. Off by default "
+        "because a keychain write can raise an OS dialog; the default check only reads.",
+    ),
+) -> None:
     """Diagnose the local install and configuration: Python version, data directory permissions,
-    DB migration state, keychain access, and LLM connectivity, one pass/fail line each."""
+    DB migration state, which secret backend holds the API key (read-only), and LLM connectivity,
+    one pass/fail line each."""
     ok = True
     ok &= _check("Python version >= 3.12", sys.version_info >= (3, 12))
 
@@ -593,7 +601,7 @@ def doctor() -> None:
         ok &= _check(f"Data directory writable: {exc}", False)
 
     ok &= _doctor_migrations()
-    ok &= _doctor_keychain()
+    ok &= _doctor_keychain(write_test=write_test)
     ok &= _doctor_llm()
 
     if not ok:
@@ -710,17 +718,69 @@ def _doctor_migrations() -> bool:
         return _check(f"Database migration check failed: {exc}", False)
 
 
-def _doctor_keychain() -> bool:
-    from personal_finance_analyzer.config import delete_api_key, get_api_key, set_api_key
+def _doctor_keychain(*, write_test: bool = False) -> bool:
+    """Report the secret backend in use. Read-only unless ``write_test``: the default pass never
+    writes to the keychain (a write can pop an OS dialog, or fail on a machine whose login keychain
+    is missing); ``--write-test`` adds an explicit set/get/delete round trip of a probe entry."""
+    from personal_finance_analyzer.cli_llm import describe_secret_storage
+    from personal_finance_analyzer.config import (
+        get_llm_api_key,
+        keychain_write_test,
+        secret_storage_status,
+    )
+    from personal_finance_analyzer.secret_store import SecretStorageError
 
-    provider = "pfa-doctor-check"
-    try:
-        set_api_key(provider, "doctor-check-value")
-        round_tripped = get_api_key(provider) == "doctor-check-value"
-        delete_api_key(provider)
-        return _check("Keychain read/write", round_tripped)
-    except Exception as exc:
-        return _check(f"Keychain access failed: {exc}", False)
+    cfg = load_settings().llm
+    status = secret_storage_status(cfg)
+    ok = True
+    if status.keychain_usable:
+        _check(f"Keychain backend: {status.keychain_name}", True)
+    elif status.env_var is not None or status.file_store_enabled:
+        typer.echo(
+            f"INFO  No usable OS keychain ({status.keychain_detail}); using the fallback below"
+        )
+    else:
+        typer.echo(f"WARN  No usable OS keychain ({status.keychain_detail}).")
+        typer.echo(f"      {status.guidance}")
+        typer.echo(
+            "      Saving an API key will fail until one works, unless you set PFA_LLM_API_KEY "
+            "or enable `[secrets] allow_file_store = true`."
+        )
+    typer.echo(f"INFO  Key source / save target: {describe_secret_storage(status)}")
+    if status.file_store_enabled:
+        typer.echo(f"WARN  {status.warning}")
+    elif status.file_store_has_keys:
+        typer.echo(
+            f"WARN  {status.file_store_path} holds saved keys but the file store is not enabled "
+            "(`[secrets] allow_file_store`); they are ignored. Delete the file or enable it."
+        )
+
+    if cfg.mode != "none":
+        try:
+            found = get_llm_api_key(cfg) is not None
+        except Exception as exc:  # a read must never crash the diagnosis
+            ok &= _check(f"API key lookup failed: {exc}", False)
+        else:
+            if found:
+                _check(f"API key for {cfg.key_account.removeprefix('llm:')} readable", True)
+            else:
+                typer.echo(
+                    f"INFO  No API key found for {cfg.key_account.removeprefix('llm:')} "
+                    "(fine for a local server; `pfa llm set-key` stores one)"
+                )
+
+    if write_test:
+        try:
+            keychain_write_test()
+        except SecretStorageError as exc:
+            ok &= _check(f"Keychain write test failed: {exc}", False)
+        else:
+            ok &= _check("Keychain write test (probe entry written, read back, deleted)", True)
+    else:
+        typer.echo(
+            "SKIP  Keychain write test (read-only by default; run `pfa doctor --write-test`)"
+        )
+    return ok
 
 
 def _doctor_llm() -> bool:

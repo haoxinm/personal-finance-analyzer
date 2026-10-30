@@ -278,10 +278,17 @@ def test_export_writes_empty_csv(home: Path) -> None:
 
 
 def test_doctor_reports_pass_fail_lines(home: Path) -> None:
+    import keyring
+
+    fake = keyring.get_keyring()  # the suite's in-memory backend, never the real keychain
+    assert type(fake).__name__ == "_MemoryKeyring"
     runner.invoke(app, ["migrate"])
     result = runner.invoke(app, ["doctor"])
     assert "Python version" in result.output
     assert "Database migrated" in result.output
+    assert "PASS  Keychain backend:" in result.output
+    assert "SKIP  Keychain write test" in result.output
+    assert fake._store == {}  # type: ignore[attr-defined]  # the default check writes nothing
 
 
 def _confirm_command_args(import_output: str) -> list[str]:
