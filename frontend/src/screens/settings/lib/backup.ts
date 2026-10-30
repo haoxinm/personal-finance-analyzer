@@ -4,10 +4,10 @@
  *   POST /api/backup/export    body {passphrase, encrypt} -> the .spendbackup file
  *   POST /api/backup/restore   multipart {file, passphrase} -> {created_at, counts, migrated, previous_dir}
  *
- * These endpoints are not in `src/api/openapi.json` / `schema.d.ts` yet (regenerate with
- * `npm run gen:api-types` against the new backend), so the types below are written by hand and
- * the calls use `fetch` directly, the way `api-key.ts` does. The archive never contains the LLM
- * API key (it lives in the OS credential store).
+ * The endpoints are in `src/api/schema.d.ts`, but the calls stay on `fetch` with hand-written
+ * response types: the export is a binary download and the restore a multipart upload, neither of
+ * which the typed client's JSON helpers cover (it does the same as `api-key.ts`). The archive
+ * never contains the LLM API key (it lives in the OS credential store).
  */
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 
