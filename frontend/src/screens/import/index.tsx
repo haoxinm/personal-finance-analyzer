@@ -93,6 +93,7 @@ function ImportScreen() {
         clientId,
         statement: response.statement,
         proposal: response.proposal,
+        duplicate: response.duplicate,
         llmConfigured,
       });
       const updatedItem: ImportItem = {

@@ -253,6 +253,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/transactions/ids": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Transaction Ids */
+        get: operations["list_transaction_ids_api_transactions_ids_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/transactions/{id}": {
         parameters: {
             query?: never;
@@ -281,6 +298,40 @@ export interface paths {
         put?: never;
         /** Bulk Update Transactions */
         post: operations["bulk_update_transactions_api_transactions_bulk_update_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/review/accept": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Accept Review */
+        post: operations["accept_review_api_review_accept_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/review/undo": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Undo Review */
+        post: operations["undo_review_api_review_undo_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -658,6 +709,23 @@ export interface paths {
         head?: never;
         /** Update Rule */
         patch: operations["update_rule_api_rules__rule_id__patch"];
+        trace?: never;
+    };
+    "/rules/{rule_id}/apply": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Apply Rule */
+        post: operations["apply_rule_api_rules__rule_id__apply_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/settings": {
@@ -1404,6 +1472,11 @@ export interface components {
             job_id: string;
             /** Group Id */
             group_id: string;
+            /**
+             * Transaction Count
+             * @default 0
+             */
+            transaction_count: number;
         };
         /** ConflictResponse */
         ConflictResponse: {
@@ -1627,6 +1700,10 @@ export interface components {
             classified?: number | null;
             /** Needs Review */
             needs_review?: number | null;
+            /** Inserted */
+            inserted?: number | null;
+            /** Skipped Duplicates */
+            skipped_duplicates?: number | null;
         };
         /** JobIdResponse */
         JobIdResponse: {
@@ -1991,6 +2068,18 @@ export interface components {
             kind?: components["schemas"]["Kind"] | null;
             /** Source */
             source: string;
+            /**
+             * Match Type
+             * @default contains
+             */
+            match_type: string;
+            /**
+             * Priority
+             * @default 100
+             */
+            priority: number;
+            /** Existing Matches */
+            existing_matches?: number | null;
         };
         /** RuleCreate */
         RuleCreate: {
@@ -2123,6 +2212,11 @@ export interface components {
         StatementUploadResponse: {
             statement: components["schemas"]["Statement"];
             proposal: components["schemas"]["ExtractorProposal"];
+            /**
+             * Duplicate
+             * @default false
+             */
+            duplicate: boolean;
         };
         /** Subcategory */
         Subcategory: {
@@ -2626,6 +2720,82 @@ export interface components {
             notes: string | null;
             /** Needs Review */
             needs_review: boolean;
+        };
+        /**
+         * TransactionIds
+         * @description `GET /api/transactions/ids`: every id matching the filters (not one page of them).
+         */
+        TransactionIds: {
+            /** Ids */
+            ids: number[];
+            /** Total */
+            total: number;
+        };
+        /** TransactionSnapshot */
+        TransactionSnapshot: {
+            transaction_id: number;
+            category_id: number | null;
+            subcategory_id: number | null;
+            confidence: number | null;
+            classified_by: string | null;
+            needs_review: boolean;
+            kind: string;
+            is_spend: boolean;
+            merchant_canonical: string | null;
+        };
+        /** MerchantMapSnapshot */
+        MerchantMapSnapshot: {
+            merchant_key: string;
+            existed: boolean;
+            merchant_canonical?: string | null;
+            category_id?: number | null;
+            subcategory_id?: number | null;
+            source?: string | null;
+            confidence?: number | null;
+            /** @default 0 */
+            hit_count: number;
+        };
+        /** RuleSnapshot */
+        RuleSnapshot: {
+            rule_id: number;
+            existed: boolean;
+            category_id?: number | null;
+            subcategory_id?: number | null;
+            kind_override?: string | null;
+            /** @default true */
+            enabled: boolean;
+        };
+        /**
+         * AcceptUndo
+         * @description Opaque undo token for one Review accept (everything the accept changed).
+         */
+        AcceptUndo: {
+            transactions: components["schemas"]["TransactionSnapshot"][];
+            merchant_map?: components["schemas"]["MerchantMapSnapshot"] | null;
+            rule?: components["schemas"]["RuleSnapshot"] | null;
+        };
+        /** ReviewAcceptRequest */
+        ReviewAcceptRequest: {
+            transaction_id: number;
+            category_key: string;
+            subcategory_key: string;
+            /** @default false */
+            create_rule: boolean;
+            similar_ids?: number[];
+        };
+        /** ReviewAcceptResponse */
+        ReviewAcceptResponse: {
+            transaction: components["schemas"]["Transaction"];
+            similar_ids: number[];
+            undo: components["schemas"]["AcceptUndo"];
+        };
+        /** ReviewUndoResponse */
+        ReviewUndoResponse: {
+            restored: number;
+        };
+        /** RuleApplyResponse */
+        RuleApplyResponse: {
+            updated: number;
         };
         /** TransactionList */
         TransactionList: {
@@ -3277,8 +3447,9 @@ export interface operations {
                 kinds?: components["schemas"]["Kind"][] | null;
                 include_non_spend?: boolean;
                 needs_review?: boolean | null;
+                uncategorized?: boolean | null;
                 search?: string | null;
-                currency?: string;
+                currency?: string | null;
                 page?: number;
                 page_size?: number;
                 sort?: string | null;
@@ -3331,6 +3502,149 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Transaction"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_transaction_ids_api_transactions_ids_get: {
+        parameters: {
+            query?: {
+                user_ids?: number[] | null;
+                account_ids?: number[] | null;
+                statement_id?: number | null;
+                date_from?: string | null;
+                date_to?: string | null;
+                category_keys?: string[] | null;
+                subcategory_keys?: string[] | null;
+                amount_min_minor?: number | null;
+                amount_max_minor?: number | null;
+                kinds?: components["schemas"]["Kind"][] | null;
+                include_non_spend?: boolean;
+                needs_review?: boolean | null;
+                uncategorized?: boolean | null;
+                search?: string | null;
+                currency?: string | null;
+                sort?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TransactionIds"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    accept_review_api_review_accept_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReviewAcceptRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewAcceptResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    undo_review_api_review_undo_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AcceptUndo"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewUndoResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    apply_rule_api_rules__rule_id__apply_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                rule_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RuleApplyResponse"];
                 };
             };
             /** @description Validation Error */
@@ -4404,6 +4718,21 @@ export interface operations {
     export_transactions_api_export_get: {
         parameters: {
             query?: {
+                user_ids?: number[] | null;
+                account_ids?: number[] | null;
+                statement_id?: number | null;
+                date_from?: string | null;
+                date_to?: string | null;
+                category_keys?: string[] | null;
+                subcategory_keys?: string[] | null;
+                amount_min_minor?: number | null;
+                amount_max_minor?: number | null;
+                kinds?: components["schemas"]["Kind"][] | null;
+                include_non_spend?: boolean;
+                needs_review?: boolean | null;
+                uncategorized?: boolean | null;
+                search?: string | null;
+                currency?: string | null;
                 format?: "csv" | "json";
                 user_id?: number | null;
             };

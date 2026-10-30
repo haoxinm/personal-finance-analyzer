@@ -76,6 +76,38 @@ def test_upload_calls_propose_import(
     body = response.json()
     assert body["statement"]["id"] == statement_id
     assert body["proposal"]["parser_id"] == "layout_a_credit"
+    assert body["duplicate"] is False
+
+
+def test_upload_flags_an_already_imported_file_as_duplicate(
+    client: TestClient, session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    statement_id = _make_statement(session, status="parsed")
+
+    def fake_propose_import(
+        db_session: Session, pdf_path: Path, *, user_id: int, original_name: str
+    ) -> gateway.ImportProposal:
+        return gateway.ImportProposal(
+            statement_id=statement_id,
+            status="duplicate",
+            issuer_id=None,
+            parser_id=None,
+            layout_spec_id=None,
+            detect_score=None,
+            confident=False,
+        )
+
+    monkeypatch.setattr(gateway, "propose_import", fake_propose_import)
+
+    response = client.post(
+        "/api/statements",
+        data={"user_id": "1"},
+        files={"file": ("statement.pdf", b"%PDF-1.4 fake pdf bytes", "application/pdf")},
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["duplicate"] is True
+    assert body["statement"]["status"] == "parsed"
 
 
 def test_extract_enqueues_import_job(
@@ -96,7 +128,7 @@ def test_extract_enqueues_import_job(
         return gateway.ImportResult(
             statement_id=stmt_id,
             inserted=3,
-            skipped_duplicates=0,
+            skipped_duplicates=2,
             transaction_ids=(),
             reconciliation_delta_minor=0,
             layout_drift=False,
@@ -114,6 +146,8 @@ def test_extract_enqueues_import_job(
 
     job = _wait_for_job(client, job_id)
     assert job["status"] == "done"
+    # The import job reports how many rows were new and how many were already present.
+    assert (job["inserted"], job["skipped_duplicates"]) == (3, 2)
 
 
 def test_reassign_calls_gateway(

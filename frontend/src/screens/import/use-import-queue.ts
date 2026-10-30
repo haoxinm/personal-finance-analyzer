@@ -3,7 +3,12 @@ import * as React from "react";
 
 import type { JobEvent } from "@/hooks/use-job-progress";
 
-import { fetchNeedsReviewCount, fetchStatement, pollClassifyJobNeedsReview } from "./api";
+import {
+  fetchJob,
+  fetchNeedsReviewCount,
+  fetchStatement,
+  pollClassifyJobNeedsReview,
+} from "./api";
 import { isSkipConfirmForIssuer } from "./storage";
 import type { ExtractorChoice, ImportItem, ImportItemStatus, LayoutSpec, Statement } from "./types";
 
@@ -103,6 +108,7 @@ export type Action =
       clientId: string;
       statement: Statement;
       proposal: ImportItem["proposal"];
+      duplicate?: boolean;
       llmConfigured?: boolean;
     }
   | { type: "upload_failed"; clientId: string; message: string }
@@ -114,7 +120,8 @@ export type Action =
   | { type: "extract_failed"; clientId: string; message: string }
   | { type: "job_event"; clientId: string; event: JobEvent }
   | { type: "statement_refreshed"; clientId: string; statement: Statement; llmConfigured?: boolean }
-  | { type: "needs_review_counted"; clientId: string; count: number | undefined };
+  | { type: "needs_review_counted"; clientId: string; count: number | undefined }
+  | { type: "import_counted"; clientId: string; inserted: number; skippedDuplicates: number };
 
 function reducer(items: ImportItem[], action: Action): ImportItem[] {
   const patch = (clientId: string, fn: (item: ImportItem) => ImportItem): ImportItem[] =>
@@ -137,6 +144,7 @@ function reducer(items: ImportItem[], action: Action): ImportItem[] {
           {
             ...item,
             statementId: action.statement.id,
+            duplicate: action.duplicate ?? false,
             proposal: action.proposal,
             selectedPages: action.statement.selected_pages ?? null,
             issuerId: action.proposal?.issuer_id ?? null,
@@ -190,6 +198,13 @@ function reducer(items: ImportItem[], action: Action): ImportItem[] {
 
     case "needs_review_counted":
       return patch(action.clientId, (item) => ({ ...item, needsReviewCount: action.count }));
+
+    case "import_counted":
+      return patch(action.clientId, (item) => ({
+        ...item,
+        insertedCount: action.inserted,
+        skippedDuplicates: action.skippedDuplicates,
+      }));
 
     default:
       return items;
@@ -285,8 +300,18 @@ export async function refreshAfterJob(
   dispatch({ type: "statement_refreshed", clientId, statement, llmConfigured });
 
   if (statement.status === "parsed") {
+    const importJob = await fetchJob(jobId);
+    if (importJob?.inserted != null) {
+      dispatch({
+        type: "import_counted",
+        clientId,
+        inserted: importJob.inserted,
+        skippedDuplicates: importJob.skipped_duplicates ?? 0,
+      });
+    }
     const count =
-      (await pollClassifyJobNeedsReview(jobId)) ?? (await fetchNeedsReviewCount({ statementId }));
+      (await pollClassifyJobNeedsReview(jobId, { importJob })) ??
+      (await fetchNeedsReviewCount({ statementId }));
     dispatch({ type: "needs_review_counted", clientId, count });
     void queryClient.invalidateQueries();
   }

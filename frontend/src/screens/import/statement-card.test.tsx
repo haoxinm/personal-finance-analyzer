@@ -115,4 +115,47 @@ describe("StatementCard", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("Reconciliation delta:");
     expect(screen.getByText(/missing section: PAYMENTS/)).toBeInTheDocument();
   });
+
+  const parsedStatement = {
+    id: 9,
+    user_id: 1,
+    account_id: 5,
+    status: "parsed" as const,
+    period_start: "2024-01-01",
+    period_end: "2024-01-31",
+    txn_count: 40,
+    reconciliation_delta_minor: 0,
+    detect_score: 0.9,
+    shape_warnings: null,
+    error_detail: null,
+    created_at: "2024-02-01T00:00:00Z",
+  };
+
+  it("shows 'Already imported' for a duplicate PDF instead of a count of new transactions", () => {
+    renderCard(
+      makeItem({ status: "parsed", statementId: 9, statement: parsedStatement, duplicate: true }),
+    );
+    expect(screen.getByText(/Already imported/)).toBeInTheDocument();
+    expect(screen.queryByText(/new transaction/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /Review/ })).not.toBeInTheDocument();
+  });
+
+  it("shows new and already-present counts, with next-step links", () => {
+    renderCard(
+      makeItem({
+        status: "parsed",
+        statementId: 9,
+        statement: parsedStatement,
+        insertedCount: 31,
+        skippedDuplicates: 9,
+        needsReviewCount: 5,
+      }),
+    );
+    expect(screen.getByText("31 new transactions · 9 already present · 5 need review")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Review 5/ })).toHaveAttribute("href", "/spending/review");
+    expect(screen.getByRole("link", { name: "View transactions" })).toHaveAttribute(
+      "href",
+      "/spending/transactions?statement_id=9",
+    );
+  });
 });

@@ -135,9 +135,15 @@ export async function fetchNeedsReviewCount(params: {
  */
 export async function pollClassifyJobNeedsReview(
   importJobId: string,
-  options: { intervalMs?: number; maxAttempts?: number } = {},
+  options: {
+    intervalMs?: number;
+    maxAttempts?: number;
+    /** The already-fetched import job, to save re-fetching it. */
+    importJob?: components["schemas"]["Job"] | null;
+  } = {},
 ): Promise<number | undefined> {
-  const importJob = await fetchJob(importJobId);
+  const importJob =
+    options.importJob !== undefined ? options.importJob : await fetchJob(importJobId);
   const classifyJobId = importJob?.classify_job_id;
   if (!classifyJobId) return undefined;
 
