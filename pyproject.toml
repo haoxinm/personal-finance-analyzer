@@ -26,6 +26,7 @@ dependencies = [
   "python-multipart>=0.0.9",
   "tomli-w>=1.0",
   "pypdfium2>=4",
+  "cryptography>=42",
 ]
 
 [project.optional-dependencies]

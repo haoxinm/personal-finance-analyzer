@@ -16,6 +16,7 @@ import pytest
 from sqlalchemy import Engine
 from sqlalchemy.orm import Session
 
+from spend_analyzer.backup import crypto
 from spend_analyzer.classify.taxonomy import sync_taxonomy
 from spend_analyzer.core.paths import SPEND_ANALYZER_HOME_ENV
 from spend_analyzer.db.migrate import upgrade_head
@@ -53,6 +54,14 @@ def session(engine: Engine) -> Generator[Session, None, None]:
         sync_taxonomy(db_session)
         db_session.commit()
         yield db_session
+
+
+@pytest.fixture(autouse=True)
+def _cheap_backup_kdf(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Encrypted backups derive their key with scrypt (128 MiB, a few hundred ms at the shipped
+    cost); lower it so the suite stays fast. The cost is read from each file's header on decrypt,
+    so this does not weaken what the tests prove."""
+    monkeypatch.setattr(crypto, "SCRYPT_LOG2_N", 10)
 
 
 class _NetworkGuardError(RuntimeError):
