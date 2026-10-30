@@ -12,7 +12,7 @@ import json
 import os
 import sys
 import webbrowser
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import date
 from pathlib import Path
@@ -1052,3 +1052,229 @@ def tax_delete_cmd(
             typer.echo(f"no tax document with id {document_id}", err=True)
             raise typer.Exit(code=1)
     typer.echo(f"Deleted tax document #{document_id}.")
+
+
+# --- tax estimate and parameters ------------------------------------------------------------------
+
+tax_params_app = typer.Typer(help="Federal tax parameters (brackets, deductions, limits) in use.")
+tax_app.add_typer(tax_params_app, name="params")
+
+
+def _echo_estimate_lines(rows: Sequence[tuple[str, int | None]], *, width: int = 44) -> None:
+    for label, amount in rows:
+        if amount is not None:
+            typer.echo(f"    {label.ljust(width)}  {_format_minor(amount):>14}")
+
+
+@tax_app.command(name="estimate")
+def tax_estimate_cmd(
+    year: int = typer.Option(..., "--year", help="Tax year to estimate (see `tax params show`)."),
+    user_id: int | None = typer.Option(
+        None, "--user-id", help="The user to estimate for (defaults to the default user)."
+    ),
+) -> None:
+    """Federal tax estimate for one user and year, from the W-2 / 1099 forms and the tax profile
+    (set it in the web UI); the Form 1040, when imported, is only a cross-check. Local only."""
+    from spend_analyzer.analytics import tax_estimate
+
+    _check_tax_year(year, "--year")
+    with _open_engine() as engine, _open_session(engine) as session:
+        resolved_user_id = _require_user_id(session, user_id)
+        try:
+            est = tax_estimate.run_tax_estimate(session, resolved_user_id, year)
+        except tax_estimate.EstimateUnavailable as exc:
+            typer.echo(str(exc), err=True)
+            raise typer.Exit(code=1) from None
+        except tax_estimate.EstimateConflict as exc:
+            typer.echo(f"conflicting tax profiles: {exc}", err=True)
+            raise typer.Exit(code=1) from None
+    c = est.calc
+    household = ", ".join(f"#{u}" for u in est.household_user_ids)
+    typer.echo(
+        f"Federal tax estimate {est.tax_year}, user #{est.user_id}  "
+        f"(filing status {c.filing_status}, from {est.filing_status_source}"
+        + (f"; joint with {household}" if len(est.household_user_ids) > 1 else "")
+        + f"; parameters v{est.parameters_version}, {est.parameters_source})"
+    )
+    typer.echo("  Income")
+    _echo_estimate_lines(
+        [
+            ("Wages and salary", c.wages_minor),
+            ("Interest", c.interest_minor),
+            ("Ordinary dividends", c.ordinary_dividends_minor),
+            ("Self-employment income", c.self_employment_minor),
+            ("Other income (forms)", c.other_income_minor),
+            ("Other income (profile)", c.profile_other_income_minor),
+            ("Net capital gain/loss counted", c.capital_result_counted_minor),
+            ("Gross income", c.gross_income_minor),
+        ]
+    )
+    typer.echo("  Deduction and taxable income")
+    _echo_estimate_lines(
+        [
+            ("Adjustments", c.adjustments_minor),
+            ("Half of self-employment tax", c.se_tax_deduction_minor),
+            ("Adjusted gross income", c.agi_minor),
+            (f"Deduction ({c.deduction_mode})", c.deduction_minor),
+            ("Taxable income", c.taxable_income_minor),
+            ("  of which dividends and gains", c.preferential_income_minor),
+        ]
+    )
+    typer.echo("  Tax")
+    _echo_estimate_lines(
+        [
+            ("Income tax", c.income_tax_minor),
+            ("  on ordinary income", c.ordinary_tax_minor),
+            ("  on dividends and gains", c.preferential_tax_minor),
+            ("Nonrefundable credits", -c.nonrefundable_credits_minor),
+            ("Self-employment tax", c.se_tax_minor),
+            ("Other taxes", c.other_taxes_minor),
+            ("Refundable credits", -c.refundable_credits_minor),
+            ("Total tax", est.calc.total_tax_minor),
+        ]
+    )
+    typer.echo("  Payments and result")
+    _echo_estimate_lines(
+        [
+            ("Federal tax withheld", c.federal_withheld_minor),
+            ("Estimated payments", c.estimated_payments_minor),
+            ("Other payments", c.other_payments_minor),
+            ("Total payments", c.total_payments_minor),
+            ("Refund" if c.result_minor >= 0 else "Amount owed", abs(c.result_minor)),
+        ]
+    )
+    if est.scope == "household_allocation":
+        typer.echo("  This user's part (an allocation of the household tax by share of income)")
+        share = f"{(est.share or 0) * 100:.1f}%"
+        _echo_estimate_lines(
+            [
+                (f"Allocated tax ({share} of gross income)", est.user_total_tax_minor),
+                ("Own payments", est.user_payments_minor),
+                (
+                    "Refund" if est.user_result_minor >= 0 else "Amount owed",
+                    abs(est.user_result_minor),
+                ),
+            ]
+        )
+    typer.echo("  Rates")
+    typer.echo(f"    Effective rate          {_pct(c.effective_rate):>8}")
+    typer.echo(f"    Marginal (ordinary)     {_pct(c.marginal_rate):>8}")
+    typer.echo(f"    Dividends and gains     {_pct(c.preferential_rate):>8}")
+    if c.retirement_deferral_minor or c.hsa_employer_minor:
+        typer.echo("  W-2 box 12 (memo, already excluded from wages)")
+        _echo_estimate_lines(
+            [
+                ("Retirement plan deferrals", c.retirement_deferral_minor),
+                ("Employer HSA contributions", c.hsa_employer_minor),
+            ]
+        )
+    cc = est.cross_check
+    if cc is not None:
+        typer.echo("  Cross-check against the Form 1040 (not used in the estimate)")
+        _echo_estimate_lines(
+            [
+                ("Return total tax", cc.return_total_tax_minor),
+                ("  estimate minus return", cc.delta_total_tax_minor),
+                ("Return federal withholding (line 25d)", cc.return_withheld_minor),
+                ("Return refund (+) / owed (-)", cc.return_result_minor),
+                ("  estimate minus return", cc.delta_result_minor),
+            ],
+            width=44,
+        )
+    for warning in est.warnings:
+        typer.echo(f"  warning: {warning}")
+    typer.echo("  Not modeled:")
+    for item in c.not_modeled:
+        typer.echo(f"    - {item}")
+
+
+def _print_params_status(status: Mapping[str, object]) -> None:
+    typer.echo(
+        f"Tax parameters in use: version {status['version']} ({status['source']}); "
+        f"bundled v{status['bundled']}, downloaded {status['cached'] or 'none'}, "
+        f"imported {status['override'] or 'none'}"
+    )
+    typer.echo(f"Years: {status['years']}")
+    typer.echo(
+        f"Last update check: {status['last_checked'] or 'never'}"
+        + (f" ({status['outcome']})" if status["outcome"] else "")
+        + f"; automatic yearly check: {'on' if status['auto'] else 'off'} "
+        "([tax] auto_update_params)"
+    )
+
+
+def _params_status() -> dict[str, object]:
+    from spend_analyzer.config import load_settings
+    from spend_analyzer.core import tax_params
+
+    current = tax_params.resolve()
+    versions = tax_params.versions()
+    state = tax_params.read_check_state()
+    return {
+        "version": current.version,
+        "source": current.source,
+        "bundled": versions["bundled"],
+        "cached": versions["cached"],
+        "override": versions["override"],
+        "years": ", ".join(str(y) for y in sorted(current.years)),
+        "last_checked": state.last_checked.isoformat() if state.last_checked else None,
+        "outcome": state.outcome,
+        "auto": load_settings().tax.auto_update_params,
+    }
+
+
+@tax_params_app.command(name="show")
+def tax_params_show_cmd() -> None:
+    """Which parameter file is in effect, the supported years and the update-check state."""
+    _print_params_status(_params_status())
+
+
+@tax_params_app.command(name="update")
+def tax_params_update_cmd() -> None:
+    """Check for updated parameters now: one plain GET of the project's public parameter file (no
+    user data), whatever `[tax] auto_update_params` says. Records the check date."""
+    from spend_analyzer.api.services import tax_params_update
+
+    result = tax_params_update.check_for_update()
+    typer.echo(f"{result.outcome}: {result.detail}")
+    _print_params_status(_params_status())
+    if result.outcome in ("rejected", "unreachable"):
+        raise typer.Exit(code=1)
+
+
+@tax_params_app.command(name="import")
+def tax_params_import_cmd(
+    path: str = typer.Argument(..., help="A parameter file in the bundled file's format."),
+) -> None:
+    """Use your own parameter file (it wins over the bundled and downloaded ones; `tax params clear`
+    removes it). It is validated like the bundled file first."""
+    from spend_analyzer.core import tax_params
+
+    source = Path(path)
+    if not source.is_file():
+        typer.echo(f"{path}: no such file", err=True)
+        raise typer.Exit(code=1)
+    try:
+        text = source.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        typer.echo(f"{path}: cannot read it as UTF-8 text", err=True)
+        raise typer.Exit(code=1) from None
+    try:
+        installed = tax_params.install_override(text)
+    except ValueError as exc:
+        typer.echo(f"{path}: not a valid parameter file: {exc}", err=True)
+        raise typer.Exit(code=1) from None
+    typer.echo(f"Imported parameter file (version {installed.version}).")
+    _print_params_status(_params_status())
+
+
+@tax_params_app.command(name="clear")
+def tax_params_clear_cmd() -> None:
+    """Remove the imported parameter file, going back to the downloaded or bundled one."""
+    from spend_analyzer.core import tax_params
+
+    typer.echo(
+        "Removed the imported parameter file."
+        if tax_params.clear_override()
+        else "No imported parameter file."
+    )

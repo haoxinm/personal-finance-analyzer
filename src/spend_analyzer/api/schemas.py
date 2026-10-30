@@ -760,6 +760,10 @@ class NetWorthAccountBalance(_Model):
     signed_minor: int
     as_of: str
     carried: bool
+    #: Carried forward from an entry more than `STALE_AFTER_MONTHS` (3) months old.
+    stale: bool = False
+    #: Whole months between `as_of` and the snapshot period.
+    months_old: int = 0
 
 
 class NetWorthPoint(_Model):
@@ -1117,6 +1121,29 @@ class TaxMemoAmount(_Model):
     amount_minor: int
 
 
+class TaxSupersededForm(_Model):
+    """A source form replaced by a corrected form with the same payer and account (not counted)."""
+
+    form_id: int
+    document_id: int
+    user_id: int
+    form_type: TaxFormType
+    superseded_by_form_id: int
+
+
+class TaxHeadline(_Model):
+    """What to show as the tax paid for the year (minor units). `federal_basis` says where the
+    federal figure comes from: `return` (the 1040's total tax with the Additional Medicare Tax
+    counted once, in `fica_minor`), `estimate` (the per-user estimate, no return), `withholding`
+    (federal tax withheld), or `mixed` (an all-users view whose users differ)."""
+
+    federal_minor: int
+    federal_basis: Literal["return", "estimate", "withholding", "mixed"]
+    fica_minor: int
+    state_minor: int
+    total_minor: int
+
+
 class TaxYearSummary(_Model):
     tax_year: int
     user_id: int | None
@@ -1137,6 +1164,196 @@ class TaxYearSummary(_Model):
     document_count: int
     form_count: int
     warnings: list[str]
+    #: `None` when there is no tax figure at all (no withholding, FICA, return or estimate).
+    headline: TaxHeadline | None = None
+    superseded_forms: list[TaxSupersededForm] = Field(default_factory=list)
+
+
+# --- Per-user federal tax estimate ----------------------------------------------------------------
+
+TaxDeductionMode = Literal["standard", "itemized"]
+#: Largest amount accepted in a tax profile field: $10 billion in cents.
+MAX_TAX_AMOUNT_MINOR = 10**12
+
+
+class TaxProfileIn(_Model):
+    """`PUT /api/tax/profiles/{user_id}/{tax_year}` body: the manual inputs of the estimate.
+    Amounts are non-negative cents. `joint_with_user_id` (the spouse, another existing user) is
+    only valid with `filing_status` `mfj`."""
+
+    filing_status: TaxFilingStatus
+    joint_with_user_id: int | None = None
+    deduction_mode: TaxDeductionMode = "standard"
+    itemized_deductions_minor: int = Field(default=0, ge=0, le=MAX_TAX_AMOUNT_MINOR)
+    age65_or_blind_count: int = Field(default=0, ge=0, le=4)
+    adjustments_minor: int = Field(default=0, ge=0, le=MAX_TAX_AMOUNT_MINOR)
+    other_income_minor: int = Field(default=0, ge=0, le=MAX_TAX_AMOUNT_MINOR)
+    capital_loss_carryover_minor: int = Field(default=0, ge=0, le=MAX_TAX_AMOUNT_MINOR)
+    nonrefundable_credits_minor: int = Field(default=0, ge=0, le=MAX_TAX_AMOUNT_MINOR)
+    refundable_credits_minor: int = Field(default=0, ge=0, le=MAX_TAX_AMOUNT_MINOR)
+    other_taxes_minor: int = Field(default=0, ge=0, le=MAX_TAX_AMOUNT_MINOR)
+    estimated_payments_minor: int = Field(default=0, ge=0, le=MAX_TAX_AMOUNT_MINOR)
+    other_payments_minor: int = Field(default=0, ge=0, le=MAX_TAX_AMOUNT_MINOR)
+
+
+class TaxProfile(TaxProfileIn):
+    user_id: int
+    tax_year: int
+    updated_at: str
+
+
+class TaxEstimateCalc(_Model):
+    """The computation (the whole household's for a joint return), all `_minor` fields in cents and
+    the rates as fractions (0.22 = 22%)."""
+
+    filing_status: TaxFilingStatus
+    # income
+    wages_minor: int
+    interest_minor: int
+    ordinary_dividends_minor: int
+    qualified_dividends_minor: int
+    short_term_gain_minor: int
+    long_term_gain_minor: int
+    capital_loss_carryover_in_minor: int
+    capital_result_counted_minor: int
+    capital_loss_carryover_out_minor: int
+    self_employment_minor: int
+    other_income_minor: int
+    profile_other_income_minor: int
+    gross_income_minor: int
+    # AGI, deduction, taxable income
+    adjustments_minor: int
+    se_tax_deduction_minor: int
+    agi_minor: int
+    deduction_mode: TaxDeductionMode
+    deduction_minor: int
+    taxable_income_minor: int
+    preferential_income_minor: int
+    # tax
+    income_tax_minor: int
+    ordinary_tax_minor: int
+    preferential_tax_minor: int
+    nonrefundable_credits_minor: int
+    se_tax_minor: int
+    other_taxes_minor: int
+    refundable_credits_minor: int
+    total_tax_minor: int
+    # payments and result (`result_minor` > 0 refund, < 0 owed)
+    federal_withheld_minor: int
+    estimated_payments_minor: int
+    other_payments_minor: int
+    total_payments_minor: int
+    result_minor: int
+    refund_minor: int
+    owed_minor: int
+    effective_rate: float | None
+    marginal_rate: float | None
+    preferential_rate: float | None
+    # W-2 box 12 memo items (never subtracted again)
+    retirement_deferral_minor: int
+    hsa_employer_minor: int
+
+
+class TaxEstimateUser(_Model):
+    """This user's part. For `scope` `individual` it equals the computation; for
+    `household_allocation` `total_tax_minor` is an allocation of the household tax by `share` of
+    gross income (an allocation, not a separate liability) and the payments are the user's own."""
+
+    gross_income_minor: int
+    share: float | None
+    total_tax_minor: int
+    payments_minor: int
+    result_minor: int
+    refund_minor: int
+    owed_minor: int
+
+
+class TaxEstimateCrossCheck(_Model):
+    """The latest Form 1040 for the year beside the estimate (never an input). Deltas are
+    estimate minus return; `null` when the return did not print the figure."""
+
+    return_filing_status: str | None
+    return_total_tax_minor: int | None
+    return_withheld_minor: int | None
+    return_refund_minor: int | None
+    return_owed_minor: int | None
+    return_result_minor: int | None
+    delta_total_tax_minor: int | None
+    delta_withheld_minor: int | None
+    delta_result_minor: int | None
+    #: The estimate compared is the household's.
+    household: bool
+
+
+class TaxEstimateParameters(_Model):
+    tax_year: int
+    source: Literal["bundled", "cached", "override"]
+    params_version: int
+    sources: list[str]
+
+
+class TaxEstimate(_Model):
+    """`GET /api/tax/estimate`."""
+
+    user_id: int
+    tax_year: int
+    scope: Literal["individual", "household_allocation"]
+    household_user_ids: list[int]
+    filing_status: TaxFilingStatus
+    filing_status_source: Literal["profile", "return", "default"]
+    calc: TaxEstimateCalc
+    user: TaxEstimateUser
+    cross_check: TaxEstimateCrossCheck | None
+    #: The saved profile of the requested user, or `null` when defaults were used.
+    profile: TaxProfile | None
+    parameters: TaxEstimateParameters
+    warnings: list[str]
+    not_modeled: list[str]
+
+
+class TaxParameterYear(_Model):
+    """One year of `GET /api/tax/parameters` (cents)."""
+
+    tax_year: int
+    sources: list[str]
+    standard_deduction_minor: dict[str, int]
+    additional_standard_deduction_unmarried_minor: int
+    additional_standard_deduction_married_minor: int
+    capital_loss_limit_minor: int
+    capital_loss_limit_mfs_minor: int
+    ss_wage_base_minor: int
+    elective_deferral_limit_minor: int
+    niit_threshold_minor: dict[str, int]
+    additional_medicare_threshold_minor: dict[str, int]
+
+
+class TaxParametersStatus(_Model):
+    """Which parameter file is in effect and the state of the opt-in yearly update check."""
+
+    source: Literal["bundled", "cached", "override"]
+    params_version: int
+    bundled_version: int
+    cached_version: int | None
+    override_version: int | None
+    #: Date (ISO, local) of the last update check, `null` if never; `last_check_outcome` is
+    #: `updated`, `current`, `rejected`, `unreachable`, or `pending`.
+    last_checked: str | None
+    last_check_outcome: str | None
+    #: `[tax] auto_update_params`: the opt-in, off by default.
+    auto_update: bool
+
+
+class TaxParameters(TaxParametersStatus):
+    years: list[TaxParameterYear]
+
+
+class TaxParametersRefreshResponse(_Model):
+    """`POST /api/tax/parameters/refresh`: one update check, run now (an explicit action, so it
+    does not need the opt-in)."""
+
+    outcome: Literal["updated", "current", "rejected", "unreachable"]
+    detail: str
+    parameters: TaxParameters
 
 
 class TaxIncomePayer(_Model):

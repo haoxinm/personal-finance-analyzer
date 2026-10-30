@@ -15,6 +15,7 @@ whenever an LLM is configured.
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 from collections.abc import Mapping
@@ -27,17 +28,24 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
-from spend_analyzer.analytics import tax_query
+from spend_analyzer.analytics import tax_estimate, tax_query
 from spend_analyzer.analytics.tax_query import TaxQuery
 from spend_analyzer.api import schemas
 from spend_analyzer.api.deps import SessionDep, SettingsDep
-from spend_analyzer.api.services import crud, gateway, statement_preview, tax_llm, tax_params_update
+from spend_analyzer.api.services import (
+    crud,
+    gateway,
+    statement_preview,
+    tax_llm,
+    tax_params_update,
+)
 from spend_analyzer.api.services.uploads import (
     read_pdf_upload,
     sanitize_original_name,
     save_upload,
 )
 from spend_analyzer.config import Settings
+from spend_analyzer.core import tax_calc, tax_params
 from spend_analyzer.core.errors import SpendAnalyzerError
 from spend_analyzer.core.tax_types import (
     INCOME_CATEGORY_LABELS,
@@ -45,7 +53,7 @@ from spend_analyzer.core.tax_types import (
     TAX_CATEGORY_LABELS,
     TaxCategory,
 )
-from spend_analyzer.db.models import IncomeItem, TaxDocument, TaxForm, TaxItem
+from spend_analyzer.db.models import IncomeItem, TaxDocument, TaxForm, TaxItem, TaxProfile
 from spend_analyzer.ingest.pages import parse_page_spec
 from spend_analyzer.ingest.tax import edit, on_demand, staging
 from spend_analyzer.ingest.tax.pipeline import delete_tax_document
@@ -515,6 +523,27 @@ def _summary(s: tax_query.TaxYearSummary) -> schemas.TaxYearSummary:
         document_count=s.document_count,
         form_count=s.form_count,
         warnings=list(s.warnings),
+        headline=(
+            None
+            if s.headline is None
+            else schemas.TaxHeadline(
+                federal_minor=s.headline.federal_minor,
+                federal_basis=s.headline.federal_basis,
+                fica_minor=s.headline.fica_minor,
+                state_minor=s.headline.state_minor,
+                total_minor=s.headline.total_minor,
+            )
+        ),
+        superseded_forms=[
+            schemas.TaxSupersededForm(
+                form_id=f.form_id,
+                document_id=f.document_id,
+                user_id=f.user_id,
+                form_type=schemas.TaxFormType(f.form_type),
+                superseded_by_form_id=f.superseded_by_form_id,
+            )
+            for f in s.superseded
+        ],
     )
 
 
@@ -787,3 +816,222 @@ def delete_tax_item(item_id: int, session: SessionDep) -> Response:
     except edit.EditError as exc:
         raise _raise(exc) from None
     return Response(status_code=204)
+
+
+# --- per-user federal tax estimate ----------------------------------------------------------------
+#
+# `GET /tax/estimate` computes from the source forms and the user's `tax_profiles` row
+# (`analytics/tax_estimate.py`); the profile endpoints are the manual inputs. Parameters (brackets,
+# deductions, limits) come from `core/tax_params.py`; `GET /tax/parameters` reports them and which
+# file is in effect, and `POST /tax/parameters/refresh` runs the update check on request.
+
+
+def _profile_out(row: TaxProfile) -> schemas.TaxProfile:
+    return schemas.TaxProfile(
+        user_id=row.user_id,
+        tax_year=row.tax_year,
+        updated_at=row.updated_at,
+        filing_status=row.filing_status,
+        joint_with_user_id=row.joint_with_user_id,
+        deduction_mode=row.deduction_mode,
+        itemized_deductions_minor=row.itemized_deductions_minor,
+        age65_or_blind_count=row.age65_or_blind_count,
+        adjustments_minor=row.adjustments_minor,
+        other_income_minor=row.other_income_minor,
+        capital_loss_carryover_minor=row.capital_loss_carryover_minor,
+        nonrefundable_credits_minor=row.nonrefundable_credits_minor,
+        refundable_credits_minor=row.refundable_credits_minor,
+        other_taxes_minor=row.other_taxes_minor,
+        estimated_payments_minor=row.estimated_payments_minor,
+        other_payments_minor=row.other_payments_minor,
+    )
+
+
+def _require_user(session: Session, user_id: int, *, what: str = "user") -> None:
+    if crud.get_user(session, user_id) is None:
+        raise HTTPException(status_code=404, detail=f"{what} not found")
+
+
+@router.get("/tax/profiles/{user_id}/{tax_year}", response_model=schemas.TaxProfile)
+def get_profile(user_id: int, tax_year: int, session: SessionDep) -> schemas.TaxProfile:
+    _check_year(tax_year)
+    _require_user(session, user_id)
+    row = tax_estimate.get_profile(session, user_id, tax_year)
+    if row is None:
+        raise HTTPException(status_code=404, detail="tax profile not found")
+    return _profile_out(row)
+
+
+@router.put("/tax/profiles/{user_id}/{tax_year}", response_model=schemas.TaxProfile)
+def put_profile(
+    user_id: int,
+    tax_year: int,
+    body: schemas.TaxProfileIn,
+    response: Response,
+    session: SessionDep,
+) -> schemas.TaxProfile:
+    """Create or replace the profile (201 when created). `joint_with_user_id` needs filing status
+    `mfj` and an existing other user (404 / 422); 409 when that spouse already has a profile for
+    the year that disagrees (not `mfj`, or naming someone else)."""
+    _check_year(tax_year)
+    _require_user(session, user_id)
+    spouse = body.joint_with_user_id
+    if spouse is not None:
+        if body.filing_status != "mfj":
+            raise HTTPException(
+                status_code=422, detail="a spouse can only be set with filing status mfj"
+            )
+        if spouse == user_id:
+            raise HTTPException(status_code=422, detail="a user cannot be their own spouse")
+        _require_user(session, spouse, what="spouse")
+        other = tax_estimate.get_profile(session, spouse, tax_year)
+        if other is not None and (
+            other.filing_status != "mfj" or other.joint_with_user_id not in (None, user_id)
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="the spouse's profile for this year disagrees: both must be married "
+                "filing jointly and name each other",
+            )
+    row = tax_estimate.get_profile(session, user_id, tax_year)
+    created = row is None
+    if row is None:
+        row = TaxProfile(user_id=user_id, tax_year=tax_year, filing_status=body.filing_status)
+        session.add(row)
+    for name, value in body.model_dump().items():
+        setattr(row, name, value)
+    session.commit()
+    session.refresh(row)
+    if created:
+        response.status_code = 201
+    return _profile_out(row)
+
+
+@router.delete("/tax/profiles/{user_id}/{tax_year}", status_code=204)
+def delete_profile(user_id: int, tax_year: int, session: SessionDep) -> Response:
+    _check_year(tax_year)
+    _require_user(session, user_id)
+    row = tax_estimate.get_profile(session, user_id, tax_year)
+    if row is None:
+        raise HTTPException(status_code=404, detail="tax profile not found")
+    session.delete(row)
+    session.commit()
+    return Response(status_code=204)
+
+
+def _calc_out(c: tax_estimate.EstimateResult) -> schemas.TaxEstimateCalc:
+    fields = {
+        name: getattr(c, name)
+        for name in schemas.TaxEstimateCalc.model_fields
+        if name not in ("refund_minor", "owed_minor")
+    }
+    return schemas.TaxEstimateCalc(**fields, refund_minor=c.refund_minor, owed_minor=c.owed_minor)
+
+
+def _estimate_out(e: tax_estimate.UserEstimate, profile: TaxProfile | None) -> schemas.TaxEstimate:
+    return schemas.TaxEstimate(
+        user_id=e.user_id,
+        tax_year=e.tax_year,
+        scope=e.scope,
+        household_user_ids=list(e.household_user_ids),
+        filing_status=e.calc.filing_status,
+        filing_status_source=e.filing_status_source,
+        calc=_calc_out(e.calc),
+        user=schemas.TaxEstimateUser(
+            gross_income_minor=e.user_gross_income_minor,
+            share=e.share,
+            total_tax_minor=e.user_total_tax_minor,
+            payments_minor=e.user_payments_minor,
+            result_minor=e.user_result_minor,
+            refund_minor=max(e.user_result_minor, 0),
+            owed_minor=max(-e.user_result_minor, 0),
+        ),
+        cross_check=(
+            None
+            if e.cross_check is None
+            else schemas.TaxEstimateCrossCheck(**dataclasses.asdict(e.cross_check))
+        ),
+        profile=None if profile is None else _profile_out(profile),
+        parameters=schemas.TaxEstimateParameters(
+            tax_year=e.tax_year,
+            source=e.parameters_source,
+            params_version=e.parameters_version,
+            sources=list(e.parameter_sources),
+        ),
+        warnings=list(e.warnings),
+        not_modeled=list(e.calc.not_modeled),
+    )
+
+
+@router.get("/tax/estimate", response_model=schemas.TaxEstimate)
+def tax_estimate_route(
+    user_id: int, tax_year: int, session: SessionDep, settings: SettingsDep
+) -> schemas.TaxEstimate:
+    """The federal tax estimate of one user for one year (see `analytics/tax_estimate.py`). 404 for
+    an unknown user, 422 when there are no tax parameters for the year, 409 when the spouses'
+    profiles disagree."""
+    _check_year(tax_year)
+    _require_user(session, user_id)
+    tax_params_update.maybe_check_in_background(settings)  # opt-in, once a year, never blocks
+    try:
+        result = tax_estimate.run_tax_estimate(session, user_id, tax_year)
+    except tax_estimate.EstimateUnavailable as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    except tax_estimate.EstimateConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    return _estimate_out(result, tax_estimate.get_profile(session, user_id, tax_year))
+
+
+def _parameters(settings: Settings) -> schemas.TaxParameters:
+    current = tax_params.resolve()
+    versions = tax_params.versions()
+    state = tax_params.read_check_state()
+    return schemas.TaxParameters(
+        source=current.source,
+        params_version=current.version,
+        bundled_version=versions["bundled"] or 0,
+        cached_version=versions["cached"],
+        override_version=versions["override"],
+        last_checked=None if state.last_checked is None else state.last_checked.isoformat(),
+        last_check_outcome=state.outcome,
+        auto_update=settings.tax.auto_update_params,
+        years=[
+            schemas.TaxParameterYear(
+                tax_year=p.tax_year,
+                sources=list(p.sources),
+                standard_deduction_minor=dict(p.standard_deduction_minor),
+                additional_standard_deduction_unmarried_minor=(
+                    p.additional_standard_deduction_unmarried_minor
+                ),
+                additional_standard_deduction_married_minor=(
+                    p.additional_standard_deduction_married_minor
+                ),
+                capital_loss_limit_minor=p.capital_loss_limit_minor,
+                capital_loss_limit_mfs_minor=p.capital_loss_limit_mfs_minor,
+                ss_wage_base_minor=p.ss_wage_base_minor,
+                elective_deferral_limit_minor=p.elective_deferral_limit_minor,
+                niit_threshold_minor=dict(p.niit_threshold_minor),
+                additional_medicare_threshold_minor=dict(p.additional_medicare_threshold_minor),
+            )
+            for _year, p in sorted(current.years.items())
+            if tax_calc.params_for(p.tax_year) is not None
+        ],
+    )
+
+
+@router.get("/tax/parameters", response_model=schemas.TaxParameters)
+def tax_parameters(settings: SettingsDep) -> schemas.TaxParameters:
+    """The tax years the estimate supports with their IRS sources, which parameter file is in
+    effect (bundled, downloaded or imported) and the state of the opt-in yearly update check."""
+    return _parameters(settings)
+
+
+@router.post("/tax/parameters/refresh", response_model=schemas.TaxParametersRefreshResponse)
+def refresh_tax_parameters(settings: SettingsDep) -> schemas.TaxParametersRefreshResponse:
+    """Check for updated parameters now (one plain GET of the project's public file, no user
+    data; blocks up to 10 seconds). An explicit action, so it works with the opt-in off; the date
+    is recorded like an automatic check."""
+    result = tax_params_update.check_for_update()
+    return schemas.TaxParametersRefreshResponse(
+        outcome=result.outcome, detail=result.detail, parameters=_parameters(settings)
+    )
