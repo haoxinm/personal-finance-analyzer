@@ -211,9 +211,18 @@ This is the reason to run this instead of a hosted budgeting app.
   investment, credit card) live only in your local database. They are never exported, never part
   of any LLM payload, and the net-worth code (including the forecast, its manual past-year net worth
   and saved presets) imports neither an LLM nor an HTTP client.
-- **Secrets** (an LLM API key) live only in your OS credential store (macOS Keychain, Windows
+- **Secrets** (an LLM API key) live in your OS credential store (macOS Keychain, Windows
   Credential Manager, Linux Secret Service), keyed per host — never in the database, the config
-  file, or a log line. On a headless machine you can supply it as `PFA_LLM_API_KEY`.
+  file, or a log line. The key is looked up in this order: the `PFA_LLM_API_KEY` environment
+  variable, then the OS keychain, then (only if you opt in) a plaintext key file. On a machine with
+  no keychain at all (headless Linux, WSL, an SSH session, a container) saving a key fails with
+  setup instructions rather than falling back silently; either export `PFA_LLM_API_KEY`, set up a
+  Secret Service (see [docs/INSTALL.md](docs/INSTALL.md#linux-keychain-setup)), or switch on
+  `[secrets] allow_file_store = true` (Settings -> LLM provider shows the toggle) to keep keys in
+  `<data dir>/secrets/api_keys.toml`. That file is **plaintext at rest**, protected only by its
+  `0600` permissions, used only while no keychain is available, and never part of a backup.
+  Settings and `pfa doctor` both say which backend is in use. `pfa doctor` only *reads* the
+  keychain; `pfa doctor --write-test` is the explicit write round trip.
 - **Backups are encrypted by default and never carry secrets.** `backup create` (and Settings ->
   Backup & restore) seals the archive with a passphrase (scrypt + AES-256-GCM); skipping that is an
   explicit `--no-encrypt`. The OS-keychain API key is never read into one. The archive is built
@@ -389,7 +398,7 @@ pfa report               print monthly category totals for a date range
 pfa export               export transactions to CSV/JSON (never includes account masks)
 pfa backup               move all data to another machine (create / inspect / restore)
 pfa llm                  configure the LLM (show / set / enable / disable / set-key / clear-key / test)
-pfa doctor               diagnose the local install: Python, data dir, DB, keychain, LLM
+pfa doctor               diagnose the local install: Python, data dir, DB, secret backend (read-only; --write-test), LLM
 pfa eval                 run the classifier evaluation harness against a labelled CSV
 pfa users                manage local users (list / add / set-default)
 pfa issuers              manage issuers (list / add), so later imports auto-confirm

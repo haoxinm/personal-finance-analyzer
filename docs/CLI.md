@@ -175,8 +175,12 @@ $ pfa llm clear-key
 
 Stores/removes the API key in the OS credential store (macOS Keychain, Windows Credential Manager,
 Linux Secret Service), **one key per host**, so a key saved for one endpoint is never sent to
-another. Local servers usually need none. On a headless machine without a credential store, set
-the `PFA_LLM_API_KEY` environment variable instead.
+another. Local servers usually need none. On a machine without a credential store, `set-key`
+fails with setup instructions (it never saves to a file on its own): set the `PFA_LLM_API_KEY`
+environment variable instead, or opt in to the plaintext key file with
+`[secrets] allow_file_store = true` (see [INSTALL.md](INSTALL.md#headless-linux-wsl-and-ssh)), in
+which case `set-key` says it used the file and prints the plaintext warning. `llm show` prints
+where the key comes from (environment variable, keychain, key file), never the key.
 
 ### `llm test`
 
@@ -496,14 +500,33 @@ $ pfa doctor
 PASS  Python version >= 3.12
 PASS  Data directory (...) writable
 PASS  Database migrated to head (0001_initial)
-PASS  Keychain read/write
+PASS  Keychain backend: macOS Keychain
+INFO  Key source / save target: none saved (a saved key would go to the OS keychain: macOS Keychain)
+SKIP  Keychain write test (read-only by default; run `pfa doctor --write-test`)
 SKIP  LLM connectivity (disabled — run `pfa llm set ...` to configure)
 ```
 
-Diagnoses the local install: Python version, data directory permissions, migration state,
-credential-store access, and (only if an LLM is enabled) connectivity to it
+Diagnoses the local install: Python version, data directory permissions, migration state, which
+secret backend is in use, and (only if an LLM is enabled) connectivity to it
 (`PASS  LLM connectivity (...)` or `FAIL  LLM connectivity failed: ...`). Exits non-zero
 on any `FAIL`.
+
+The secret check is **read-only by default**: it reports the active keyring backend, whether it is
+a usable secure one (not a missing, `null` or plaintext backend), whether the configured endpoint's
+key can be read, and where a saved key would go (environment variable, keychain, or the opt-in
+plaintext file, with its warning). It never writes to the keychain, because a keychain write can
+raise an OS dialog (for example macOS's "A keychain cannot be found to store ...") or fail on a
+machine with a missing login keychain. `WARN` lines (no keychain here, key file holds keys but is
+disabled) do not fail the run.
+
+```console
+$ pfa doctor --write-test
+...
+PASS  Keychain write test (probe entry written, read back, deleted)
+```
+
+`--write-test` adds an explicit set/get/delete round trip of a probe entry in the OS keychain
+(`FAIL  Keychain write test failed: ...` with the cause and fix if it cannot).
 
 ## `eval`
 

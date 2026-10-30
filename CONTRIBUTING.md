@@ -19,8 +19,13 @@ commands above are identical everywhere; on Windows use PowerShell or Git Bash, 
 `uv run <cmd>` rather than activating the virtualenv by hand (or run
 `.venv\Scripts\Activate.ps1`). Install Node.js 22+ only if you touch `frontend/` or build a wheel.
 Set `PYTHONUTF8=1` if you see encoding errors reading fixtures on Windows. The tests never touch a
-real credential store (`keyring` is mocked) or your real data directory (`PFA_HOME` is
-redirected per test), so no keyring backend is needed just to run the suite. When writing code,
+real credential store (every test runs on an in-memory `keyring`) or your real data directory
+(`HOME` and `PFA_HOME` point into a scratch directory, and the run fails if the real data directories
+change), so no keyring backend is needed just to run the suite. The one exception is
+`@pytest.mark.linux_keyring`: those tests need a real Secret Service and are skipped unless
+`PFA_TEST_LINUX_KEYRING=1`; run them on Linux with
+`dbus-run-session -- sh -c 'echo pw | gnome-keyring-daemon --unlock --components=secrets && PFA_TEST_LINUX_KEYRING=1 uv run pytest -m linux_keyring'`
+(CI does this in the `linux-keyring` job). When writing code,
 build paths with `pathlib` (never string-splitting on `/`), open text files with an explicit
 `encoding="utf-8"`, and don't rely on POSIX permission bits (`chmod`) or on replacing a file that
 may be open — mark genuinely POSIX-only tests with
