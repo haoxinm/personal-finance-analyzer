@@ -15,6 +15,9 @@ declare module "@tanstack/react-table" {
      *  fixed-size columns leave behind, rather than getting a fixed width of its own
      *  (`table.tsx`'s `columnFlex` reads this — see its doc comment for why). */
     flexible?: boolean;
+    /** Makes the column header a sort control: the `GET /transactions` `sort` key it toggles
+     *  (`posted_date` or `amount_minor`; a `-` prefix on the active sort means descending). */
+    sortKey?: "posted_date" | "amount_minor";
   }
 }
 
@@ -71,6 +74,7 @@ export function createColumns(context: ColumnsContext): ColumnDef<Transaction>[]
         <span className="whitespace-nowrap">{row.original.posted_date}</span>
       ),
       size: 104,
+      meta: { sortKey: "posted_date" },
     },
     {
       id: "description",
@@ -144,6 +148,7 @@ export function createColumns(context: ColumnsContext): ColumnDef<Transaction>[]
         <Money minorUnits={row.original.amount_minor} currency={row.original.currency} />
       ),
       size: 110,
+      meta: { sortKey: "amount_minor" },
     },
     {
       id: "notes",

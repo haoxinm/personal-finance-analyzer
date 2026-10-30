@@ -238,4 +238,133 @@ describe("TransactionsScreen", () => {
     expect(calls.every((r) => new URL(r.url).searchParams.getAll("user_ids").join() === "1")).toBe(true);
     expect(screen.getByRole("radio", { name: "Alex" })).toHaveAttribute("aria-checked", "true");
   });
+
+  it("selects every matching transaction via the ids endpoint, then confirms before applying", async () => {
+    const user = userEvent.setup();
+    const allIds = Array.from({ length: 1234 }, (_, i) => i + 1);
+    const fetchMock = await mountWithFetch((request) => {
+      if (request.url.includes("/api/taxonomy")) return jsonResponse(CATEGORIES);
+      if (request.method === "GET" && request.url.includes("/api/transactions/ids")) {
+        return jsonResponse({ ids: allIds, total: allIds.length });
+      }
+      if (request.method === "GET" && request.url.includes("/api/transactions")) {
+        return jsonResponse({ items: TRANSACTIONS, total: allIds.length });
+      }
+      if (request.method === "POST" && request.url.includes("/api/transactions/bulk-update")) {
+        return jsonResponse({ updated: allIds.length });
+      }
+      throw new Error(`unexpected fetch: ${request.method} ${request.url}`);
+    });
+
+    await screen.findByText("Corner Store");
+    await user.click(screen.getByRole("checkbox", { name: "Select transaction 1" }));
+    await user.click(screen.getByRole("button", { name: "Select all 1234 matching filters" }));
+
+    expect(await screen.findByText("All 1,234 matching selected")).toBeInTheDocument();
+    // The grid's list endpoint caps a page at 500 rows: the selection must come from /ids.
+    expect(callsTo(fetchMock, "GET", "/api/transactions/ids")).toHaveLength(1);
+
+    await user.selectOptions(screen.getByLabelText("Bulk category"), "groceries");
+    await user.selectOptions(screen.getByLabelText("Bulk subcategory"), "supermarket");
+    await user.click(screen.getByRole("button", { name: "Apply to 1234" }));
+
+    // Applying to everything matching asks first, with the count, and sends nothing yet.
+    const confirm = await screen.findByRole("alertdialog", { name: "Confirm bulk update" });
+    expect(confirm).toHaveTextContent("all 1,234 matching transactions");
+    expect(callsTo(fetchMock, "POST", "/api/transactions/bulk-update")).toHaveLength(0);
+
+    await user.click(within(confirm).getByRole("button", { name: "Yes, apply to 1,234" }));
+    await waitFor(() => expect(screen.getByText("Updated 1234 transactions")).toBeInTheDocument());
+    const bulkCalls = callsTo(fetchMock, "POST", "/api/transactions/bulk-update");
+    const body = (await bulkCalls[0]!.clone().json()) as { transaction_ids: number[] };
+    expect(body.transaction_ids).toHaveLength(1234);
+  });
+
+  it("does not report a partial bulk update as a success", async () => {
+    const user = userEvent.setup();
+    await mountWithFetch((request) => {
+      if (request.url.includes("/api/taxonomy")) return jsonResponse(CATEGORIES);
+      if (request.method === "GET" && request.url.includes("/api/transactions")) {
+        return jsonResponse({ items: TRANSACTIONS, total: 2 });
+      }
+      if (request.method === "POST" && request.url.includes("/api/transactions/bulk-update")) {
+        return jsonResponse({ updated: 1 });
+      }
+      throw new Error(`unexpected fetch: ${request.method} ${request.url}`);
+    });
+
+    await screen.findByText("Corner Store");
+    await user.click(screen.getByRole("checkbox", { name: "Select transaction 1" }));
+    await user.click(screen.getByRole("checkbox", { name: "Select transaction 2" }));
+    await user.selectOptions(screen.getByLabelText("Bulk category"), "groceries");
+    await user.selectOptions(screen.getByLabelText("Bulk subcategory"), "supermarket");
+    await user.click(screen.getByRole("button", { name: "Apply to 2" }));
+
+    expect(await screen.findByText("Updated 1 of 2 transactions")).toBeInTheDocument();
+    expect(screen.getByText(/1 could not be updated/)).toBeInTheDocument();
+  });
+
+  it("saves a kind-only edit and a notes edit without sending a category", async () => {
+    const user = userEvent.setup();
+    const fetchMock = await mountWithFetch((request) => {
+      if (request.url.includes("/api/taxonomy")) return jsonResponse(CATEGORIES);
+      if (request.method === "GET" && request.url.includes("/api/transactions")) {
+        return jsonResponse({ items: TRANSACTIONS, total: 2 });
+      }
+      if (request.method === "PATCH" && request.url.includes("/api/transactions/1")) {
+        return jsonResponse(TRANSACTIONS[0]);
+      }
+      throw new Error(`unexpected fetch: ${request.method} ${request.url}`);
+    });
+
+    await screen.findByText("Corner Store");
+    await user.click(screen.getByRole("button", { name: "Uncategorized" }));
+    const dialog = await screen.findByRole("dialog", { name: "Edit transaction 1" });
+    await user.selectOptions(within(dialog).getByLabelText("Kind"), "transfer");
+    await user.type(within(dialog).getByLabelText("Notes"), "moved to savings");
+    await user.click(within(dialog).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+
+    const patchCalls = callsTo(fetchMock, "PATCH", "/api/transactions/1");
+    expect(patchCalls).toHaveLength(1);
+    const body = (await patchCalls[0]!.clone().json()) as Record<string, unknown>;
+    expect(body).toMatchObject({ kind: "transfer", notes: "moved to savings" });
+    expect(body).not.toHaveProperty("category_key");
+  });
+
+  it("filters to needs-review rows and sorts by amount through the API", async () => {
+    const user = userEvent.setup();
+    const fetchMock = await mountWithFetch((request) => {
+      if (request.url.includes("/api/taxonomy")) return jsonResponse(CATEGORIES);
+      if (request.url.includes("/api/transactions")) return jsonResponse({ items: TRANSACTIONS, total: 2 });
+      throw new Error(`unexpected fetch: ${request.method} ${request.url}`);
+    });
+    await screen.findByText("Corner Store");
+
+    await user.click(screen.getByRole("button", { name: "Needs review" }));
+    await waitFor(() => {
+      const last = new URL(callsTo(fetchMock, "GET", "/api/transactions").at(-1)!.url);
+      expect(last.searchParams.get("needs_review")).toBe("true");
+    });
+
+    await user.click(screen.getByRole("columnheader", { name: /Amount/ }));
+    await waitFor(() => {
+      const last = new URL(callsTo(fetchMock, "GET", "/api/transactions").at(-1)!.url);
+      expect(last.searchParams.get("sort")).toBe("-amount_minor");
+      expect(last.searchParams.get("needs_review")).toBe("true"); // the two params coexist
+    });
+  });
+
+  it("opens on one statement's rows from ?statement_id=", async () => {
+    const fetchMock = await mountWithFetch((request) => {
+      if (request.url.includes("/api/taxonomy")) return jsonResponse(CATEGORIES);
+      if (request.url.includes("/api/transactions")) return jsonResponse({ items: TRANSACTIONS, total: 2 });
+      throw new Error(`unexpected fetch: ${request.method} ${request.url}`);
+    }, "/spending/transactions?statement_id=9&needs_review=true");
+    expect(await screen.findByText("Corner Store")).toBeInTheDocument();
+    const params = new URL(callsTo(fetchMock, "GET", "/api/transactions").at(-1)!.url).searchParams;
+    expect(params.get("statement_id")).toBe("9");
+    expect(params.get("needs_review")).toBe("true");
+    expect(screen.getByRole("button", { name: "Remove filter: statement 9" })).toBeInTheDocument();
+  });
 });

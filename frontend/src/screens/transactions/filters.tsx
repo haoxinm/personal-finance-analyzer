@@ -5,12 +5,19 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import type { SpendQueryParams } from "@/hooks/use-spend-query-params";
 
+import type { AccountOption } from "./api";
 import { KINDS, type Category } from "./types";
+import type { GridParams } from "./use-grid-params";
 
 export interface FiltersBarProps {
   filters: SpendQueryParams;
   categories: Category[];
   onChange: (next: Partial<SpendQueryParams>) => void;
+  /** Grid-only filters (needs review, uncategorized, one statement) and their setter. */
+  grid: GridParams;
+  onGridChange: (next: Partial<GridParams>) => void;
+  /** Accounts the account filter offers (already narrowed to the selected user view). */
+  accounts: AccountOption[];
 }
 
 /** Debounces a free-text input so every keystroke doesn't push a new URL entry / re-fetch. */
@@ -37,7 +44,14 @@ function useDebouncedCallback<Args extends unknown[]>(
  * URL (which re-triggers the query) only on commit — immediately for a select/checkbox,
  * debounced for free text and numbers.
  */
-export function FiltersBar({ filters, categories, onChange }: FiltersBarProps) {
+export function FiltersBar({
+  filters,
+  categories,
+  onChange,
+  grid,
+  onGridChange,
+  accounts,
+}: FiltersBarProps) {
   const [search, setSearch] = React.useState(filters.search ?? "");
   const [amountMin, setAmountMin] = React.useState(
     filters.amountMinMinor !== undefined ? String(filters.amountMinMinor / 100) : "",
@@ -86,7 +100,11 @@ export function FiltersBar({ filters, categories, onChange }: FiltersBarProps) {
     filters.dateFrom ||
     filters.dateTo ||
     filters.amountMinMinor !== undefined ||
-    filters.amountMaxMinor !== undefined;
+    filters.amountMaxMinor !== undefined ||
+    filters.accountIds?.length ||
+    grid.needsReview ||
+    grid.uncategorized ||
+    grid.statementId !== undefined;
 
   return (
     <div className="flex flex-col gap-3 rounded-lg border border-border p-3" role="search">
@@ -134,6 +152,25 @@ export function FiltersBar({ filters, categories, onChange }: FiltersBarProps) {
           hidePresets
           onChange={(next) => onChange({ dateFrom: next.from ?? undefined, dateTo: next.to ?? undefined })}
         />
+        {accounts.length > 1 ? (
+          <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+            Account
+            <select
+              className="h-9 rounded-md border border-input bg-transparent px-2 text-sm text-foreground"
+              value={filters.accountIds?.[0] ?? ""}
+              onChange={(e) =>
+                onChange({ accountIds: e.target.value === "" ? undefined : [Number(e.target.value)] })
+              }
+            >
+              <option value="">All accounts</option>
+              {accounts.map((account) => (
+                <option key={account.id} value={account.id}>
+                  {account.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : null}
         {hasFilters ? (
           <Button
             type="button"
@@ -151,10 +188,49 @@ export function FiltersBar({ filters, categories, onChange }: FiltersBarProps) {
                 dateTo: undefined,
                 amountMinMinor: undefined,
                 amountMaxMinor: undefined,
+                accountIds: undefined,
+              });
+              onGridChange({
+                needsReview: undefined,
+                uncategorized: undefined,
+                statementId: undefined,
               });
             }}
           >
             Clear filters
+          </Button>
+        ) : null}
+      </div>
+
+      <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Filter by status">
+        <span className="text-xs text-muted-foreground">Show:</span>
+        <Button
+          type="button"
+          size="sm"
+          variant={grid.needsReview ? "default" : "outline"}
+          onClick={() => onGridChange({ needsReview: grid.needsReview ? undefined : true })}
+          aria-pressed={grid.needsReview === true}
+        >
+          Needs review
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant={grid.uncategorized ? "default" : "outline"}
+          onClick={() => onGridChange({ uncategorized: grid.uncategorized ? undefined : true })}
+          aria-pressed={grid.uncategorized === true}
+        >
+          Uncategorized only
+        </Button>
+        {grid.statementId !== undefined ? (
+          <Button
+            type="button"
+            size="sm"
+            variant="secondary"
+            onClick={() => onGridChange({ statementId: undefined })}
+            aria-label={`Remove filter: statement ${grid.statementId}`}
+          >
+            Statement #{grid.statementId} &times;
           </Button>
         ) : null}
       </div>

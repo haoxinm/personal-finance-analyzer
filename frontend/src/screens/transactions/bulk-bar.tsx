@@ -14,6 +14,9 @@ export interface BulkBarProps {
   onApply: (patch: { categoryKey: string; subcategoryKey: string; kind?: Kind }) => void;
   applying?: boolean;
   selectingAll?: boolean;
+  /** The selection is "everything the filters match" (not rows the user ticked): applying a label
+   *  then asks for confirmation, with the count, first. */
+  allMatchingSelected?: boolean;
 }
 
 /**
@@ -32,19 +35,55 @@ export function BulkBar({
   onApply,
   applying,
   selectingAll,
+  allMatchingSelected,
 }: BulkBarProps) {
   const [categoryKey, setCategoryKey] = React.useState("");
   const [subcategoryKey, setSubcategoryKey] = React.useState("");
+  const [confirming, setConfirming] = React.useState(false);
 
   if (selectedCount === 0) return null;
 
   const selectedCategory = categories.find((c) => c.key === categoryKey);
   const canApply = categoryKey !== "" && subcategoryKey !== "" && !applying;
+  const subcategoryName = selectedCategory?.subcategories.find((s) => s.key === subcategoryKey)?.name;
+
+  if (confirming && selectedCategory) {
+    return (
+      <div
+        role="alertdialog"
+        aria-label="Confirm bulk update"
+        className="flex flex-wrap items-center gap-3 rounded-lg border border-destructive/40 bg-destructive/5 p-3"
+      >
+        <span className="text-sm">
+          Set{" "}
+          <strong>
+            {selectedCategory.name} / {subcategoryName}
+          </strong>{" "}
+          on all <strong>{selectedCount.toLocaleString()}</strong> matching transactions? This replaces
+          their current category.
+        </span>
+        <Button
+          type="button"
+          size="sm"
+          disabled={applying}
+          onClick={() => {
+            setConfirming(false);
+            onApply({ categoryKey, subcategoryKey });
+          }}
+        >
+          {applying ? "Applying…" : `Yes, apply to ${selectedCount.toLocaleString()}`}
+        </Button>
+        <Button type="button" variant="ghost" size="sm" onClick={() => setConfirming(false)}>
+          Cancel
+        </Button>
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-wrap items-center gap-3 rounded-lg border border-primary/30 bg-primary/5 p-3">
       <span className="text-sm font-medium">
-        {selectedCount} selected
+        {allMatchingSelected ? `All ${selectedCount.toLocaleString()} matching selected` : `${selectedCount} selected`}
         {totalMatching > loadedCount && selectedCount < totalMatching ? (
           <Button type="button" variant="link" size="sm" onClick={onSelectAllMatching} disabled={selectingAll}>
             {selectingAll ? "Selecting…" : `Select all ${totalMatching} matching filters`}
@@ -87,7 +126,10 @@ export function BulkBar({
         type="button"
         size="sm"
         disabled={!canApply}
-        onClick={() => onApply({ categoryKey, subcategoryKey })}
+        onClick={() => {
+          if (allMatchingSelected) setConfirming(true);
+          else onApply({ categoryKey, subcategoryKey });
+        }}
       >
         {applying ? "Applying…" : `Apply to ${selectedCount}`}
       </Button>
