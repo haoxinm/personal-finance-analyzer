@@ -95,6 +95,14 @@ export function summary(over: Partial<TaxSummary> = {}): TaxSummary {
     document_count: 3,
     form_count: 4,
     warnings: ["W-2 wages differ from the 1040 wages line by $12.00."],
+    headline: {
+      federal_minor: 1489100,
+      federal_basis: "return",
+      fica_minor: 863244,
+      state_minor: 500000,
+      total_minor: 1489100 + 863244 + 500000,
+    },
+    superseded_forms: [],
     ...over,
   };
 }

@@ -5,15 +5,19 @@ import {
   formatRate,
   formTypeLabel,
   groupPayers,
+  headlineBasisLabel,
+  headlineBasisNote,
   headlineTax,
   incomeBasisLabel,
   refundOrOwed,
   resolveYear,
+  supersededByDocument,
   taxBreakdownRows,
   donutSlices,
   incomeShare,
   toIncomeBars,
   yearOverYear,
+  yearPointLabel,
 } from "./logic";
 import { PAYERS, summary } from "./test-fixtures";
 
@@ -51,20 +55,61 @@ describe("toIncomeBars", () => {
 });
 
 describe("headlineTax", () => {
-  it("uses federal liability plus FICA plus withheld state when no state liability", () => {
+  it("maps the server's headline without recomputing it", () => {
     const t = headlineTax(summary());
-    expect(t).toMatchObject({
+    expect(t).toEqual({
       federalMinor: 1489100,
-      federalKind: "liability",
+      federalBasis: "return",
       ficaMinor: 863244,
       stateMinor: 500000,
+      totalMinor: 1489100 + 863244 + 500000,
     });
-    expect(t.totalMinor).toBe(1489100 + 863244 + 500000);
   });
-  it("falls back to withheld federal tax without a return", () => {
-    const t = headlineTax(summary({ liability: [] }));
-    expect(t.federalKind).toBe("withheld");
-    expect(t.federalMinor).toBe(1423040);
+  it("trusts the headline over the summary's other fields", () => {
+    const t = headlineTax(
+      summary({
+        liability: [],
+        headline: {
+          federal_minor: 111,
+          federal_basis: "estimate",
+          fica_minor: 2,
+          state_minor: 3,
+          total_minor: 116,
+        },
+      }),
+    );
+    expect(t).toMatchObject({ federalMinor: 111, federalBasis: "estimate", totalMinor: 116 });
+  });
+  it("is null when the year has no tax figure", () => {
+    expect(headlineTax(summary({ headline: null }))).toBeNull();
+    expect(headlineTax(summary({ headline: undefined }))).toBeNull();
+  });
+  it("labels every basis", () => {
+    expect(
+      (["return", "estimate", "withholding", "mixed"] as const).map(headlineBasisLabel),
+    ).toEqual(["from return", "estimated", "withholding only", "mixed"]);
+    for (const b of ["return", "estimate", "withholding", "mixed"] as const)
+      expect(headlineBasisNote(b)).not.toBe("");
+  });
+});
+
+describe("supersededByDocument", () => {
+  it("collects replaced forms per document across summaries", () => {
+    const row = (form_id: number, document_id: number, form_type: "w2" | "1099-int") => ({
+      form_id,
+      document_id,
+      user_id: 1,
+      form_type,
+      superseded_by_form_id: 99,
+    });
+    const map = supersededByDocument([
+      summary({ superseded_forms: [row(1, 10, "w2"), row(2, 10, "1099-int")] }),
+      summary({ tax_year: 2023, superseded_forms: [row(3, 11, "w2")] }),
+      summary({ tax_year: 2022, superseded_forms: undefined }),
+    ]);
+    expect(map.get(10)).toEqual(["w2", "1099-int"]);
+    expect(map.get(11)).toEqual(["w2"]);
+    expect(map.has(12)).toBe(false);
   });
 });
 
@@ -136,6 +181,28 @@ describe("yearOverYear / groupPayers / resolveYear", () => {
     ]);
     expect(pts.map((p) => p.year)).toEqual([2023, 2024]);
     expect(pts[0]!.income).toBe(5);
+  });
+  it("keeps each year's own tax basis instead of mixing them silently", () => {
+    const pts = yearOverYear([
+      summary({ tax_year: 2024 }),
+      summary({
+        tax_year: 2023,
+        headline: {
+          federal_minor: 100,
+          federal_basis: "estimate",
+          fica_minor: 0,
+          state_minor: 0,
+          total_minor: 100,
+        },
+      }),
+      summary({ tax_year: 2022, headline: null }),
+    ]);
+    expect(pts.map((p) => [p.year, p.basis, p.tax])).toEqual([
+      [2022, null, 0],
+      [2023, "estimate", 100],
+      [2024, "return", 1489100 + 863244 + 500000],
+    ]);
+    expect(pts.map(yearPointLabel)).toEqual(["2022", "2023 (est.)", "2024"]);
   });
   it("groups payers for a year, largest first", () => {
     const rows = groupPayers(

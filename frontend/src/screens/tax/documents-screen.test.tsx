@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { apiClient } from "@/api/client";
 
 import TaxDocumentsScreen, { screenMeta } from "./documents-screen";
-import { USERS, document } from "./test-fixtures";
+import { USERS, document, summary } from "./test-fixtures";
 import { FULL_RESPONSES as FULL, makeWrapper } from "./test-utils";
 
 vi.mock("@/api/client", async () => {
@@ -81,6 +81,35 @@ describe("TaxDocumentsScreen", () => {
     expect(
       screen.getByRole("combobox", { name: "Add for user" }),
     ).toBeInTheDocument();
+  });
+
+  it("badges a document whose form a corrected form replaced", async () => {
+    mockGet({
+      ...FULL,
+      "/tax/documents": [
+        document({ id: 1, original_name: "w2-original.pdf" }),
+        document({ id: 3, original_name: "w2-corrected.pdf" }),
+      ],
+      "/tax/summary": [
+        summary({
+          superseded_forms: [
+            {
+              form_id: 5,
+              document_id: 1,
+              user_id: 1,
+              form_type: "w2",
+              superseded_by_form_id: 6,
+            },
+          ],
+        }),
+      ],
+    });
+    renderScreen();
+    const docs = await screen.findAllByTestId("tax-document");
+    const badge = await within(docs[0]!).findByTestId("tax-document-superseded");
+    expect(badge).toHaveTextContent("Replaced by corrected form");
+    expect(badge).toHaveAttribute("title", expect.stringMatching(/W-2 .* not counted/));
+    expect(within(docs[1]!).queryByTestId("tax-document-superseded")).not.toBeInTheDocument();
   });
 
   it("does not offer uploading here (that is the Import tab)", async () => {

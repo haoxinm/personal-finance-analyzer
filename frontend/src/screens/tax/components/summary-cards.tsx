@@ -1,8 +1,12 @@
+import { Link } from "react-router-dom";
+
 import { Money } from "@/components/primitives/money";
 import { Card, CardContent } from "@/components/ui/card";
 
 import {
   formatRate,
+  headlineBasisLabel,
+  headlineBasisNote,
   headlineTax,
   refundOrOwed,
   type TaxSummary,
@@ -36,6 +40,18 @@ function StatCard({
   );
 }
 
+/** Link to the Estimate tab for the summary's year. */
+function EstimateLink({ year }: { year: number }) {
+  return (
+    <Link
+      to={`/tax/estimate?year=${year}`}
+      className="font-medium text-foreground underline-offset-2 hover:underline"
+    >
+      See estimate →
+    </Link>
+  );
+}
+
 export function SummaryCards({ summary }: { summary: TaxSummary }) {
   const tax = headlineTax(summary);
   const result = refundOrOwed(summary);
@@ -58,28 +74,50 @@ export function SummaryCards({ summary }: { summary: TaxSummary }) {
       </StatCard>
       <StatCard
         label="Total tax"
+        testId="total-tax-card"
         hint={
-          <>
-            Federal <Money tone="neutral" minorUnits={tax.federalMinor} /> (
-            {tax.federalKind === "liability" ? "liability" : "withheld"}) · FICA{" "}
-            <Money tone="neutral" minorUnits={tax.ficaMinor} /> · State{" "}
-            <Money tone="neutral" minorUnits={tax.stateMinor} />
-          </>
+          tax ? (
+            <>
+              Federal <Money tone="neutral" minorUnits={tax.federalMinor} />{" "}
+              <span
+                data-testid="federal-basis"
+                title={headlineBasisNote(tax.federalBasis)}
+              >
+                ({headlineBasisLabel(tax.federalBasis)})
+              </span>{" "}
+              · FICA <Money tone="neutral" minorUnits={tax.ficaMinor} /> · State{" "}
+              <Money tone="neutral" minorUnits={tax.stateMinor} />
+              {" · "}
+              <EstimateLink year={summary.tax_year} />
+            </>
+          ) : (
+            <>
+              No tax figures for this year · <EstimateLink year={summary.tax_year} />
+            </>
+          )
         }
       >
-        <Money tone="neutral" minorUnits={tax.totalMinor} />
+        {tax ? <Money tone="neutral" minorUnits={tax.totalMinor} /> : "—"}
       </StatCard>
       <StatCard
         label="Effective federal rate"
-        title="Federal income tax divided by total income. Uses total federal tax from the return, or federal withholding when there is no return."
-        hint="Federal tax ÷ total income"
+        title="Total federal tax from your Form 1040 divided by total income. It needs a return: without one it shows a dash (the estimate has its own rate)."
+        hint={
+          summary.federal_effective_rate === null ? (
+            <>
+              Needs a Form 1040 · <EstimateLink year={summary.tax_year} />
+            </>
+          ) : (
+            "Return's federal tax ÷ total income"
+          )
+        }
         testId="effective-rate-card"
       >
         {formatRate(summary.federal_effective_rate)}
       </StatCard>
       <StatCard
         label="All-in rate"
-        title="Federal, FICA and state tax combined, divided by total income."
+        title="Federal, FICA and state tax combined, divided by total income. Federal is the return's tax when there is one, otherwise what was withheld."
         hint="Federal + FICA + state ÷ income"
         testId="all-in-rate-card"
       >
@@ -88,13 +126,17 @@ export function SummaryCards({ summary }: { summary: TaxSummary }) {
       <StatCard
         label={resultLabel}
         hint={
-          result.kind === "unknown"
-            ? "Import your 1040 to see this"
-            : result.derived
-              ? "Estimated: payments minus tax"
-              : result.kind === "even"
-                ? "Nothing due or returned"
-                : "From your return"
+          result.kind === "unknown" ? (
+            <>
+              Import your 1040, or <EstimateLink year={summary.tax_year} />
+            </>
+          ) : result.derived ? (
+            "Estimated: payments minus tax"
+          ) : result.kind === "even" ? (
+            "Nothing due or returned"
+          ) : (
+            "From your return"
+          )
         }
       >
         {result.amountMinor === null ? (

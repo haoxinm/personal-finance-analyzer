@@ -22,6 +22,7 @@ import {
   errorMessage,
   formTypeLabel,
   type TaxDocument,
+  type TaxFormType,
 } from "../logic";
 import { DocumentDetail } from "./document-detail";
 import { LlmReadSection } from "./llm-read-section";
@@ -35,14 +36,19 @@ export interface DocumentsPanelProps {
   selectedUserId: number | null;
   /** Year filter (`?year=`): only that year's documents are listed; `null` lists every year. */
   year?: number | null;
+  /** Documents holding a form that a corrected form replaced (not counted in any total):
+   * document id -> the replaced forms' types. */
+  superseded?: ReadonlyMap<number, readonly TaxFormType[]>;
 }
 
 function DocumentRow({
   d: rowDoc,
   users,
+  replacedForms,
 }: {
   d: TaxDocument;
   users: readonly User[];
+  replacedForms?: readonly TaxFormType[];
 }) {
   // The owner the server confirmed after a move; the documents list catches up on refetch. Until
   // then every id-addressed call must already use the new owner (the old one would 404).
@@ -143,6 +149,16 @@ function DocumentRow({
         <Badge variant={d.status === "parsed" ? "accent" : "destructive"}>
           {documentStatusLabel(d.status)}
         </Badge>
+        {replacedForms && replacedForms.length > 0 ? (
+          <Badge
+            variant="outline"
+            data-testid="tax-document-superseded"
+            className="border-amber-500/50 text-amber-700 dark:text-amber-400"
+            title={`${replacedForms.map(formTypeLabel).join(", ")} on this document ${replacedForms.length === 1 ? "was" : "were"} replaced by a corrected form with the same payer and account, so ${replacedForms.length === 1 ? "it is" : "they are"} not counted in your totals.`}
+          >
+            Replaced by corrected form
+          </Badge>
+        ) : null}
         <Badge variant="outline" data-testid="tax-document-owner" title="Owner">
           {userName(users, d.user_id)}
         </Badge>
@@ -292,6 +308,7 @@ export function DocumentsPanel({
   users,
   selectedUserId,
   year = null,
+  superseded,
 }: DocumentsPanelProps) {
   const [searchParams] = useSearchParams();
   const requestedDoc = Number(searchParams.get(DOCUMENT_PARAM));
@@ -319,7 +336,12 @@ export function DocumentsPanel({
       ) : (
         <ul className="flex flex-col divide-y divide-border rounded-md border border-border">
           {shown.map((d) => (
-            <DocumentRow key={d.id} d={d} users={users} />
+            <DocumentRow
+              key={d.id}
+              d={d}
+              users={users}
+              replacedForms={superseded?.get(d.id)}
+            />
           ))}
         </ul>
       )}
