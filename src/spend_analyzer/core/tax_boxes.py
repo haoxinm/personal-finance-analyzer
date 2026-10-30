@@ -84,6 +84,14 @@ _W2: Final = {
     "6": _tax("medicare_tax", "W-2", "6", "Medicare tax withheld"),
     "17": _tax("state_income_tax_withheld", "W-2", "17", "State income tax", jurisdictional=True),
     "19": _tax("local_income_tax_withheld", "W-2", "19", "Local income tax", jurisdictional=True),
+    # Box 12 memos (already excluded from box 1). The box is stored as "12-" plus its code ("12-D"), not the a-d slot.
+    **{
+        f"12-{code}": _inc(
+            "retirement_deferral", "W-2", f"12-{code}", f"Box 12 code {code} deferral", memo=True
+        )
+        for code in ("D", "E", "F", "G", "S")
+    },
+    "12-W": _inc("hsa_employer", "W-2", "12-W", "Box 12 code W employer HSA", memo=True),
 }
 _INT: Final = {
     "1": _inc("interest", "1099-INT", "1", "Interest income"),
@@ -158,11 +166,15 @@ BOX_MAP: Final[dict[str, dict[str, BoxSpec]]] = {
 
 _BOX_WORD = re.compile(r"^box", re.IGNORECASE)
 _WS = re.compile(r"\s+")
+_BOX_12_CODE = re.compile(r"^12-?([a-z]{1,2})$", re.IGNORECASE)
 
 
 def normalize_box(raw: str) -> str:
-    """``"Box 1A"`` -> ``"1a"``; ``"int : 1"`` -> ``"INT:1"``; ``"st"`` -> ``"ST"``."""
+    """``"Box 1A"`` -> ``"1a"``; ``"int : 1"`` -> ``"INT:1"``; ``"st"`` -> ``"ST"``; ``"12 d"`` -> ``"12-D"`` (W-2 box 12 code)."""
     text = _BOX_WORD.sub("", _WS.sub("", raw))
+    code = _BOX_12_CODE.match(text)
+    if code:
+        return f"12-{code.group(1).upper()}"
     section, sep, box = text.rpartition(":")
     box = box.upper() if box.upper() in ("ST", "LT") else box.lower()
     return f"{section.upper()}:{box}" if sep else box

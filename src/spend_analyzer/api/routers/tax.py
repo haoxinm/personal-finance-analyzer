@@ -55,8 +55,8 @@ router = APIRouter(tags=["tax"])
 _MIN_YEAR = 1990
 _MAX_YEAR = 2100
 #: Labels for the memo keys in `TaxYearSummary.memo_by_category`.
-_MEMO_LABELS = {
-    "qualified_dividends": INCOME_CATEGORY_LABELS["qualified_dividends"],
+_MEMO_LABELS: dict[str, str] = {
+    **{cat: INCOME_CATEGORY_LABELS[cat] for cat in MEMO_INCOME_CATEGORIES},
     tax_query.TAX_EXEMPT_MEMO_KEY: "Tax-exempt interest (memo)",
 }
 

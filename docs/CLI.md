@@ -209,7 +209,7 @@ computed, is in [TAX.md](TAX.md).
 
 ```console
 $ spend-analyzer tax import w2-2024.pdf composite-1099-2024.pdf return-2024.pdf
-w2-2024.pdf: tax document #1 -> parsed (2024: w2) 1 income / 5 tax item(s)
+w2-2024.pdf: tax document #1 -> parsed (2024: w2) 3 income / 5 tax item(s)
 composite-1099-2024.pdf: tax document #2 -> parsed (2024: 1099-consolidated) 8 income / 1 tax item(s)
 return-2024.pdf: tax document #3 -> parsed (2024: 1040) 6 income / 7 tax item(s)
 ```
@@ -234,7 +234,7 @@ with a warning:
 
 ```console
 $ spend-analyzer tax import w2-corrected.pdf scanned.pdf
-w2-corrected.pdf: tax document #5 -> parsed (2024: w2) 1 income / 5 tax item(s)
+w2-corrected.pdf: tax document #5 -> parsed (2024: w2) 3 income / 5 tax item(s)
   warning: Form is marked as corrected; it may replace a form imported earlier.
 scanned.pdf: tax document #6 -> unsupported: This PDF doesn't look like a supported tax form (W-2, 1099, 1040).
 $ spend-analyzer tax import --tax-year 2024 no-year-printed.pdf

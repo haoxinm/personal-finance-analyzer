@@ -835,6 +835,8 @@ class IncomeCategoryEnum(StrEnum):
     LONG_TERM_CAPITAL_GAIN = "long_term_capital_gain"
     SELF_EMPLOYMENT = "self_employment"
     OTHER = "other"
+    RETIREMENT_DEFERRAL = "retirement_deferral"
+    HSA_EMPLOYER = "hsa_employer"
 
 
 class TaxCategoryEnum(StrEnum):
@@ -1107,7 +1109,8 @@ class TaxCategoryAmount(_Model):
 
 
 class TaxMemoAmount(_Model):
-    """A memo line (not part of total income): `qualified_dividends` or `tax_exempt`."""
+    """A memo line (not part of total income): `qualified_dividends`, `tax_exempt`, or the W-2 box 12
+    memos `retirement_deferral` and `hsa_employer`."""
 
     category: str
     label: str

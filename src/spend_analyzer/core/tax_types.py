@@ -71,13 +71,17 @@ IncomeCategory = Literal[
     "long_term_capital_gain",
     "self_employment",
     "other",
+    "retirement_deferral",  # W-2 box 12 codes D, E, F, G, S: already excluded from box 1, memo
+    "hsa_employer",  # W-2 box 12 code W: employer HSA contributions, memo
 ]
 
 #: Display order; the single source of truth for income categories.
 INCOME_CATEGORIES: Final[tuple[IncomeCategory, ...]] = get_args(IncomeCategory)
 
 #: Categories excluded from total income (D5). Any item parsed with `is_memo=True` is also memo.
-MEMO_INCOME_CATEGORIES: Final[frozenset[IncomeCategory]] = frozenset({"qualified_dividends"})
+MEMO_INCOME_CATEGORIES: Final[frozenset[IncomeCategory]] = frozenset(
+    {"qualified_dividends", "retirement_deferral", "hsa_employer"}
+)
 
 #: Categories that may carry a negative amount (net capital loss).
 SIGNED_INCOME_CATEGORIES: Final[frozenset[IncomeCategory]] = frozenset(
@@ -94,6 +98,8 @@ INCOME_CATEGORY_LABELS: Final[Mapping[IncomeCategory, str]] = MappingProxyType(
         "long_term_capital_gain": "Long-term capital gain",
         "self_employment": "Self-employment income",
         "other": "Other income",
+        "retirement_deferral": "Retirement plan deferrals, W-2 box 12 (memo)",
+        "hsa_employer": "Employer HSA contributions, W-2 box 12 (memo)",
     }
 )
 

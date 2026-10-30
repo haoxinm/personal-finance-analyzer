@@ -255,6 +255,46 @@ def money_rows_below(
     return found
 
 
+_BOX_NUMBER = re.compile(r"^\d{1,2}[a-d]?$", re.IGNORECASE)
+_BOX_CODE = re.compile(r"^[A-Z]{1,2}$")
+
+
+def code_amount_in_cell(
+    doc: ExtractedDoc,
+    label_re: re.Pattern[str],
+    codes: frozenset[str],
+    *,
+    max_rows: int = 2,
+    x_tol: float = 12.0,
+    span: float = 120.0,
+) -> tuple[str, int] | None:
+    """``(code, amount_minor)`` of a W-2 box 12 line: the capital-letter code and the money that
+    follows it, on the label's row (after it) or on the rows beneath, in the label's cell. A row
+    that starts the next box (a box number such as ``12b`` in the cell's x-range) ends the
+    search; only codes in `codes` count. `None` when the line is blank or has another code."""
+    hits = find_label(doc, label_re)
+    if not hits:
+        return None
+    hit = hits[0]
+    rows = _page_rows(doc)[hit.page_number]
+    lo, hi = hit.label_x0 - x_tol, hit.label_x1 + span
+    for offset in range(max_rows + 1):
+        index = hit.row_index + offset
+        if index >= len(rows):
+            break
+        left = hit.label_x1 - 0.5 if offset == 0 else lo
+        words = [w for w in rows[index].words if w.x1 >= left and w.x0 <= hi]
+        if offset > 0 and any(
+            _BOX_NUMBER.match(w.text) and w.x0 <= hit.label_x0 + x_tol for w in words
+        ):
+            break
+        for i, word in enumerate(words[:-1]):
+            money = parse_money(words[i + 1].text)
+            if word.text in codes and _BOX_CODE.match(word.text) and money is not None:
+                return word.text, money.magnitude_minor
+    return None
+
+
 def state_code_in(row: Row) -> str | None:
     """First two-capital-letter word on the row (the state abbreviation printed in the value row
     of a state table), or `None`."""

@@ -49,8 +49,21 @@ def test_normal_items_and_signs() -> None:
     assert form.payer_tin_last4 == "0001"
     assert form.account_last4 is None
     assert not form.is_corrected
-    (wages,) = form.income
+    wages, deferral, hsa = form.income
     assert (wages.category, wages.amount_minor, wages.box) == ("salary_wages", 8_543_210, "1")
+    assert not wages.is_memo
+    assert (deferral.category, deferral.amount_minor, deferral.box, deferral.is_memo) == (
+        "retirement_deferral",
+        320_000,
+        "12-D",
+        True,
+    )
+    assert (hsa.category, hsa.amount_minor, hsa.box, hsa.is_memo) == (
+        "hsa_employer",
+        125_000,
+        "12-W",
+        True,
+    )
     by_category = {(t.category, t.jurisdiction): t.amount_minor for t in form.taxes}
     assert by_category == {
         ("federal_income_tax_withheld", None): 1_187_640,
@@ -201,3 +214,65 @@ def test_state_amount_without_readable_code_warns() -> None:
     assert state.jurisdiction == "XX"
     assert state.amount_minor == 150_000
     assert len(form.warnings) == 1
+
+
+# --- box 12 ------------------------------------------------------------------------------------------
+
+
+def _box12_doc(*rows: str) -> object:
+    return doc_from_lines(
+        [
+            "W-2 Wage and Tax Statement 2024",
+            "b Employer identification number (EIN)",
+            "99-0000001",
+            "1 Wages, tips, other compensation",
+            "85,000.00",
+            *rows,
+        ]
+    )
+
+
+def _memos(parsed: object) -> list[tuple[str, int, str | None]]:
+    (form,) = parsed.forms  # type: ignore[attr-defined]
+    return [(i.category, i.amount_minor, i.box) for i in form.income if i.is_memo]
+
+
+def test_box12_codes_are_memo_items_and_wages_are_untouched() -> None:
+    doc = _box12_doc(
+        "12a See instructions for box 12",
+        "D 23,000.00",
+        "12b",
+        "W 1,500.00",
+        "12c",
+        "E 2,000.00",
+        "12d",
+        "DD 9,000.00",
+    )
+    parsed = PARSER.parse(doc)
+    assert _memos(parsed) == [
+        ("retirement_deferral", 2_300_000, "12-D"),
+        ("hsa_employer", 150_000, "12-W"),
+        ("retirement_deferral", 200_000, "12-E"),
+    ]  # DD (employer health cost) is not a memo we keep
+    (form,) = parsed.forms
+    assert form.income[0].category == "salary_wages"
+    assert form.income[0].amount_minor == 8_500_000  # box 1 is never reduced by box 12
+
+
+@pytest.mark.parametrize("code", ["D", "E", "F", "G", "S"])
+def test_every_deferral_code_maps_to_retirement_deferral(code: str) -> None:
+    parsed = PARSER.parse(_box12_doc("12a See instructions for box 12", f"{code} 500.00"))
+    assert _memos(parsed) == [("retirement_deferral", 50_000, f"12-{code}")]
+
+
+def test_box12_other_codes_blank_and_zero_are_ignored() -> None:
+    assert _memos(PARSER.parse(_box12_doc("12a See instructions for box 12", "C 120.00"))) == []
+    assert _memos(PARSER.parse(_box12_doc("12a See instructions for box 12", ""))) == []
+    assert _memos(PARSER.parse(_box12_doc("12a See instructions for box 12", "D 0.00"))) == []
+    assert _memos(PARSER.parse(_box12_doc("12a See instructions for box 12"))) == []
+
+
+def test_box12_a_cell_never_reads_the_next_boxes_value() -> None:
+    """12a is blank here: the value under 12b must not be taken for 12a (nor counted twice)."""
+    doc = _box12_doc("12a See instructions for box 12", "12b", "D 1,000.00")
+    assert _memos(PARSER.parse(doc)) == [("retirement_deferral", 100_000, "12-D")]
