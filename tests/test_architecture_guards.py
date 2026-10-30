@@ -7,6 +7,8 @@ to enforce two invariants that everything else in this codebase depends on:
   seams (`classify/llm/egress.py`, `llm/statement_parser.py`) may import `llm.client`.
 - no module imports `litellm` (replaced by the httpx client).
 - **I3**: `ingest/` imports no HTTP client and makes no network call, ever.
+- the opt-in yearly tax-parameter check (`api/services/tax_params_update.py`) is the only other
+  module that imports an HTTP client and the only one that names its host.
 """
 
 from __future__ import annotations
@@ -27,6 +29,9 @@ _HTTP_CLIENT_MODULES = {
 }
 
 _CLIENT = "src/spend_analyzer/llm/client.py"
+#: The opt-in once-a-year fetch of the federal tax parameter file (no user data in the request).
+_PARAMS_UPDATER = "src/spend_analyzer/api/services/tax_params_update.py"
+_PARAMS_HOST = "raw.githubusercontent.com"
 _CLIENT_CALLERS = {
     "src/spend_analyzer/classify/llm/egress.py",
     "src/spend_analyzer/llm/statement_parser.py",
@@ -95,9 +100,9 @@ def test_only_llm_client_imports_an_http_client() -> None:
     offenders: dict[str, set[str]] = {}
     for path in _iter_py_files(_SRC_ROOT):
         hits = _imports_http_client(_parse(path))
-        if hits and _rel(path) != _CLIENT:
+        if hits and _rel(path) not in (_CLIENT, _PARAMS_UPDATER):
             offenders[_rel(path)] = hits
-    assert not offenders, f"HTTP client imported outside {_CLIENT}: {offenders}"
+    assert not offenders, f"HTTP client imported outside {_CLIENT}/{_PARAMS_UPDATER}: {offenders}"
 
 
 def test_only_egress_seams_import_llm_client() -> None:
@@ -145,6 +150,9 @@ def _tax_module_paths() -> list[Path]:
         "api/routers/tax.py",
         "core/tax_types.py",
         "core/tax_boxes.py",
+        "core/tax_calc.py",
+        "core/tax_params.py",
+        "analytics/tax_estimate.py",
     ):
         candidate = _SRC_ROOT / rel
         if candidate.is_file():
@@ -272,3 +280,39 @@ def test_backup_modules_import_no_llm_or_http() -> None:
         if hits:
             offenders[_rel(path)] = hits
     assert not offenders, f"backup modules import an LLM or network module: {offenders}"
+
+
+def test_only_the_params_updater_names_the_tax_params_host() -> None:
+    """The yearly parameter check is the one place that knows the URL it requests."""
+    offenders = [
+        _rel(path)
+        for path in _iter_py_files(_SRC_ROOT)
+        if _PARAMS_HOST in path.read_text(encoding="utf-8") and _rel(path) != _PARAMS_UPDATER
+    ]
+    assert not offenders, f"{_PARAMS_HOST} named outside {_PARAMS_UPDATER}: {offenders}"
+
+
+def test_params_updater_is_isolated_from_user_data_and_llm_code() -> None:
+    """The request carries no user data because the module cannot reach any: it imports no
+    database, analytics, tax-ingest or LLM code."""
+    tree = _parse(_SRC_ROOT / "api" / "services" / "tax_params_update.py")
+    bad = {
+        m
+        for m in _full_imported_modules(tree)
+        if m.startswith(
+            (
+                "spend_analyzer.db",
+                "spend_analyzer.analytics",
+                "spend_analyzer.ingest",
+                "spend_analyzer.llm",
+                "spend_analyzer.classify",
+            )
+        )
+    }
+    assert not bad, f"api/services/tax_params_update.py must stay isolated: {bad}"
+    assert _imports_http_client(tree) == {"httpx"}
+
+
+def test_tax_params_store_makes_no_network_call() -> None:
+    for rel in ("core/tax_params.py", "core/tax_calc.py"):
+        assert not _imports_http_client(_parse(_SRC_ROOT / rel)), rel

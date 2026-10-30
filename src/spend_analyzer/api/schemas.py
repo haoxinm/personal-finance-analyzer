@@ -667,11 +667,20 @@ class ServerSettings(_Model):
     port: int
 
 
+class TaxSettings(_Model):
+    """`[tax]`: `auto_update_params` is the opt-in once-a-year check for updated federal tax
+    parameters (a plain GET of one public file, no user data; off by default)."""
+
+    auto_update_params: bool = False
+
+
 class Settings(_Model):
     llm: LlmSettings
     privacy: PrivacySettings
     ingest: IngestSettings
     server: ServerSettings
+    #: Optional on `PUT` (an older client that does not send it keeps the saved value).
+    tax: TaxSettings = Field(default_factory=TaxSettings)
 
 
 class TestLlmRequest(_Model):

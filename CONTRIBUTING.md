@@ -164,8 +164,9 @@ A new form needs:
 
 If the form changes layout between years (1040 lines are renumbered), keep a per-year field table
 and warn rather than guess for an unlisted year, as `parsers/f1040.py` does. New federal bracket
-data goes in `ingest/tax/data/federal_brackets.yaml`, copied from the IRS revenue procedure named
-in its header and checked against the IRS publication.
+data goes in `core/tax_data/federal_params.yaml`, copied from the IRS revenue procedure named
+in its header and checked against the IRS publication. Raise its `params_version` whenever a figure
+changes: installs that opted in to the yearly update check only accept a file with a higher version.
 
 ## Adding a layout spec
 

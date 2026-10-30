@@ -166,7 +166,7 @@ _SPECS: dict[str, _Spec] = {
         dependents=("Casey Testperson", "Morgan Testperson"),
         delta=500,
     ),
-    "unsupported_year": _Spec(2026, "single", wages=72_000, calc_year=2025, delta=100),
+    "unsupported_year": _Spec(2027, "single", wages=72_000, calc_year=2025, delta=100),
     "no_schedule_d": _Spec(
         2024,
         "qss",
