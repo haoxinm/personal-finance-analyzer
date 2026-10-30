@@ -98,14 +98,42 @@ describe("TaxEstimateScreen", () => {
     expect(screenMeta).toEqual({ path: "/tax/estimate", title: "Estimate" });
   });
 
-  it("shows an empty state linking to the tax import when there are no forms", async () => {
-    mockApi({ years: [] });
-    renderScreen();
-    expect(
-      await screen.findByText("Import a W-2, 1099 or 1040 to estimate your tax"),
-    ).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Import tax forms" })).toHaveAttribute("href", "/tax/import");
-    expect(screen.queryByTestId("estimate-view")).not.toBeInTheDocument();
+  it("starts a profile-only estimate when there are no forms: current and previous year, previous selected", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-30T12:00:00Z"));
+    try {
+      mockApi({ years: [], estimates: { 1: estimate() } });
+      renderScreen("/tax/estimate?user=1");
+      const picker = await screen.findByRole("radiogroup", { name: "Tax year" });
+      const radios = within(picker).getAllByRole("radio");
+      expect(radios.map((r) => r.textContent)).toEqual(["2026", "2025"]);
+      expect(within(picker).getByRole("radio", { name: "2025" })).toHaveAttribute("aria-checked", "true");
+      expect(await screen.findByTestId("estimate-view")).toBeInTheDocument();
+      expect(screen.getByRole("note")).toHaveTextContent("No tax forms are imported for 2025");
+      expect(screen.getByRole("link", { name: "Import tax forms" })).toHaveAttribute("href", "/tax/import");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("offers the current and previous year alongside the years with forms, keeping the newest form year by default", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-30T12:00:00Z"));
+    try {
+      mockApi({ years: [2023, 2024], estimates: { 1: estimate() } });
+      renderScreen("/tax/estimate?user=1");
+      const picker = await screen.findByRole("radiogroup", { name: "Tax year" });
+      expect(within(picker).getAllByRole("radio").map((r) => r.textContent)).toEqual(["2026", "2025", "2024", "2023"]);
+      expect(within(picker).getByRole("radio", { name: "2024" })).toHaveAttribute("aria-checked", "true");
+      // A year with forms needs no "no forms" note.
+      await screen.findByTestId("estimate-view");
+      expect(screen.queryByRole("note")).not.toBeInTheDocument();
+      // Picking the current year starts a profile-only estimate.
+      await userEvent.click(within(picker).getByRole("radio", { name: "2026" }));
+      expect(await screen.findByRole("note")).toHaveTextContent("No tax forms are imported for 2026");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("renders an amount owed, the income-to-result breakdown and the rates", async () => {
@@ -353,7 +381,7 @@ describe("TaxEstimateScreen", () => {
     expect(footnote).toHaveTextContent("Rev. Proc. 2023-34");
     expect(footnote).toHaveTextContent("version 3");
     expect(footnote).toHaveTextContent("bundled with the app");
-    expect(within(footnote).getByRole("link", { name: /Tax parameters/ })).toHaveAttribute("href", "/settings");
+    expect(within(footnote).getByRole("link", { name: /Tax parameters/ })).toHaveAttribute("href", "/settings#tax-parameters");
   });
 
   it("explains a year without tax parameters (422) and keeps the inputs available", async () => {
@@ -365,7 +393,7 @@ describe("TaxEstimateScreen", () => {
     const box = await screen.findByTestId("estimate-no-parameters");
     expect(box).toHaveTextContent("No tax parameters for 2030");
     expect(box).toHaveTextContent("supported: 2022-2026");
-    expect(within(box).getByRole("link", { name: /Tax parameters/ })).toHaveAttribute("href", "/settings");
+    expect(within(box).getByRole("link", { name: /Tax parameters/ })).toHaveAttribute("href", "/settings#tax-parameters");
     expect(screen.queryByTestId("estimate-cards")).not.toBeInTheDocument();
     expect(await screen.findByTestId("profile-form")).toBeInTheDocument();
   });

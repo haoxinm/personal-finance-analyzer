@@ -164,7 +164,7 @@ function EstimateProblem({
         </p>
         <p className="text-muted-foreground">
           Pick another year, or check for updated parameters in{" "}
-          <Link to="/settings" className="underline underline-offset-2">
+          <Link to="/settings#tax-parameters" className="underline underline-offset-2">
             Settings › Tax parameters
           </Link>
           . You can also import your own parameter file with <code>spend-analyzer tax params import</code>.

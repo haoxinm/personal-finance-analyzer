@@ -10,6 +10,21 @@ export type EstimateFilingStatus = TaxProfileIn["filing_status"];
 export type DeductionMode = TaxProfileIn["deduction_mode"];
 type User = components["schemas"]["User"];
 
+/**
+ * The years the Estimate tab offers, newest first: every year with an imported form, plus the
+ * current and previous calendar year so a profile-only estimate can start before any form is
+ * imported (there is no endpoint listing saved profiles, so those years cannot be discovered).
+ */
+export function estimateYearOptions(documentYears: readonly number[], now: Date = new Date()): number[] {
+  const current = now.getFullYear();
+  return [...new Set([current, current - 1, ...documentYears])].sort((a, b) => b - a);
+}
+
+/** The year selected when `?year=` names none: the newest imported one, else the filing year just past. */
+export function defaultEstimateYear(documentYears: readonly number[], now: Date = new Date()): number {
+  return documentYears.length > 0 ? Math.max(...documentYears) : now.getFullYear() - 1;
+}
+
 export const FILING_STATUS_LABELS: Record<EstimateFilingStatus, string> = {
   single: "Single",
   mfj: "Married filing jointly",
