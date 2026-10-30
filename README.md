@@ -175,10 +175,12 @@ build is missing or stale).
   handle, parse them with an LLM — local or remote — after previewing the exact redacted text that
   would be sent. Opt-in per statement; never auto-confirmed.
 - **Classifies every transaction** into a fixed two-level category/subcategory taxonomy via a
-  rules-first cascade: kind detection → your own rules → your past corrections (which always win)
-  → ~120 built-in high-precision rules → the issuer's own category column, where the statement
+  rules-first cascade: kind detection → your own rules → your past corrections (which win over
+  everything but your own rules, and are never overwritten by one) → ~120 built-in high-precision rules → the issuer's own category column, where the statement
   prints one → a cache of past classifications → an LLM, only for what nothing local could resolve
-  → an `others/uncategorized` fallback that still needs your review.
+  → an `others/uncategorized` fallback that still needs your review. A new rule can be applied to
+  the transactions you already have (never to one you corrected by hand), and the Review screen can
+  re-run the cascade over everything uncategorized.
 - **Reconciles every import** against the statement's own printed totals (section subtotals,
   running balance, or the opening/closing balance equation, whichever the layout provides), and
   banners a warning rather than silently accepting numbers that don't add up.

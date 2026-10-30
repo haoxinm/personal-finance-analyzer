@@ -251,6 +251,71 @@ class TransactionPatch(_Model):
     create_rule: bool = False
 
 
+class TransactionSnapshot(_Model):
+    """One transaction's classification state, as `POST /review/accept` captured it before the
+    change; sent back unchanged to `POST /review/undo`."""
+
+    transaction_id: int
+    category_id: int | None
+    subcategory_id: int | None
+    confidence: float | None
+    classified_by: str | None
+    needs_review: bool
+    kind: str
+    is_spend: bool
+    merchant_canonical: str | None
+
+
+class MerchantMapSnapshot(_Model):
+    merchant_key: str
+    existed: bool
+    merchant_canonical: str | None = None
+    category_id: int | None = None
+    subcategory_id: int | None = None
+    source: str | None = None
+    confidence: float | None = None
+    hit_count: int = 0
+
+
+class RuleSnapshot(_Model):
+    rule_id: int
+    existed: bool
+    category_id: int | None = None
+    subcategory_id: int | None = None
+    kind_override: str | None = None
+    enabled: bool = True
+
+
+class AcceptUndo(_Model):
+    """Opaque undo token for one Review accept (everything the accept changed)."""
+
+    transactions: list[TransactionSnapshot]
+    merchant_map: MerchantMapSnapshot | None = None
+    rule: RuleSnapshot | None = None
+
+
+class ReviewAcceptRequest(_Model):
+    transaction_id: int
+    category_key: str
+    subcategory_key: str
+    #: Also make this the merchant's standing exact rule ("always categorize this way").
+    create_rule: bool = False
+    #: Other pending rows of the same merchant to categorize the same way; ids that do not
+    #: qualify (different merchant, no longer pending, hand-corrected) are skipped.
+    similar_ids: list[int] = Field(default_factory=list)
+
+
+class ReviewAcceptResponse(_Model):
+    transaction: Transaction
+    #: The `similar_ids` actually applied (its length is the "Applied to N more" count).
+    similar_ids: list[int]
+    undo: AcceptUndo
+
+
+class ReviewUndoResponse(_Model):
+    restored: int
+
+
 class BulkUpdateRequest(_Model):
     transaction_ids: list[int]
     category_key: str | None = None
@@ -268,12 +333,17 @@ class BulkUpdateResponse(_Model):
 class ClassifyRunRequest(_Model):
     user_id: int | None = None
     statement_id: int | None = None
+    #: Only reconsider rows with no category, parked in `others/uncategorized`, or still flagged
+    #: `needs_review`; `False` reconsiders everything. Either way a transaction the user
+    #: corrected by hand is never touched.
     only_unclassified: bool = True
 
 
 class ClassifyRunResponse(_Model):
     job_id: str
     group_id: str
+    #: How many transactions this run will reconsider.
+    transaction_count: int = 0
 
 
 class ClassifyPreviewRow(_Model):
@@ -459,6 +529,17 @@ class Rule(_Model):
     subcategory_key: str
     kind: Kind | None = None
     source: str
+    #: `exact`, `contains` or `regex`, matched against the merchant key.
+    match_type: str = "contains"
+    #: Lower runs first. Among user rules, `priority` then `id` decides which one matches.
+    priority: int = 100
+    #: Only on `POST /rules`: how many existing transactions applying the new rule would change
+    #: (`POST /rules/{id}/apply` applies it). `None` everywhere else.
+    existing_matches: int | None = None
+
+
+class RuleApplyResponse(_Model):
+    updated: int
 
 
 class RuleCreate(_Model):

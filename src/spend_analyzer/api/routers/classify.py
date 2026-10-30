@@ -24,13 +24,14 @@ def run_classify(
     runner: JobRunnerDep,
     session_factory: SessionFactoryDep,
 ) -> schemas.ClassifyRunResponse:
-    stmt = select(Transaction.id)
+    # A hand-corrected transaction is final: a re-run never reconsiders it.
+    stmt = select(Transaction.id).where(Transaction.classified_by.is_distinct_from("user"))
     if body.user_id is not None:
         stmt = stmt.where(Transaction.user_id == body.user_id)
     if body.statement_id is not None:
         stmt = stmt.where(Transaction.statement_id == body.statement_id)
     if body.only_unclassified:
-        stmt = stmt.where(Transaction.category_id.is_(None))
+        stmt = stmt.where(crud.unclassified_clause())
     transaction_ids = tuple(session.execute(stmt).scalars().all())
 
     group_id = str(uuid.uuid4())
@@ -55,7 +56,9 @@ def run_classify(
         }
 
     job_id = runner.run_job(kind="classify", task=task)
-    return schemas.ClassifyRunResponse(job_id=job_id, group_id=group_id)
+    return schemas.ClassifyRunResponse(
+        job_id=job_id, group_id=group_id, transaction_count=len(transaction_ids)
+    )
 
 
 @router.get("/classify/preview", response_model=list[schemas.ClassifyPreviewRow])
@@ -66,7 +69,7 @@ def preview_classify(
 ) -> list[schemas.ClassifyPreviewRow]:
     """The exact CSV the next run would send (A5), decoded back into rows. No network call."""
     stmt = select(Transaction.id, Transaction.merchant_key, Transaction.description_clean).where(
-        Transaction.category_id.is_(None)
+        crud.unclassified_clause()
     )
     if user_id is not None:
         stmt = stmt.where(Transaction.user_id == user_id)

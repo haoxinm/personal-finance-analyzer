@@ -23,6 +23,13 @@ is a deterministic, local, first-hit-wins cascade over already-persisted `Transa
    provider configured at all, D2) lands in `others/uncategorized` with `needs_review=True` —
    step 8's fallback is already built into that result, so there is no separate step here.
 
+Precedence, stated plainly: a user *rule* outranks a user *correction*. A correction (step 3) wins
+over built-in rules, the issuer category, the cache and the LLM, and is never overwritten by any of
+them (I6) — but your own rules (step 2) are explicit, prioritised instructions and are consulted
+first, so a rule that matches a merchant also decides its future imports even if you once corrected
+one transaction differently. "Always categorize this merchant this way" (`create_rule`) updates
+the merchant's own exact rule instead of stacking a second one, so the newest choice wins.
+
 `merchant_key` is never written to `merchant_map` when empty (A27). A result's
 `confidence < cfg.confidence_threshold` always sets `needs_review=True`, on top of any
 step-specific reason (a dynamic online-shopping subcategory still pending approval, most notably).
@@ -312,13 +319,15 @@ def apply_user_correction(
     subcategory_key: str,
     kind: Kind | None,
     create_rule: bool,
-) -> None:
+) -> Rule | None:
     """Apply a user's correction to one transaction (I6, §3.12a).
 
     Writes `merchant_map(source='user')` for the transaction's `merchant_key` (never overwritten
     by cache, rules, or the LLM afterwards) and, if `create_rule`, a `rules` row
     (`source='user'`, `match_type='exact'`, matched against `merchant_key`) so future imports of
-    the same merchant need no correction at all. Does not commit.
+    the same merchant need no correction at all. If this user already has an exact rule for the
+    merchant it is updated in place rather than duplicated (an older rule would otherwise keep
+    winning by id). Returns the created or updated rule, or `None`. Does not commit.
 
     Raises:
         ConfigError: `transaction_id` does not exist, or `category_key`/`subcategory_key` is not
@@ -385,21 +394,407 @@ def apply_user_correction(
             row.confidence = 1.0
             row.updated_at = utcnow_iso()
 
+    rule: Rule | None = None
     if create_rule and txn.merchant_key:
-        session.add(
-            Rule(
-                user_id=txn.user_id,
-                match_type="exact",
-                pattern=txn.merchant_key,
-                category_id=category.id,
-                subcategory_id=subcategory.id,
-                kind_override=kind,
-                priority=50,
-                enabled=True,
-                source="user",
-            )
+        rule = _upsert_exact_rule(
+            session,
+            user_id=txn.user_id,
+            merchant_key=txn.merchant_key,
+            category_id=category.id,
+            subcategory_id=subcategory.id,
+            kind=kind,
         )
     session.flush()
+    return rule
+
+
+def _upsert_exact_rule(
+    session: Session,
+    *,
+    user_id: int,
+    merchant_key: str,
+    category_id: int,
+    subcategory_id: int,
+    kind: Kind | None,
+) -> Rule:
+    """The user's exact rule for `merchant_key`: updated in place if one exists (and re-enabled),
+    else created at priority 50."""
+    rule = (
+        session.execute(
+            select(Rule)
+            .where(
+                Rule.source == "user",
+                Rule.match_type == "exact",
+                Rule.pattern == merchant_key,
+                Rule.user_id == user_id,
+            )
+            .order_by(Rule.id)
+        )
+        .scalars()
+        .first()
+    )
+    if rule is None:
+        rule = Rule(
+            user_id=user_id,
+            match_type="exact",
+            pattern=merchant_key,
+            category_id=category_id,
+            subcategory_id=subcategory_id,
+            kind_override=kind,
+            priority=50,
+            enabled=True,
+            source="user",
+        )
+        session.add(rule)
+    else:
+        rule.category_id = category_id
+        rule.subcategory_id = subcategory_id
+        rule.kind_override = kind
+        rule.enabled = True
+    return rule
+
+
+# --------------------------------------------------------------------------------------------
+# Applying a rule to transactions that already exist.
+# --------------------------------------------------------------------------------------------
+
+
+def rule_target_ids(session: Session, rule: Rule) -> list[int]:
+    """Ids of existing transactions `rule` would reclassify if applied now.
+
+    A transaction qualifies when `rule` is the *first* enabled user rule matching its
+    `merchant_key` (so a higher-priority rule is never overridden), it is not a payment/transfer
+    (those never reach rules, step 1), the user has not corrected it by hand
+    (`classified_by='user'` is final, I6), and applying the rule would actually change it.
+    """
+    if rule.source != "user" or not rule.enabled:
+        return []
+    user_rules, _ = _load_rule_sets(session)
+
+    candidate_keys = session.execute(
+        select(Transaction.merchant_key)
+        .where(
+            Transaction.kind.not_in(tuple(_NON_SPEND_KINDS)),
+            Transaction.classified_by.is_distinct_from("user"),
+        )
+        .distinct()
+    ).scalars()
+    matching_keys = [key for key in candidate_keys if key and _safe_rule_matches(rule, key)]
+
+    targets: list[int] = []
+    for start in range(0, len(matching_keys), 500):
+        chunk = matching_keys[start : start + 500]
+        rows = session.execute(
+            select(Transaction).where(
+                Transaction.merchant_key.in_(chunk),
+                Transaction.kind.not_in(tuple(_NON_SPEND_KINDS)),
+                Transaction.classified_by.is_distinct_from("user"),
+            )
+        ).scalars()
+        for txn in rows:
+            if not _rule_applies_to_user(rule, txn.user_id):
+                continue
+            first = next(
+                (
+                    candidate
+                    for candidate in user_rules
+                    if _rule_applies_to_user(candidate, txn.user_id)
+                    and _safe_rule_matches(candidate, txn.merchant_key)
+                ),
+                None,
+            )
+            if first is None or first.id != rule.id:
+                continue
+            already = (
+                txn.category_id == rule.category_id
+                and txn.subcategory_id == rule.subcategory_id
+                and not txn.needs_review
+                and (rule.kind_override is None or rule.kind_override == txn.kind)
+            )
+            if not already:
+                targets.append(txn.id)
+    return targets
+
+
+def apply_rule_to_existing(session: Session, rule: Rule) -> int:
+    """Apply `rule` to every transaction `rule_target_ids` selects (the rule's category, its kind
+    override if any, `classified_by='user_rule'`, no longer flagged for review). Returns how many
+    were changed. Never touches a user-corrected row. Does not commit."""
+    updated = 0
+    for txn_id in rule_target_ids(session, rule):
+        txn = session.get(Transaction, txn_id)
+        if txn is None:  # pragma: no cover - defensive
+            continue
+        _write_outcome(
+            session,
+            txn,
+            _outcome_from_rule(session, rule, classified_by="user_rule"),
+            needs_review=False,
+        )
+        updated += 1
+    session.flush()
+    return updated
+
+
+def _safe_rule_matches(rule: Rule, merchant_key: str) -> bool:
+    """`rule_matches`, but a stored regex that no longer compiles matches nothing."""
+    try:
+        return rule_matches(rule, merchant_key)
+    except re.error:
+        return False
+
+
+# --------------------------------------------------------------------------------------------
+# Review: accept (optionally for the merchant's other pending rows) and undo.
+# --------------------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class TransactionSnapshot:
+    """What `undo_accept` needs to put one transaction back exactly as it was."""
+
+    transaction_id: int
+    category_id: int | None
+    subcategory_id: int | None
+    confidence: float | None
+    classified_by: str | None
+    needs_review: bool
+    kind: str
+    is_spend: bool
+    merchant_canonical: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class MerchantMapSnapshot:
+    """A `merchant_map` row before an accept: `existed=False` means undo deletes it."""
+
+    merchant_key: str
+    existed: bool
+    merchant_canonical: str | None = None
+    category_id: int | None = None
+    subcategory_id: int | None = None
+    source: str | None = None
+    confidence: float | None = None
+    hit_count: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class RuleSnapshot:
+    """The merchant's exact rule before an accept: `existed=False` means undo deletes it."""
+
+    rule_id: int
+    existed: bool
+    category_id: int | None = None
+    subcategory_id: int | None = None
+    kind_override: str | None = None
+    enabled: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class AcceptUndo:
+    """Everything one `accept_review` changed, to hand back to `undo_accept`."""
+
+    transactions: tuple[TransactionSnapshot, ...]
+    merchant_map: MerchantMapSnapshot | None
+    rule: RuleSnapshot | None
+
+
+@dataclass(frozen=True, slots=True)
+class AcceptResult:
+    """The outcome of `accept_review`: the extra rows it applied to, and how to undo it all."""
+
+    transaction_id: int
+    similar_ids: tuple[int, ...]
+    undo: AcceptUndo
+
+
+def _snapshot_transaction(txn: Transaction) -> TransactionSnapshot:
+    return TransactionSnapshot(
+        transaction_id=txn.id,
+        category_id=txn.category_id,
+        subcategory_id=txn.subcategory_id,
+        confidence=txn.confidence,
+        classified_by=txn.classified_by,
+        needs_review=txn.needs_review,
+        kind=txn.kind,
+        is_spend=txn.is_spend,
+        merchant_canonical=txn.merchant_canonical,
+    )
+
+
+def accept_review(
+    session: Session,
+    transaction_id: int,
+    *,
+    category_key: str,
+    subcategory_key: str,
+    create_rule: bool,
+    similar_ids: Sequence[int] = (),
+) -> AcceptResult:
+    """Accept one Review-queue transaction as `category_key/subcategory_key` — a user correction
+    (`apply_user_correction`: merchant map, optional exact rule) — and also apply it to
+    `similar_ids`: other still-pending rows of the *same merchant* the user is looking at.
+
+    A `similar_ids` entry is skipped unless it exists, has the accepted row's non-empty
+    `merchant_key`, is still `needs_review`, and was not corrected by hand. Returns the ids
+    actually applied and an `AcceptUndo` that `undo_accept` can replay. Does not commit.
+
+    Raises:
+        ConfigError: the transaction or taxonomy pair does not exist (see `apply_user_correction`).
+    """
+    txn = session.get(Transaction, transaction_id)
+    if txn is None:
+        raise ConfigError(f"no transaction with id {transaction_id}")
+
+    snapshots = [_snapshot_transaction(txn)]
+    map_snapshot: MerchantMapSnapshot | None = None
+    if txn.merchant_key:
+        existing_map = session.get(MerchantMap, txn.merchant_key)
+        map_snapshot = (
+            MerchantMapSnapshot(merchant_key=txn.merchant_key, existed=False)
+            if existing_map is None
+            else MerchantMapSnapshot(
+                merchant_key=txn.merchant_key,
+                existed=True,
+                merchant_canonical=existing_map.merchant_canonical,
+                category_id=existing_map.category_id,
+                subcategory_id=existing_map.subcategory_id,
+                source=existing_map.source,
+                confidence=existing_map.confidence,
+                hit_count=existing_map.hit_count,
+            )
+        )
+    rule_before = (
+        session.execute(
+            select(Rule)
+            .where(
+                Rule.source == "user",
+                Rule.match_type == "exact",
+                Rule.pattern == txn.merchant_key,
+                Rule.user_id == txn.user_id,
+            )
+            .order_by(Rule.id)
+        )
+        .scalars()
+        .first()
+        if create_rule and txn.merchant_key
+        else None
+    )
+    rule_prior = (
+        None
+        if rule_before is None
+        else RuleSnapshot(
+            rule_id=rule_before.id,
+            existed=True,
+            category_id=rule_before.category_id,
+            subcategory_id=rule_before.subcategory_id,
+            kind_override=rule_before.kind_override,
+            enabled=rule_before.enabled,
+        )
+    )
+
+    rule = apply_user_correction(
+        session,
+        transaction_id,
+        category_key=category_key,
+        subcategory_key=subcategory_key,
+        kind=None,
+        create_rule=create_rule,
+    )
+    rule_snapshot = rule_prior or (
+        RuleSnapshot(rule_id=rule.id, existed=False) if rule is not None else None
+    )
+
+    applied: list[int] = []
+    for similar_id in dict.fromkeys(similar_ids):
+        other = session.get(Transaction, similar_id)
+        if (
+            other is None
+            or other.id == txn.id
+            or not txn.merchant_key
+            or other.merchant_key != txn.merchant_key
+            or not other.needs_review
+            or other.classified_by == "user"
+        ):
+            continue
+        snapshots.append(_snapshot_transaction(other))
+        _write_outcome(
+            session,
+            other,
+            _Outcome(
+                category_key=category_key,
+                subcategory_key=subcategory_key,
+                confidence=1.0,
+                classified_by="user",
+            ),
+            needs_review=False,
+        )
+        applied.append(other.id)
+    session.flush()
+    return AcceptResult(
+        transaction_id=transaction_id,
+        similar_ids=tuple(applied),
+        undo=AcceptUndo(
+            transactions=tuple(snapshots), merchant_map=map_snapshot, rule=rule_snapshot
+        ),
+    )
+
+
+def undo_accept(session: Session, undo: AcceptUndo) -> int:
+    """Reverse one `accept_review`: restore every snapshotted transaction (category, provenance,
+    `needs_review`, kind), put the merchant-map row and the exact rule back as they were or
+    delete the ones the accept created. Returns how many transactions were restored. The
+    `classifications` audit rows the accept wrote stay (history, never read back). Does not
+    commit."""
+    restored = 0
+    for snap in undo.transactions:
+        txn = session.get(Transaction, snap.transaction_id)
+        if txn is None:
+            continue
+        txn.category_id = snap.category_id
+        txn.subcategory_id = snap.subcategory_id
+        txn.confidence = snap.confidence
+        txn.classified_by = snap.classified_by
+        txn.needs_review = snap.needs_review
+        txn.kind = snap.kind
+        txn.is_spend = snap.is_spend
+        txn.merchant_canonical = snap.merchant_canonical
+        txn.updated_at = utcnow_iso()
+        restored += 1
+
+    map_snap = undo.merchant_map
+    if map_snap is not None:
+        row = session.get(MerchantMap, map_snap.merchant_key)
+        if not map_snap.existed:
+            if row is not None:
+                session.delete(row)
+        elif (
+            row is not None
+            and map_snap.category_id is not None
+            and map_snap.subcategory_id is not None
+            and map_snap.source is not None
+        ):
+            row.merchant_canonical = map_snap.merchant_canonical
+            row.category_id = map_snap.category_id
+            row.subcategory_id = map_snap.subcategory_id
+            row.source = map_snap.source
+            row.confidence = map_snap.confidence
+            row.hit_count = map_snap.hit_count
+            row.updated_at = utcnow_iso()
+
+    rule_snap = undo.rule
+    if rule_snap is not None:
+        rule_row = session.get(Rule, rule_snap.rule_id)
+        if rule_row is not None:
+            if not rule_snap.existed:
+                session.delete(rule_row)
+            elif rule_snap.category_id is not None and rule_snap.subcategory_id is not None:
+                rule_row.category_id = rule_snap.category_id
+                rule_row.subcategory_id = rule_snap.subcategory_id
+                rule_row.kind_override = rule_snap.kind_override
+                rule_row.enabled = rule_snap.enabled
+    session.flush()
+    return restored
 
 
 def approve_subcategory(session: Session, subcategory_id: int) -> None:
@@ -642,6 +1037,27 @@ def _apply_outcome(
     cfg: LLMConfig,
     llm_run_id: int | None = None,
 ) -> None:
+    below_threshold = (
+        outcome.confidence is not None and outcome.confidence < cfg.confidence_threshold
+    )
+    _write_outcome(
+        session,
+        txn,
+        outcome,
+        needs_review=outcome.needs_review_override or below_threshold,
+        llm_run_id=llm_run_id,
+    )
+
+
+def _write_outcome(
+    session: Session,
+    txn: Transaction,
+    outcome: _Outcome,
+    *,
+    needs_review: bool,
+    llm_run_id: int | None = None,
+) -> None:
+    """Persist `outcome` onto `txn` (category, kind override, provenance) and log it."""
     category = session.execute(
         select(Category).where(Category.key == outcome.category_key)
     ).scalar_one()
@@ -655,14 +1071,11 @@ def _apply_outcome(
         txn.kind = outcome.kind_override
         txn.is_spend = kind_is_spend(cast(Kind, outcome.kind_override))
 
-    below_threshold = (
-        outcome.confidence is not None and outcome.confidence < cfg.confidence_threshold
-    )
     txn.category_id = category.id
     txn.subcategory_id = subcategory.id
     txn.confidence = outcome.confidence
     txn.classified_by = outcome.classified_by
-    txn.needs_review = outcome.needs_review_override or below_threshold
+    txn.needs_review = needs_review
     if outcome.merchant_canonical:
         txn.merchant_canonical = outcome.merchant_canonical
     txn.updated_at = utcnow_iso()
@@ -785,10 +1198,19 @@ def _persist_llm_run(session: Session, result: BatchResult, *, group_id: str) ->
 
 
 __all__ = [
+    "AcceptResult",
+    "AcceptUndo",
     "ClassifyResult",
+    "MerchantMapSnapshot",
+    "RuleSnapshot",
+    "TransactionSnapshot",
+    "accept_review",
+    "apply_rule_to_existing",
     "apply_user_correction",
     "approve_subcategory",
     "classify_transactions",
     "merge_subcategory",
     "preview_egress",
+    "rule_target_ids",
+    "undo_accept",
 ]

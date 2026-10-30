@@ -8,13 +8,16 @@ from sqlalchemy.orm import Session
 from spend_analyzer.api import schemas
 from spend_analyzer.api.deps import SessionDep
 from spend_analyzer.api.services import crud
+from spend_analyzer.classify import cascade
 from spend_analyzer.db.models import Category, Subcategory
 from spend_analyzer.db.models import Rule as RuleModel
 
 router = APIRouter(tags=["rules"])
 
 
-def _rule_schema(session: Session, rule: RuleModel) -> schemas.Rule:
+def _rule_schema(
+    session: Session, rule: RuleModel, *, existing_matches: int | None = None
+) -> schemas.Rule:
     category_row = session.get(Category, rule.category_id)
     subcategory_row = session.get(Subcategory, rule.subcategory_id)
     return schemas.Rule(
@@ -24,6 +27,9 @@ def _rule_schema(session: Session, rule: RuleModel) -> schemas.Rule:
         subcategory_key=subcategory_row.key if subcategory_row is not None else "",
         kind=rule.kind_override,
         source=rule.source,
+        match_type=rule.match_type,
+        priority=rule.priority,
+        existing_matches=existing_matches,
     )
 
 
@@ -48,8 +54,24 @@ def create_rule(body: schemas.RuleCreate, session: SessionDep) -> schemas.Rule:
         subcategory_id=subcategory.id,
         kind_override=body.kind,
     )
+    existing_matches = len(cascade.rule_target_ids(session, rule))
     session.commit()
-    return _rule_schema(session, rule)
+    return _rule_schema(session, rule, existing_matches=existing_matches)
+
+
+@router.post("/rules/{rule_id}/apply", response_model=schemas.RuleApplyResponse)
+def apply_rule(rule_id: int, session: SessionDep) -> schemas.RuleApplyResponse:
+    """Apply a user rule to the transactions that already exist (rules otherwise only affect
+    future classification). Never overwrites a hand-corrected transaction or one a
+    higher-priority rule claims; `updated` is how many rows changed."""
+    rule = crud.get_rule(session, rule_id)
+    if rule is None:
+        raise HTTPException(status_code=404, detail="rule not found")
+    if rule.source != "user":
+        raise HTTPException(status_code=400, detail="only your own rules can be applied")
+    updated = cascade.apply_rule_to_existing(session, rule)
+    session.commit()
+    return schemas.RuleApplyResponse(updated=updated)
 
 
 @router.patch("/rules/{rule_id}", response_model=schemas.Rule)
