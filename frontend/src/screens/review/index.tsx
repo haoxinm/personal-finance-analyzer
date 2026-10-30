@@ -7,6 +7,8 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Kbd } from "@/components/primitives/kbd";
+import { SuggestionChips } from "@/components/primitives/suggestion-chips";
+import type { SuggestionCandidate } from "@/components/primitives/suggestion-labels";
 import { Page, PageHeader } from "@/components/primitives/page";
 import { EmptyState, ErrorState, LoadingState } from "@/components/primitives/states";
 import { CategoryBadge } from "@/components/primitives/category-badge";
@@ -38,6 +40,10 @@ import type { Transaction } from "./types";
  *   - `r`           accept, and also make it the merchant's standing rule ("always categorize
  *                   this merchant this way": future imports follow it with no review)
  *   - `u`           undo the single most recent accept (rows, and the rule if it created one)
+ *
+ * When a transaction's classification sources disagree (a rule, the built-in rules, the issuer's
+ * label, the saved merchant answer), the card lists each one as a chip (`SuggestionChips`): one
+ * click accepts that candidate as a one-time edit of this transaction only (undo with `u`).
  *
  * An accept also applies, as further one-time edits, to the other queue rows from the same
  * merchant (a checkbox on the card, on by default), and "Re-classify uncategorized" in the header
@@ -84,6 +90,14 @@ export default function ReviewScreen() {
       if (event.defaultPrevented) return;
       if (event.metaKey || event.ctrlKey || event.altKey) return;
       if (isTypingTarget(event.target)) return;
+      // Enter on a focused suggestion chip is that chip's own click, not "accept the proposal".
+      if (
+        event.key === "Enter" &&
+        event.target instanceof HTMLElement &&
+        event.target.closest("[data-suggestion-chips]")
+      ) {
+        return;
+      }
 
       if (event.key === "j") {
         event.preventDefault();
@@ -211,6 +225,15 @@ export default function ReviewScreen() {
             onApplyToSimilarChange={queue.setApplyToSimilar}
             onAccept={() => void queue.accept()}
             onAcceptAndCreateRule={() => void queue.accept({ createRule: true })}
+            onApplySuggestion={(candidate) =>
+              void queue.accept({
+                suggestion: {
+                  categoryKey: candidate.category_key,
+                  subcategoryKey: candidate.subcategory_key,
+                  kind: candidate.kind ?? undefined,
+                },
+              })
+            }
             disabled={queue.isMutating}
           />
         ) : null}
@@ -246,6 +269,8 @@ interface TransactionCardProps {
   onApplyToSimilarChange: (apply: boolean) => void;
   onAccept: () => void;
   onAcceptAndCreateRule: () => void;
+  /** One click on a suggestion chip: accept that candidate as a one-time edit of this row only. */
+  onApplySuggestion: (candidate: SuggestionCandidate) => void;
   disabled: boolean;
 }
 
@@ -262,6 +287,7 @@ function TransactionCard({
   onApplyToSimilarChange,
   onAccept,
   onAcceptAndCreateRule,
+  onApplySuggestion,
   disabled,
 }: TransactionCardProps) {
   const effectiveCategoryKey = stagedCategoryKey ?? transaction.category_key ?? undefined;
@@ -294,6 +320,13 @@ function TransactionCard({
           stagedCategoryKey={effectiveCategoryKey}
           stagedSubcategoryKey={effectiveSubcategoryKey}
           onPick={onStage}
+          disabled={disabled}
+        />
+        <SuggestionChips
+          candidates={transaction.candidates ?? []}
+          conflict={transaction.conflict ?? false}
+          categories={categories}
+          onApply={onApplySuggestion}
           disabled={disabled}
         />
         {similarCount > 0 ? (

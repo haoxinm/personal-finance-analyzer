@@ -104,6 +104,7 @@ export function FiltersBar({
     filters.accountIds?.length ||
     grid.needsReview ||
     grid.uncategorized ||
+    grid.conflict ||
     grid.statementId !== undefined;
 
   return (
@@ -193,6 +194,7 @@ export function FiltersBar({
               onGridChange({
                 needsReview: undefined,
                 uncategorized: undefined,
+                conflict: undefined,
                 statementId: undefined,
               });
             }}
@@ -221,6 +223,16 @@ export function FiltersBar({
           aria-pressed={grid.uncategorized === true}
         >
           Uncategorized only
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant={grid.conflict ? "default" : "outline"}
+          onClick={() => onGridChange({ conflict: grid.conflict ? undefined : true })}
+          aria-pressed={grid.conflict === true}
+          title="Transactions where your rules, built-in rules, the issuer's label and the saved merchant answer name different categories"
+        >
+          Conflicting suggestions
         </Button>
         {grid.statementId !== undefined ? (
           <Button

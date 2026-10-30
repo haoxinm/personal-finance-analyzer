@@ -14,6 +14,8 @@ export interface GridParams {
   needsReview?: boolean;
   /** `true`: only rows with no category or parked in `others/uncategorized`. */
   uncategorized?: boolean;
+  /** `true`: only rows whose classification sources disagree ("Conflicting suggestions"). */
+  conflict?: boolean;
   statementId?: number;
   /** `GET /transactions`'s `sort`: `posted_date` or `amount_minor`, `-` prefix for descending. */
   sort: string;
@@ -24,6 +26,7 @@ export const DEFAULT_SORT = "-posted_date";
 const KEYS = {
   needsReview: "needs_review",
   uncategorized: "uncategorized",
+  conflict: "conflict",
   statementId: "statement_id",
   sort: "sort",
 } as const;
@@ -34,6 +37,7 @@ function parse(searchParams: URLSearchParams): GridParams {
   return {
     needsReview: searchParams.get(KEYS.needsReview) === "true" ? true : undefined,
     uncategorized: searchParams.get(KEYS.uncategorized) === "true" ? true : undefined,
+    conflict: searchParams.get(KEYS.conflict) === "true" ? true : undefined,
     statementId: Number.isInteger(statementId) && statementId > 0 ? statementId : undefined,
     sort: sort === "posted_date" || sort === "amount_minor" || sort === "-amount_minor" ? sort : DEFAULT_SORT,
   };
@@ -52,6 +56,7 @@ export function useGridParams(): [GridParams, (next: Partial<GridParams>) => voi
           for (const urlKey of Object.values(KEYS)) merged.delete(urlKey);
           if (current.needsReview) merged.set(KEYS.needsReview, "true");
           if (current.uncategorized) merged.set(KEYS.uncategorized, "true");
+          if (current.conflict) merged.set(KEYS.conflict, "true");
           if (current.statementId !== undefined) merged.set(KEYS.statementId, String(current.statementId));
           if (current.sort !== DEFAULT_SORT) merged.set(KEYS.sort, current.sort);
           return merged;

@@ -35,6 +35,7 @@ export function toTransactionsQuery(filters: SpendQueryParams, grid?: GridParams
       : {
           needs_review: grid.needsReview,
           uncategorized: grid.uncategorized,
+          conflict: grid.conflict,
           statement_id: grid.statementId,
         }),
   };
@@ -58,7 +59,16 @@ export function useTransactionsGrid(filters: SpendQueryParams, grid: GridParams,
     initialPageParam: 1,
     queryFn: async ({ pageParam }) => {
       const { data, error } = await apiClient.GET("/transactions", {
-        params: { query: { ...query, sort: grid.sort, page: pageParam, page_size: GRID_PAGE_SIZE } },
+        params: {
+          query: {
+            ...query,
+            sort: grid.sort,
+            page: pageParam,
+            page_size: GRID_PAGE_SIZE,
+            // Each row's `conflict` flag, for the grid's marker (batch-computed per page).
+            include_conflict: true,
+          },
+        },
       });
       throwIfError(error);
       return data!;

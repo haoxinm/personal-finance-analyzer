@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -413,5 +414,135 @@ describe("ReviewScreen", () => {
     await waitFor(() => expect(screen.getByText("1 need review")).toBeInTheDocument());
     fireEvent.click(screen.getByRole("button", { name: "Re-classify uncategorized" }));
     expect(await screen.findByText("Nothing to re-classify")).toBeInTheDocument();
+  });
+});
+
+describe("ReviewScreen suggestion chips", () => {
+  const CANDIDATES: NonNullable<Transaction["candidates"]> = [
+    {
+      source: "user_rule",
+      category_key: "dining",
+      subcategory_key: "restaurants",
+      kind: null,
+      label: "costco",
+      rule_id: 4,
+      is_current: false,
+    },
+    {
+      source: "builtin_rule",
+      category_key: "groceries",
+      subcategory_key: "groceries",
+      kind: "refund",
+      label: "COSTCO",
+      rule_id: 9,
+      is_current: false,
+    },
+  ];
+
+  beforeEach(() => {
+    window.localStorage.clear();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("asks the queue for each row's candidates and shows them with the conflict explanation", async () => {
+    const { fetchMock } = await renderScreen({
+      transactions: [makeTransaction({ id: 1, candidates: CANDIDATES, conflict: true })],
+      categories: CATEGORIES,
+    });
+
+    const group = await screen.findByRole("group", { name: "Suggested categories" });
+    expect(within(group).getByRole("note")).toHaveTextContent("Sources disagree");
+    expect(
+      within(group).getByRole("button", { name: "Dining › Restaurants, your rule 'costco'" }),
+    ).toBeInTheDocument();
+    expect(
+      within(group).getByRole("button", { name: "Groceries › Groceries, built-in" }),
+    ).toBeInTheDocument();
+    const queueRequest = fetchMock.mock.calls
+      .map((c) => new URL((c[0] as Request).url))
+      .find((url) => url.pathname === "/api/transactions" && url.searchParams.get("needs_review") === "true");
+    expect(queueRequest?.searchParams.get("include_candidates")).toBe("true");
+  });
+
+  it("shows no chips for a row without suggestions", async () => {
+    await renderScreen({
+      transactions: [makeTransaction({ id: 1 })],
+      categories: CATEGORIES,
+    });
+    await waitFor(() => expect(screen.getByText("1 need review")).toBeInTheDocument());
+    expect(screen.queryByRole("group", { name: "Suggested categories" })).not.toBeInTheDocument();
+  });
+
+  it("one click accepts that candidate for this row only (no rule, no merchant mates) and u undoes it", async () => {
+    const { fetchMock } = await renderScreen({
+      transactions: [
+        makeTransaction({
+          id: 1,
+          description_clean: "Costco One",
+          merchant_key: "costco",
+          candidates: CANDIDATES,
+          conflict: true,
+        }),
+        makeTransaction({ id: 2, description_clean: "Costco Two", merchant_key: "costco" }),
+      ],
+      categories: CATEGORIES,
+    });
+    await waitFor(() => expect(screen.getByText("Costco One")).toBeInTheDocument());
+    // The "apply to the merchant's other rows" box is on by default; a chip must ignore it.
+    expect(screen.getByRole("checkbox")).toBeChecked();
+
+    fireEvent.click(screen.getByRole("button", { name: "Groceries › Groceries, built-in" }));
+
+    await waitFor(async () => {
+      const body = await lastAcceptBody(fetchMock);
+      expect(body).toEqual({
+        transaction_id: 1,
+        category_key: "groceries",
+        subcategory_key: "groceries",
+        create_rule: false,
+        similar_ids: [],
+        kind: "refund",
+      });
+    });
+    await waitFor(() => expect(screen.getByText("1 need review")).toBeInTheDocument());
+    expect(screen.getByText("Costco Two")).toBeInTheDocument();
+    expect(await screen.findByText(/Applied suggestion/)).toBeInTheDocument();
+
+    fireEvent.keyDown(document, { key: "u" });
+    await waitFor(() => expect(screen.getByText("2 need review")).toBeInTheDocument());
+    const undoCall = fetchMock.mock.calls.find(
+      (c) => new URL((c[0] as Request).url).pathname === "/api/review/undo",
+    );
+    expect(undoCall).toBeDefined();
+  });
+
+  it("chips are reachable and activatable from the keyboard", async () => {
+    const { fetchMock } = await renderScreen({
+      transactions: [makeTransaction({ id: 1, candidates: CANDIDATES, conflict: true })],
+      categories: CATEGORIES,
+    });
+    const chip = await screen.findByRole("button", { name: "Dining › Restaurants, your rule 'costco'" });
+    chip.focus();
+    expect(chip).toHaveFocus();
+
+    // Enter on a focused chip is that chip's click; the screen's own Enter shortcut ("accept
+    // the current proposal") must stand aside, so exactly the chip's category is accepted.
+    await userEvent.keyboard("{Enter}");
+
+    await waitFor(async () => {
+      expect(await lastAcceptBody(fetchMock)).toMatchObject({
+        category_key: "dining",
+        subcategory_key: "restaurants",
+        create_rule: false,
+      });
+    });
+    const accepts = fetchMock.mock.calls.filter(
+      (c) => new URL((c[0] as Request).url).pathname === "/api/review/accept",
+    );
+    expect(accepts).toHaveLength(1);
   });
 });

@@ -11,6 +11,12 @@ export interface StagedPick {
   subcategoryKey: string;
 }
 
+/** A one-click suggestion (`SuggestionChips`) applied to the current row. */
+export interface SuggestionPick extends StagedPick {
+  /** A rule's kind override, applied together with the category. */
+  kind?: Transaction["kind"];
+}
+
 export interface UseReviewQueueResult {
   status: "loading" | "error" | "ready";
   error: unknown;
@@ -38,9 +44,11 @@ export interface UseReviewQueueResult {
    * merchant's other queue rows. Optimistically removes the current row from the queue; on a
    * failed request it is reinserted at its original position and the user is told why (rollback).
    * `createRule` mirrors the `r` key — "always categorize this merchant this way" (§P3-B) — via
-   * `POST /review/accept`'s `create_rule`.
+   * `POST /review/accept`'s `create_rule`. `suggestion` is a click on one of the row's suggestion
+   * chips: it is accepted as a one-time edit of *this row only* (never the merchant's other rows,
+   * never a rule), over any staged pick, and goes on the same undo stack.
    */
-  accept: (options?: { createRule?: boolean }) => Promise<void>;
+  accept: (options?: { createRule?: boolean; suggestion?: SuggestionPick }) => Promise<void>;
   /**
    * Reverts the single most recent `accept` through the server's undo token: every row it touched
    * returns to its previous category (or to none), `needs_review` flag and kind, and the
@@ -138,10 +146,13 @@ export function useReviewQueue(userIds?: number[], enabled = true): UseReviewQue
   }, [queryClient]);
 
   const accept = React.useCallback(
-    async ({ createRule = false }: { createRule?: boolean } = {}) => {
+    async ({
+      createRule = false,
+      suggestion,
+    }: { createRule?: boolean; suggestion?: SuggestionPick } = {}) => {
       const txn = current;
       if (!txn) return;
-      const pick = staged[txn.id];
+      const pick = suggestion ?? staged[txn.id];
       const categoryKey = pick?.categoryKey ?? txn.category_key;
       const subcategoryKey = pick?.subcategoryKey ?? txn.subcategory_key;
       if (!categoryKey || !subcategoryKey) {
@@ -155,7 +166,7 @@ export function useReviewQueue(userIds?: number[], enabled = true): UseReviewQue
 
       const snapshot = txn;
       const queueIndexAtAccept = index;
-      const similar = applyToSimilar ? similarForCurrent : [];
+      const similar = applyToSimilar && suggestion === undefined ? similarForCurrent : [];
       const positions = new Map(queue.map((t, position) => [t.id, position]));
 
       // Optimistic: the row leaves the queue immediately.
@@ -168,6 +179,7 @@ export function useReviewQueue(userIds?: number[], enabled = true): UseReviewQue
           subcategoryKey,
           createRule,
           similarIds: similar.map((t) => t.id),
+          kind: suggestion?.kind,
         });
         // The server skips any row that no longer qualifies; only the applied ones leave the queue.
         const applied = new Set(result.similar_ids);
@@ -192,7 +204,11 @@ export function useReviewQueue(userIds?: number[], enabled = true): UseReviewQue
           return rest;
         });
         toast({
-          title: createRule ? "Accepted — rule created" : "Accepted",
+          title: createRule
+            ? "Accepted — rule created"
+            : suggestion
+              ? "Applied suggestion — this transaction only"
+              : "Accepted",
           description:
             appliedRows.length > 0
               ? `Applied to ${appliedRows.length} more from this merchant. Press u to undo.`

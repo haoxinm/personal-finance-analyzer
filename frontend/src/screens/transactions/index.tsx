@@ -1,6 +1,8 @@
 import * as React from "react";
 
 import { usePatchTransaction, useTaxonomy } from "@/api/hooks";
+import { useApplySuggestion, useTransactionCandidates } from "@/api/suggestions";
+import { categoryLabel, type SuggestionCandidate } from "@/components/primitives/suggestion-labels";
 import { Page, PageHeader } from "@/components/primitives/page";
 import { EmptyState, ErrorState, LoadingState } from "@/components/primitives/states";
 import { Button } from "@/components/ui/button";
@@ -69,6 +71,8 @@ export default function TransactionsScreen() {
   const gridFocusRef = React.useRef<HTMLDivElement>(null);
   const restoreFocus = React.useRef(false);
   const wasEditing = React.useRef(false);
+  const applySuggestion = useApplySuggestion();
+  const candidates = useTransactionCandidates(editing?.id);
   const [exporting, setExporting] = React.useState(false);
 
   // A selection made under one user view must not carry into another.
@@ -215,6 +219,16 @@ export default function TransactionsScreen() {
     }
   }
 
+  function handleApplySuggestion(candidate: SuggestionCandidate) {
+    if (!editing) return;
+    applySuggestion.mutate({
+      transactionId: editing.id,
+      candidate,
+      label: categoryLabel(categories, candidate.category_key, candidate.subcategory_key),
+    });
+    setEditing(null);
+  }
+
   async function handleExport(format: "csv" | "json") {
     setExporting(true);
     try {
@@ -333,7 +347,10 @@ export default function TransactionsScreen() {
           categories={categories}
           onSave={(patch) => void handleSaveEdit(patch)}
           onClose={() => setEditing(null)}
-          saving={patchTransaction.isPending}
+          saving={patchTransaction.isPending || applySuggestion.isPending}
+          candidates={candidates.data?.candidates}
+          conflict={candidates.data?.conflict}
+          onApplySuggestion={handleApplySuggestion}
         />
       ) : null}
     </Page>
