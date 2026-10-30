@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 from fastapi import FastAPI
@@ -17,11 +18,15 @@ TEST_TOKEN = "test-token"
 
 
 @pytest.fixture
-def app_instance(engine: Engine, session: Session) -> FastAPI:
+def app_instance(engine: Engine, session: Session, tmp_path: Path) -> FastAPI:
     """Depends on the `session` fixture (not just `engine`) so the taxonomy is synced before any
-    route runs, even for a test that never asks for `session` itself."""
+    route runs, even for a test that never asks for `session` itself. The web directory points at
+    nothing, so a locally built frontend (`src/spend_analyzer/web/`, whose SPA fallback answers
+    every unknown GET) cannot change what the API routes return."""
     del session
-    return create_app(engine=engine, settings=Settings(), token=TEST_TOKEN)
+    return create_app(
+        engine=engine, settings=Settings(), token=TEST_TOKEN, web_dir=tmp_path / "no-web"
+    )
 
 
 @pytest.fixture
