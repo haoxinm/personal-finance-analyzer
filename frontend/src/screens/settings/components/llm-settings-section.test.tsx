@@ -6,15 +6,33 @@ import { ToastContextProvider } from "@/components/ui/toast-provider";
 
 import { isLocalAddress, resolveUrl } from "../lib/llm-address";
 import { LlmSettingsSection } from "./llm-settings-section";
-import type { Settings } from "../lib/hooks";
+import type { SecretStorageStatus, Settings } from "../lib/hooks";
 
 const setApiKeyMutate = vi.fn();
 const clearApiKeyMutate = vi.fn();
 const testLlmMutate = vi.fn();
+const setFileStoreMutate = vi.fn();
+
+const keychainStatus: SecretStorageStatus = {
+  key_source: "keychain",
+  storage: "keychain",
+  keychain_name: "macOS Keychain",
+  keychain_usable: true,
+  keychain_detail: "",
+  env_var: null,
+  file_store_enabled: false,
+  file_store_path: "/data/secrets/api_keys.toml",
+  file_store_has_keys: false,
+  guidance: "",
+  warning: "",
+};
+let secretStatus: SecretStorageStatus | undefined = keychainStatus;
 
 vi.mock("../lib/hooks", () => ({
   useSetApiKey: () => ({ mutate: setApiKeyMutate, isPending: false }),
   useClearApiKey: () => ({ mutate: clearApiKeyMutate, isPending: false }),
+  useSecretStorageQuery: () => ({ data: secretStatus }),
+  useSetFileStore: () => ({ mutate: setFileStoreMutate, isPending: false }),
   useTestLlm: () => ({ mutate: testLlmMutate, isPending: false, isError: false, error: null }),
 }));
 
@@ -201,5 +219,77 @@ describe("LlmSettingsSection", () => {
     renderSection({ ...offSettings, llm: { ...offSettings.llm, enabled: true } });
     await user.type(screen.getByLabelText("New API key"), "k");
     expect(screen.getByRole("button", { name: /save key/i })).toBeDisabled();
+  });
+});
+
+describe("LlmSettingsSection secret storage", () => {
+  afterEach(() => {
+    secretStatus = keychainStatus;
+    setFileStoreMutate.mockReset();
+    setApiKeyMutate.mockReset();
+  });
+
+  it("names the keychain in use and where the key came from", () => {
+    renderSection(remoteSettings);
+    expect(screen.getByTestId("secret-storage-source")).toHaveTextContent("macOS Keychain");
+    expect(screen.getByTestId("secret-storage-source")).toHaveTextContent("Key stored in macOS Keychain");
+    expect(screen.queryByTestId("no-keychain-guidance")).not.toBeInTheDocument();
+  });
+
+  it("says when an environment variable supplies the key", () => {
+    secretStatus = { ...keychainStatus, key_source: "env", env_var: "PFA_LLM_API_KEY" };
+    renderSection(remoteSettings);
+    expect(screen.getByTestId("secret-storage-source")).toHaveTextContent("PFA_LLM_API_KEY");
+  });
+
+  it("with no keychain: shows setup guidance, the file-store toggle off, and blocks saving", async () => {
+    const user = userEvent.setup();
+    secretStatus = {
+      ...keychainStatus,
+      key_source: "none",
+      storage: "none",
+      keychain_name: "none",
+      keychain_usable: false,
+      keychain_detail: "no usable keyring backend is installed or running",
+      guidance: "Linux: install and start a Secret Service provider (gnome-keyring).",
+    };
+    renderSection(remoteSettings);
+
+    const guidance = screen.getByTestId("no-keychain-guidance");
+    expect(guidance).toHaveTextContent("No usable system keychain");
+    expect(guidance).toHaveTextContent("gnome-keyring");
+    expect(guidance).toHaveTextContent("plaintext");
+    const toggle = screen.getByRole("checkbox", { name: "Keep API keys in a plaintext file" });
+    expect(toggle).not.toBeChecked();
+    expect(screen.queryByTestId("file-store-warning")).not.toBeInTheDocument();
+
+    await user.type(screen.getByLabelText("New API key"), "sk-secret");
+    expect(screen.getByRole("button", { name: "Save key" })).toBeDisabled();
+
+    await user.click(toggle);
+    expect(setFileStoreMutate).toHaveBeenCalledWith(true, expect.anything());
+  });
+
+  it("with the file store on: warns it is plaintext and allows saving", async () => {
+    const user = userEvent.setup();
+    secretStatus = {
+      ...keychainStatus,
+      key_source: "none",
+      storage: "file",
+      keychain_usable: false,
+      keychain_name: "none",
+      keychain_detail: "no usable keyring backend is installed or running",
+      file_store_enabled: true,
+      guidance: "Linux: install gnome-keyring",
+      warning: "File store: API keys are saved as plaintext in /data/secrets/api_keys.toml.",
+    };
+    renderSection(remoteSettings);
+
+    expect(screen.getByTestId("file-store-warning")).toHaveTextContent("plaintext");
+    expect(screen.getByRole("checkbox", { name: "Keep API keys in a plaintext file" })).toBeChecked();
+    await user.type(screen.getByLabelText("New API key"), "sk-secret");
+    expect(screen.getByRole("button", { name: "Save key" })).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: "Save key" }));
+    expect(setApiKeyMutate).toHaveBeenCalled();
   });
 });

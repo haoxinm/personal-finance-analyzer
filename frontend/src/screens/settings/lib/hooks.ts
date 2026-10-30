@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiClient, throwIfError, type components } from "@/api/client";
 
 import { clearApiKey, setApiKey } from "./api-key";
+import type { SecretStorageStatus } from "./secret-storage";
 
 export type Settings = components["schemas"]["Settings"];
 export type LlmSettings = components["schemas"]["LlmSettings"];
@@ -21,6 +22,7 @@ export type AccountUpdate = components["schemas"]["AccountUpdate"];
 export type Issuer = components["schemas"]["Issuer"];
 export type ClassifyPreviewRow = components["schemas"]["ClassifyPreviewRow"];
 export type TestLlmResponse = components["schemas"]["TestLlmResponse"];
+export type { SecretStorageStatus } from "./secret-storage";
 
 // ---------------------------------------------------------------------------
 // Settings (§3.10, §3.12) — PUT rewrites the whole document, so callers merge
@@ -103,16 +105,62 @@ export function useTestLlm() {
   });
 }
 
+const SECRET_STORAGE_KEY = ["settings", "secret-storage"] as const;
+
 export function useSetApiKey() {
+  const queryClient = useQueryClient();
   return useMutation({
     mutationFn: ({ baseUrl, apiKey }: { baseUrl: string; apiKey: string }) =>
       setApiKey(baseUrl, apiKey),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: SECRET_STORAGE_KEY });
+      void queryClient.invalidateQueries({ queryKey: ["settings"] });
+    },
   });
 }
 
 export function useClearApiKey() {
+  const queryClient = useQueryClient();
   return useMutation({
     mutationFn: ({ baseUrl }: { baseUrl: string }) => clearApiKey(baseUrl),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: SECRET_STORAGE_KEY });
+      void queryClient.invalidateQueries({ queryKey: ["settings"] });
+    },
+  });
+}
+
+/** Which backend holds (or would hold) the API key for `baseUrl`'s host: environment variable,
+ * OS keychain, the opt-in plaintext file, or nothing. Never carries key material. */
+export function useSecretStorageQuery(baseUrl: string) {
+  return useQuery({
+    queryKey: [...SECRET_STORAGE_KEY, baseUrl],
+    queryFn: async (): Promise<SecretStorageStatus> => {
+      const { data, error } = await apiClient.GET("/settings/secret-storage", {
+        params: { query: { base_url: baseUrl } },
+      });
+      throwIfError(error);
+      if (!data) throw new Error("The server returned no secret-storage status.");
+      return data;
+    },
+  });
+}
+
+/** Switch the plaintext key file (`[secrets] allow_file_store`) on or off. */
+export function useSetFileStore() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (allowFileStore: boolean) => {
+      const { data, error } = await apiClient.PUT("/settings/secret-storage", {
+        body: { allow_file_store: allowFileStore },
+      });
+      throwIfError(error);
+      return data;
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: SECRET_STORAGE_KEY });
+      void queryClient.invalidateQueries({ queryKey: ["settings"] });
+    },
   });
 }
 
