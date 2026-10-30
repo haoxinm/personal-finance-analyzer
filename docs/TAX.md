@@ -7,7 +7,8 @@ deterministic code and stay on your machine. An optional, off-by-default LLM fal
 parts the parsers cannot read is described under [LLM fallback](#llm-fallback-optional).
 
 This page covers what is read from each form, how income and tax are aggregated, how the
-federal tax estimate works (and where it is only approximate), and what to do when an import
+federal tax split and the [per-user estimate](#per-user-estimate) work (and where they are only
+approximate), and what to do when an import
 doesn't go as expected. For the commands see [CLI.md](CLI.md#tax); for the privacy guarantees see
 the [README's privacy model](../README.md#privacy-model).
 
@@ -89,6 +90,8 @@ or one **tax category**; the category, not the form, is what the totals and the 
 | `long_term_capital_gain` | Long-term capital gain | yes (may be negative) |
 | `self_employment` | Self-employment income | yes |
 | `other` | Other income | yes, unless it is a memo item |
+| `retirement_deferral` | Retirement plan deferrals, W-2 box 12 (memo) | **no**, memo |
+| `hsa_employer` | Employer HSA contributions, W-2 box 12 (memo) | **no**, memo |
 
 Only the two capital-gain categories can be negative (a net loss). Everything else is stored as
 received and must be zero or positive.
@@ -117,7 +120,9 @@ withholding keeps the locality name.
 | | 6 | `medicare_tax` | |
 | | 17 | `state_income_tax_withheld` | One item per state line |
 | | 19 | `local_income_tax_withheld` | By locality name |
-| | 3, 5, 12, 14 | not stored | |
+| | 12 (12a-12d) | `retirement_deferral` (memo) | Codes D, E, F, G, S; box `12-D` ... `12-S`; already excluded from box 1 |
+| | 12 (12a-12d) | `hsa_employer` (memo) | Code W; box `12-W`. Other codes are ignored |
+| | 3, 5, 14 | not stored | |
 | **1099-INT** | 1 | `interest` | Emitted even when 0 |
 | | 3 | `interest` | Savings bond and Treasury interest, a second item |
 | | 8 | `other` (memo) | Tax-exempt interest; shown as a memo line |
@@ -166,6 +171,11 @@ another line or isn't taxable income:
   (memo)".
 - **Tax-exempt interest** (1099-INT box 8) and **exempt-interest dividends** (1099-DIV box 12) are
   not taxable income. They appear together as "Tax-exempt interest (memo)".
+
+- **W-2 box 12** deferrals (codes D, E, F, G, S) and employer HSA contributions (code W) are
+  already excluded from box 1 wages. They appear as "Retirement plan deferrals, W-2 box 12 (memo)"
+  and "Employer HSA contributions, W-2 box 12 (memo)", are never subtracted from wages, and feed the
+  deferral-limit warning of the [estimate](#per-user-estimate).
 
 In `tax report --csv` memo rows have `section = memo` and are absent from `total_income`.
 
@@ -237,12 +247,23 @@ all-in = (total federal tax - min(additional Medicare Tax, W-2 Medicare tax)
 If no W-2 Medicare figure was imported, nothing is subtracted (the Additional Medicare Tax would
 otherwise vanish from the rate).
 
+**Headline tax.** `GET /api/tax/summary` also returns `headline`: `federal_minor`, `federal_basis`,
+`fica_minor`, `state_minor` and `total_minor`, so a UI does not have to repeat the logic above. The
+federal figure is the return's total tax less the Additional Medicare Tax already inside the W-2
+Medicare figure (`federal_basis` `return`); with no return, the [estimate](#per-user-estimate)
+(`estimate`) when parameters exist for the year, else the federal tax withheld (`withholding`);
+`mixed` in an all-users view whose users differ. FICA is the Social Security and Medicare tax on
+the source forms, and the state figure the state liability when printed, else state and local
+withholding.
+
 **Refund or owed** comes from the return's printed lines. `refund` is the refund you actually
 received: line 35a when printed, otherwise line 34 (overpaid) minus line 36 (the part applied to
 next year's estimated tax). A warning is raised when 35a plus 36 doesn't equal line 34. If the
 return prints neither refund nor amount owed but does print total payments and total tax, it is
 derived as their difference and flagged (the CLI notes "refund / owed derived from total payments
-minus total tax").
+minus total tax"). When several users are added together (the All users view) refund and amount owed
+are **netted** into one result: one user's refund of $1,000 and another's balance due of $400 is a
+refund of $600, not both at once.
 
 ## The federal tax split is an estimate
 
@@ -256,7 +277,7 @@ parts are estimates (`is_estimate`) and are labelled "(est.)". Together they alw
 printed line 16 amount.
 
 **Method.** The split re-runs the IRS *Qualified Dividends and Capital Gain Tax Worksheet* with
-bracket data bundled in the package (`ingest/tax/data/federal_brackets.yaml`):
+parameters bundled in the package (`core/tax_data/federal_params.yaml`, code in `core/tax_calc.py`):
 
 1. Preferential income is qualified dividends (line 3a) plus net long-term gain (the lesser of
    Schedule D lines 15 and 16 when Schedule D is attached, otherwise line 7 when positive),
@@ -266,9 +287,10 @@ bracket data bundled in the package (`ingest/tax/data/federal_brackets.yaml`):
    to whole dollars like the printed form.
 3. Preferential tax is the printed line 16 amount minus the ordinary tax.
 
-**Coverage.** Tax years **2022, 2023, 2024 and 2025**, for single, married filing jointly, married
+**Coverage.** Tax years **2022 through 2026**, for single, married filing jointly, married
 filing separately, head of household and qualifying surviving spouse (which uses the joint
-tables). The values were copied from the IRS revenue procedures (the file header lists each one);
+tables). The values were copied from the IRS revenue procedures (the file lists each one per year; see
+[Where the parameters come from](#where-the-parameters-come-from-and-the-opt-in-update));
 verify them against the IRS publication before relying on them, and do the same when adding a year.
 
 **Limits.** The split is flagged **approximate** (the warning says "federal tax split is
@@ -280,29 +302,47 @@ not computed (with a warning) when the filing status is missing or more than one
 there is no bracket table for the year, or taxable income or tax could not be read. This is a
 reading aid for your own records, not tax advice and not a substitute for your return.
 
-A Form 1040 for a year other than 2022-2025 is still read, using the newest layout table, with the
-warning "form layout for tax year N not verified"; the split is not estimated for it.
+The 1040 *layouts* verified are 2022-2025. A Form 1040 for another year is still read, using the
+newest layout table, with the warning "form layout for tax year N not verified"; its split is
+estimated when bracket tables exist for the year (through 2026) and skipped with a warning otherwise.
 
 ## Joint returns
 
-The tool does not split a joint return between spouses. A married-filing-jointly 1040 is one
-return with one total tax, and it is stored under the user you import it for. If you and your
-spouse are separate users and each imported their own W-2s:
+A married-filing-jointly 1040 is one return with one total tax covering **both** spouses, and it is
+stored under the user you import it for. If you and your spouse are separate users and each
+imported their own W-2s:
 
-- the return's tax is compared with only that user's income, so the per-user **effective rate is
-  not meaningful**, and the reconciliation warnings will fire for that user;
-- the **All users** view adds each user's resolved figures: the return's income where it was
-  imported, withholding from source forms, and the liability from the return, which gives the
-  correct household figures when the return is imported under one user.
+- link the spouses in the **tax profile** (`joint_with_user_id`, filing status `mfj`; either
+  spouse's profile is enough). In the **All users** view the spouse's W-2/1099 income, which the
+  joint return already contains, is then **not added again** (a warning says so), and a second copy
+  of the same return imported for the spouse is ignored. Each user's withholding, FICA and state
+  figures are still added, so the household totals are right. Without the link nothing says the two
+  users are married, and the All users view adds both users' source-form income to the return's
+  (the return's income is the whole household's, so it is counted twice): link them, or import the
+  household's forms under one user;
+- in the **per-user** rows each user keeps their own figures: the user who holds the return shows
+  the joint return's income, tax and refund, with a warning that they cover both spouses; the
+  other spouse's row shows their own W-2s;
+- the return's tax compared with only one user's income makes that user's **effective rate not
+  meaningful**, and the reconciliation warnings fire for that user;
+- for a per-user view of the tax itself, use the [estimate](#per-user-estimate): it computes the
+  household once and **allocates** it by share of income.
 
-Either use All users for a joint-filing household, or import the whole household's forms under one
-user. Your spouse's name and number on a return are never read.
+Your spouse's name and number on a return are never read.
 
 ## Corrected forms
 
-A form marked CORRECTED is stored with a flag and a warning. It is **not** automatically matched to
-the original: if both are imported, their amounts are added and the year's warnings say so. After
-importing a corrected form, delete the document it replaces:
+A form marked CORRECTED is stored with a flag and a warning. A corrected form **replaces its
+original automatically** when both are for the same user, tax year and form type and carry the
+same payer identifier last four and the same account last four (at least one of the two must be
+present, so unrelated manual forms never match). The replaced original is left in the database
+(and in `tax list`) but is not counted in any total, summary, payer list or estimate; the year's
+warnings say how many forms were replaced and which documents, and `superseded_forms` in the summary
+API lists them. Import order does not matter, and a second correction replaces the first.
+
+When the match is not clear (no identifier was read, the identifiers differ, or two originals
+share them, as with two W-2s from one employer) nothing is replaced and the old warning stays: the
+corrected form and the original would both be counted. Delete the one it replaces:
 
 ```console
 $ spend-analyzer tax list
@@ -333,6 +373,9 @@ amounts are never negative). Amounts are integer cents.
 | `PATCH` / `DELETE /api/tax/income-items/{id}`, `/api/tax/tax-items/{id}` | item fields | item / 204 |
 | `POST /api/tax/forms/{id}/confirm` | | form detail |
 | `GET /api/tax/documents/{id}` | | document with forms and items |
+| `GET` / `PUT` / `DELETE /api/tax/profiles/{user_id}/{tax_year}` | profile (see [Inputs](#inputs)) | profile (`PUT` 201 when created; 404, 409 or 422 on a bad user, spouse or value) |
+| `GET /api/tax/estimate?user_id=&tax_year=` | | the [estimate](#per-user-estimate) (422 when the year has no parameters, 409 for conflicting spouse profiles) |
+| `GET /api/tax/parameters`, `POST /api/tax/parameters/refresh` | | parameters, sources and update state; one update check |
 
 Adding a form to a document that failed (`error` / `unsupported`) turns it into a `parsed`
 document with the warning "Figures on this document were entered manually." A form whose year
@@ -343,6 +386,138 @@ Provenance is stored per form (`extraction_method`: `parser`, `llm` or `manual`;
 and per item (`origin`). Manual forms get a random fingerprint and never collide with imports.
 Editing an imported form keeps its fingerprint on purpose: uploading the original file again is
 still recognised as a duplicate and does not bring back the figures you changed.
+
+## Per-user estimate
+
+Copying the tax from a Form 1040 gives nothing for a year without one and mixes both spouses' tax
+into one user for a joint return. The **estimate** is a simple, reproducible second figure computed
+for one user and one year from the source forms (W-2, 1099, manual source forms) and a few manual
+inputs. The 1040, when there is one, is only a **cross-check** (see below), never an input. It is a
+planning aid, not tax advice and not a substitute for your return. Everything is local.
+
+```console
+$ spend-analyzer tax estimate --year 2024 --user-id 1
+```
+
+or `GET /api/tax/estimate?user_id=&tax_year=` (the web UI's Estimate screen comes later).
+
+### Inputs
+
+- **Source forms** of that user and year: wages, interest, ordinary and qualified dividends,
+  short- and long-term gains, self-employment income, other income, federal tax withheld and the
+  Social Security tax withheld. A corrected form replaces its original (see
+  [Corrected forms](#corrected-forms)). W-2 box 12 is read as memo items: deferrals (codes D, E, F,
+  G, S: `retirement_deferral`) and employer HSA contributions (code W: `hsa_employer`). They are
+  *already excluded* from box 1, so they are **shown and checked against the year's elective deferral
+  limit, never subtracted again**. Roth deferrals (codes AA, BB) are inside box 1 and are not read.
+- **A tax profile** per user and year (`tax_profiles`; `GET`/`PUT`/`DELETE
+  /api/tax/profiles/{user_id}/{tax_year}`): filing status, spouse (`joint_with_user_id`, only with
+  `mfj`), standard or itemized deduction (and the itemized total), the number of age 65 / blind boxes,
+  adjustments to income, other income, capital loss carryover from the previous year, nonrefundable
+  and refundable credits, other taxes, estimated payments and other payments. All amounts are
+  non-negative cents. **Without a profile**: the filing status of the user's own 1040 if there is
+  one, else single, and the standard deduction.
+
+### Method
+
+1. Net capital result = short term + long term - carryover. A net loss is limited to $3,000 ($1,500
+   married filing separately) and the rest is reported as the carryover to next year.
+2. Gross income = wages + interest + ordinary dividends (qualified dividends are inside them) +
+   self-employment + other income + the limited capital result + the profile's other income.
+3. Self-employment tax, per person: 92.35% of self-employment income; 12.4% on the part that fits
+   under the Social Security wage base after that person's W-2 Social Security wages (implied by
+   W-2 box 4 when present, else box 1 wages plus deferrals), plus 2.9%; nothing below $400 of net
+   earnings. Half of it is deducted.
+4. AGI = gross income - adjustments - half the self-employment tax. Deduction = the standard
+   deduction (plus the age 65 / blind amount per box) or the itemized total you entered.
+   Taxable income = max(AGI - deduction, 0).
+5. Income tax = the IRS *Qualified Dividends and Capital Gain Tax Worksheet* on taxable income, with
+   preferential income = qualified dividends + the long-term gain that survives the net capital
+   result (the same code as the [1040 split](#the-federal-tax-split-is-an-estimate): Tax Table
+   below $100,000, exact brackets above, whole dollars).
+6. Total tax = max(income tax - nonrefundable credits, 0) + self-employment tax + other taxes -
+   refundable credits. Payments = federal tax withheld + estimated payments + other payments.
+   **Result = payments - total tax**: positive is a refund, negative is an amount owed.
+
+The effective rate is total tax / gross income, the marginal rate is the ordinary bracket the next
+dollar falls in, and the preferential rate is the 0%, 15% or 20% that applies to the top of the
+taxable income (when there is preferential income).
+
+### Married filing jointly
+
+When the profile is `mfj` with a spouse (the link may be on either spouse's profile) the
+household's items and **both profiles' inputs are summed and the tax is computed once**: income
+tax, the standard deduction for the joint status, the capital loss limit, the brackets. Self-employment tax
+and the deferral limit stay per person. Each spouse's view is an **allocation**: the household tax
+split by share of gross income (equal shares when there is no income; the parts always sum to the
+household tax), with that user's own payments and the result that follows. It is labelled
+`scope: household_allocation`; it is not a separate liability. If the two profiles disagree (the
+spouse's profile is not `mfj`, or names someone else) the estimate is a conflict (HTTP 409) and the
+profile endpoint refuses the save.
+
+### Cross-check against the return
+
+If a Form 1040 exists for the year, the estimate includes its total tax, federal withholding (line
+25d), refund or amount owed and the **delta** (estimate minus return) for tax, withholding and the
+result. For a joint household the household estimate is compared with the joint return, whichever
+spouse imported it. A return filed with a different status than the estimate uses raises a warning.
+A large delta usually means a credit, deduction or income that is not modeled (below) or a form
+that is missing; the return is never changed by it.
+
+### Where the parameters come from, and the opt-in update
+
+Brackets, standard deductions (and the age 65 / blind amounts), the long-term gain breakpoints, the
+capital loss limit, the Social Security wage base, the 401(k) elective deferral limit and the NIIT
+and Additional Medicare Tax thresholds are bundled in the package, per year, in
+`core/tax_data/federal_params.yaml`. **Treasury Fiscal Data was considered and does not publish
+these parameters**; the authoritative source is the IRS inflation-adjustment revenue procedure for
+each year: 2021-45 (2022), 2022-38 (2023), 2023-34 (2024), 2024-40 (2025, with the standard
+deduction raised to $15,750 / $31,500 / $23,625 by P.L. 119-21, the One Big Beautiful Bill Act, as
+Rev. Proc. 2025-32 section 3 restates) and 2025-32 (2026), plus the Social Security Administration's
+contribution and benefit base and the IRS's 401(k) limit announcements. Every year in the file
+lists its sources (`GET /api/tax/parameters` returns them), the file is validated by a schema loader
+(thresholds strictly increasing, every filing status present, a citation per year) and a
+`params_version` says which copy is newer.
+
+The app makes no network request for this. Three optional files can sit in `<data dir>/tax_params/`
+and the one in effect is chosen like this:
+
+1. **your own file** (`spend-analyzer tax params import FILE`, removed by `tax params clear`) always
+   wins when it is valid;
+2. otherwise the valid file with the **higher `params_version`** of the bundled one and the copy
+   downloaded by the update check; the bundled one wins a tie, so an upgrade that ships newer data is
+   never hidden by an older download;
+3. an invalid or unreadable optional file is ignored (the bundled data always loads).
+
+**The update check is opt-in and off by default** (`[tax] auto_update_params = false`, the Settings
+screen, or `SPEND_ANALYZER_TAX__AUTO_UPDATE_PARAMS=true`). When on, the first estimate or summary
+request in a **calendar year** starts one check in a background thread (the page never waits, and a
+network error is ignored with an info log): a plain HTTPS `GET`, no query string, cookies,
+credentials, proxy or user data, of `federal_params.yaml` from this project's GitHub repository
+(`raw.githubusercontent.com/haoxinm/spending-analysis-from-bills/main/src/spend_analyzer/core/tax_data/federal_params.yaml`).
+It is accepted only if it passes the same schema validation **and** its `params_version` is higher
+than both the bundled and the already downloaded file; it is then stored with mode 0600. The date of
+the attempt is recorded *before* the request (in `tax_params/state.json`), whatever the outcome, so
+a machine that is offline is not retried on every page view until the next calendar year.
+`spend-analyzer tax params update` (or `POST /api/tax/parameters/refresh`, the "Check for updates"
+action) runs one check on request whatever the setting says, because you asked for it, and records
+the date too. `tax params show` and `GET /api/tax/parameters` report the file in effect, its
+version, the last check and the setting. Only `api/services/tax_params_update.py` may make this
+request (`tests/test_architecture_guards.py`).
+
+When adding a year by hand: copy the figures from the revenue procedure, add its citation, raise
+`params_version`, and run the tests.
+
+### Not modeled
+
+The estimate lists these with every result instead of guessing: the alternative minimum tax; the net
+investment income tax and the Additional Medicare Tax (a warning appears when your income is over
+the threshold, and your refund may be overstated because employers withhold the latter);
+credits that depend on your situation (child tax credit, earned income credit, education credits:
+enter their total in the profile); the qualified business income deduction; 28% rate gains and
+unrecaptured section 1250 gains; phase-outs of deductions and credits and the SALT cap (enter your
+itemized total after them); taxable Social Security benefits, IRA/pension, rental and partnership
+income (enter the taxable amount as other income); and state and local income tax.
 
 ## LLM fallback (optional)
 
@@ -413,7 +588,9 @@ check. Without a kept or staged PDF the page endpoints answer 409 with `detail.c
 ## Where the data lives
 
 Imported figures are stored in the local database (`tax_documents`, `tax_forms`, `income_items`,
-`tax_items`), per user. The file name you uploaded is stored for display, with any SSN or EIN shape
+`tax_items`), per user; the manual estimate inputs in `tax_profiles`. The optional tax parameter files
+and the date of the last update check live in `<data dir>/tax_params/` (see the
+[estimate](#where-the-parameters-come-from-and-the-opt-in-update)). The file name you uploaded is stored for display, with any SSN or EIN shape
 and any run of six or more digits masked (`W2 123-45-6789.pdf` becomes `W2 ***-**-6789.pdf`). Beyond amounts, the database holds the payer name, the last four digits of
 the payer's identifier and of the account number, the form type and the tax year. Full SSNs,
 ITINs and EINs are never written to the database, the logs or the extract cache. After a tax import
@@ -462,7 +639,7 @@ upload folder); the log names only the kind of error.
 
 **"federal tax split not estimated" / "no federal bracket table".** See the
 [limits above](#the-federal-tax-split-is-an-estimate): the filing status wasn't a single clear
-mark, the year is outside 2022-2025, or taxable income or tax was not read.
+mark, the year is outside 2022-2026, or taxable income or tax was not read.
 
 **`tax report` prints "No tax data matches this report."** There are no documents for that user and
 year. `tax report` defaults to the default user; use `--user-id` or `--all-users`.

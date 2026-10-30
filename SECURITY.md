@@ -24,7 +24,9 @@ Given that, the threats this project actually defends against are:
    with the user's personal-info entries (`pii_terms`/user aliases: names in any case/order,
    phone and account numbers in any format) removed first by `core/pii.py`, emails replaced, any
    remaining long account/card numbers masked to the last 4, an exact-payload preview, and never auto-confirmed. Only `llm/client.py` may
-   import an HTTP client, and only those two seams may import it (`tests/test_architecture_guards.py`);
+   import an HTTP client (plus the opt-in, once-a-year, no-user-data fetch of the public tax parameter
+   file, `api/services/tax_params_update.py`), and only those two seams may import it
+   (`tests/test_architecture_guards.py`);
    `ingest/` can make no network call. An endpoint on `localhost` keeps everything on the machine;
    amounts and dates in parsed page text do go to a *remote* endpoint if you choose to parse with one.
 3. **A malicious PDF or a malicious layout spec.** An uploaded statement is untrusted input

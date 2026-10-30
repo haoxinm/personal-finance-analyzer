@@ -109,7 +109,9 @@ or do the same from the web UI the browser just opened.
 Inside: `spend.db` (SQLite, WAL mode), `statements/<sha256>.pdf` (a copy of each imported PDF,
 unless you set `[privacy] store_pdf_copies = false` in `config.toml`), `config.toml`, and
 `logs/app.log`. Nothing here is ever uploaded anywhere by Spend Analyzer itself — there is no
-telemetry, no analytics, and no update check.
+telemetry, no analytics, and (unless you opt in to the yearly tax-parameter check, see
+[Privacy settings](#privacy-settings)) no update check. `tax_params/` holds the optional
+downloaded or imported tax-parameter files and the date of the last check.
 
 To move this data to another computer, use `spend-analyzer backup create` and `backup restore`
 (see [Moving to another machine](../README.md#moving-to-another-machine)) rather than copying the
@@ -160,6 +162,20 @@ remain in the database. Turn it on only if you want the original file kept in th
 `statements/` folder; `spend-analyzer tax delete` removes a kept copy. Tax-form text is never
 written to the extract cache, whatever `store_extract_cache` says. The key is edited in the file
 only, not on the Settings screen. See [TAX.md](TAX.md).
+
+The `[tax]` table holds the one network opt-in outside the LLM:
+
+```toml
+[tax]
+auto_update_params = false       # once a year, fetch the federal tax parameter file (default false)
+```
+
+With it on, the first tax estimate or summary opened in a calendar year makes one plain `GET` of a
+public file in the project's GitHub repository (no query string, cookies or user data), keeps a
+validated copy in `tax_params/` and does not ask again that year. It never blocks the page; a
+failure is ignored. Leave it off and the app only ever uses the figures bundled with it (2022 -
+2026); `spend-analyzer tax params update` checks on request. Details in
+[TAX.md](TAX.md#where-the-parameters-come-from-and-the-opt-in-update).
 
 ## Upgrading
 
