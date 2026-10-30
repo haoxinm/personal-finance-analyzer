@@ -59,7 +59,7 @@ This is the reason to run this instead of a hosted budgeting app, so it comes fi
   that too.
 - **Opt-in, once-a-year tax parameter check (off by default).** The federal tax estimate needs the
   IRS's yearly figures (brackets, standard deduction, limits), which ship inside the app for 2022 -
-  2026. If you set `[tax] auto_update_params = true` (Settings, or the file), the first tax
+  2026. If you set `[tax] auto_update_params = true` (**Settings › Tax parameters**, or the file), the first tax
   estimate or summary you open in a calendar year makes **one plain HTTPS `GET`** of a single
   public file, `federal_params.yaml`, from this project's GitHub repository
   (`raw.githubusercontent.com/haoxinm/spending-analysis-from-bills/main/src/spend_analyzer/core/tax_data/federal_params.yaml`)
@@ -68,7 +68,7 @@ This is the reason to run this instead of a hosted budgeting app, so it comes fi
   replaced. The date is stored so it is not asked again that year, whatever the outcome. The request has no query string, cookies, credentials or proxy
   settings and carries none of your data (not your tax figures, not the installed version); GitHub
   sees your IP address like for any download. It never blocks the page and a network error is
-  ignored. `spend-analyzer tax params update` (or the Check for updates button) does the same on
+  ignored. `spend-analyzer tax params update` (or the **Check now** button in Settings › Tax parameters) does the same on
   request, and you can instead supply your own file with `tax params import`. With the setting off,
   nothing is ever requested. See [docs/TAX.md](docs/TAX.md#where-the-parameters-come-from-and-the-opt-in-update).
 - **Tax forms stay local unless you opt in.** W-2, 1099 and 1040 PDFs are read by deterministic
@@ -254,7 +254,10 @@ build is missing or stale).
   to see income by category and payer, withholding, refund or amount owed, effective and all-in tax
   rates, and a year-over-year comparison. W-2 and 1099 forms are the source of income, the 1040 the
   source of tax owed, so nothing is double counted; the ordinary-versus-preferential split of
-  federal tax is a labelled estimate. See [docs/TAX.md](docs/TAX.md).
+  federal tax is a labelled estimate. **Income & Tax › Estimate** computes a per-person federal tax
+  estimate ("Refund $X" / "Owe $X") from the forms plus a few inputs you enter (filing status,
+  deduction, credits, payments), with your filed 1040 as a cross-check, and the Overview says whether
+  federal tax is from the return, estimated or withholding only. See [docs/TAX.md](docs/TAX.md).
 - **Tracks net worth.** On the **Net worth** page, enter monthly balances for checking, savings, investment
   and credit-card accounts (several accounts per category). Net worth is assets minus credit-card
   balances, shown with a breakdown table, a pie of where your assets are held, and trend lines per
