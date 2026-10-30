@@ -68,7 +68,11 @@ export const SECTIONS: readonly SectionSpec[] = [
     key: "net-worth",
     label: "Net worth",
     base: "/net-worth",
-    tabs: [{ path: "/net-worth", label: "Net worth", end: true, compare: true }],
+    tabs: [
+      { path: "/net-worth", label: "Overview", end: true, compare: true },
+      // A parameter-heavy planning screen: one person (or everyone) at a time, no compare.
+      { path: "/net-worth/forecast", label: "Forecast" },
+    ],
   },
   {
     key: "settings",

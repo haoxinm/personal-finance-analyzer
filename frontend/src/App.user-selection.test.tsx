@@ -104,6 +104,7 @@ describe("global user bar", () => {
     "/tax/documents",
     "/tax/import",
     "/net-worth",
+    "/net-worth/forecast",
   ])(
     "is shown on %s",
     async (path) => {
@@ -197,6 +198,14 @@ describe("compare mode", () => {
     const ids = Array.from(document.querySelectorAll("[id]")).map((el) => el.id);
     expect(ids.length).toBeGreaterThan(0);
     expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it("shows the Forecast for one user at a time, never in compare panes", async () => {
+    await renderApp("/net-worth/forecast?user=1&compare=2");
+    expect(await screen.findByRole("heading", { name: "Net worth forecast" })).toBeInTheDocument();
+    expect(screen.queryByTestId("compare-panes")).not.toBeInTheDocument();
+    expect(await within(bar()).findByTestId("user-chip")).toHaveTextContent("Alex");
+    expect(screen.queryByTestId("compare-panes")).not.toBeInTheDocument();
   });
 
   it("each transactions pane is scoped to its own user", async () => {
