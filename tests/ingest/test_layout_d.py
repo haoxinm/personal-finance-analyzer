@@ -269,6 +269,36 @@ def test_card_payment_row_gets_transfer_kind_hint() -> None:
     assert payment.kind_hint == "transfer"
 
 
+def test_bills_with_payment_words_are_not_hinted_as_transfers(tmp_path: Path) -> None:
+    """Regression: a bare PAYMENT/PMT/EPAY is rent, a utility or a loan — real spend — so only
+    card-specific wording gets the `transfer` hint, in whichever section the row printed."""
+    lines = [
+        "Lakeshore Community Bank",
+        "Transaction Detail",
+        "Checking Account Statement",
+        "March 1, 2026 through March 31, 2026",
+        "Beginning Balance $5,000.00",
+        "Ending Balance $2,700.00",
+        "",
+        format_row(_HEADER, _WIDTHS),
+        "Electronic Withdrawals",
+        _data_row("03/02", "RENT PAYMENT UNIT 4B", debit=150_000, credit=None, balance=350_000),
+        _data_row("03/03", "CITY WATER EPAY", debit=6_000, credit=None, balance=344_000),
+        _data_row("03/04", "AUTO LOAN PMT ACME", debit=34_000, credit=None, balance=310_000),
+        _data_row("03/05", "ACME CRD PMT VISA", debit=40_000, credit=None, balance=270_000),
+    ]
+    pdf_path = tmp_path / "layout_d_bills.pdf"
+    render_lines_pdf(pdf_path, [lines])
+    statement = PARSER.parse(_extract_doc(pdf_path))
+    hints = {t.description: t.kind_hint for t in statement.transactions}
+    assert hints == {
+        "RENT PAYMENT UNIT 4B": "purchase",
+        "CITY WATER EPAY": "purchase",
+        "AUTO LOAN PMT ACME": "purchase",
+        "ACME CRD PMT VISA": "transfer",
+    }
+
+
 def test_both_debit_and_credit_filled_raises_parser_error() -> None:
     doc = _extract_doc(_GENERATED_DIR / "layout_d_bank_malformed.pdf")
     with pytest.raises(ParserError, match="both the debit and credit column"):

@@ -82,6 +82,33 @@ def test_no_hint_checking_issuer_match_term_next_to_payment_is_transfer() -> Non
     )
 
 
+def test_no_hint_checking_issuer_autopay_is_transfer() -> None:
+    assert (
+        resolve_kind(
+            kind_hint=None,
+            description_clean="ACME BANK AUTOPAY",
+            amount_minor=15000,
+            account_type="checking",
+            issuer_match_terms=("Acme Bank",),
+        )
+        == "transfer"
+    )
+
+
+def test_no_hint_checking_issuer_loan_payment_is_not_a_card_payment() -> None:
+    # The lender shares the card issuer's name; a loan payment is a bill (spend), not a transfer.
+    assert (
+        resolve_kind(
+            kind_hint=None,
+            description_clean="ACME BANK AUTO LOAN PAYMENT",
+            amount_minor=45000,
+            account_type="checking",
+            issuer_match_terms=("Acme Bank",),
+        )
+        == "purchase"
+    )
+
+
 def test_no_hint_checking_issuer_term_far_from_payment_does_not_match() -> None:
     # "Acme Bank" appears, but nowhere near a PAYMENT/PMT token: this is not a card payment.
     long_gap = "ACME BANK " + ("X" * 40) + " PURCHASE"
@@ -133,6 +160,115 @@ def test_no_hint_transfer_pattern() -> None:
     )
 
 
+def test_no_hint_checking_card_payment_phrasings_are_transfers() -> None:
+    for description in (
+        "CRD PMT VISA 1234",
+        "CREDIT CARD PAYMENT",
+        "ACME CARD EPAY",
+        "CC AUTOPAY",
+        "CARD PAYMENT ACME",
+    ):
+        assert (
+            resolve_kind(
+                kind_hint=None,
+                description_clean=description,
+                amount_minor=20000,
+                account_type="checking",
+            )
+            == "transfer"
+        ), description
+
+
+def test_no_hint_checking_bills_with_payment_words_stay_purchases() -> None:
+    # Regression: a bare PAYMENT/PMT/EPAY/AUTOPAY on a bank statement is rent, a utility, a loan
+    # or an insurer — real spend that must not be hidden as a transfer or a payment.
+    for description in (
+        "RENT PAYMENT UNIT 4B",
+        "CITY WATER EPAY",
+        "ELECTRIC UTILITY AUTOPAY",
+        "AUTO LOAN PMT",
+        "INSURANCE PAYMENT",
+        "DEBIT CARD PAYMENT CORNER CAFE",
+    ):
+        for account_type in ("checking", "savings"):
+            assert (
+                resolve_kind(
+                    kind_hint=None,
+                    description_clean=description,
+                    amount_minor=120000,
+                    account_type=account_type,
+                )
+                == "purchase"
+            ), description
+
+
+def test_no_hint_checking_unexplained_inflow_is_a_transfer_not_a_refund() -> None:
+    # Regression: a paycheck from a generic-parsed bank statement must not be netted against spend.
+    for description in (
+        "ACME CORP PAYROLL",
+        "DIRECT DEP ACME",
+        "ZELLE FROM JAMIE",
+        "MOBILE DEPOSIT",
+    ):
+        for account_type in ("checking", "savings"):
+            assert (
+                resolve_kind(
+                    kind_hint=None,
+                    description_clean=description,
+                    amount_minor=-250000,
+                    account_type=account_type,
+                )
+                == "transfer"
+            ), description
+
+
+def test_no_hint_checking_inflow_with_refund_wording_is_a_refund() -> None:
+    for description in ("MERCHANT REFUND WIDGET CO", "PURCHASE RETURN", "REVERSAL OF CHARGE"):
+        assert (
+            resolve_kind(
+                kind_hint=None,
+                description_clean=description,
+                amount_minor=-3000,
+                account_type="checking",
+            )
+            == "refund"
+        ), description
+
+
+def test_no_hint_checking_interest_earned_is_not_spend() -> None:
+    assert (
+        resolve_kind(
+            kind_hint=None,
+            description_clean="INTEREST PAID",
+            amount_minor=-212,
+            account_type="savings",
+        )
+        == "transfer"
+    )
+    # ...but interest *charged* (an outflow) still is.
+    assert (
+        resolve_kind(
+            kind_hint=None,
+            description_clean="OVERDRAFT INTEREST",
+            amount_minor=212,
+            account_type="checking",
+        )
+        == "interest"
+    )
+
+
+def test_no_hint_credit_purchase_with_payment_word_is_a_purchase() -> None:
+    assert (
+        resolve_kind(
+            kind_hint=None,
+            description_clean="PAYMENT PROCESSING INC",
+            amount_minor=4500,
+            account_type="credit",
+        )
+        == "purchase"
+    )
+
+
 def test_no_hint_payment_pattern() -> None:
     assert (
         resolve_kind(
@@ -157,7 +293,7 @@ def test_no_hint_default_sign_purchase_for_outflow() -> None:
     )
 
 
-def test_no_hint_default_sign_refund_for_inflow() -> None:
+def test_no_hint_default_sign_refund_for_inflow_on_a_card() -> None:
     assert (
         resolve_kind(
             kind_hint=None,
@@ -177,11 +313,7 @@ def test_is_spend() -> None:
         assert not is_spend(kind)
 
 
-# `_issuer_payment_match` is exercised directly here because, with the current word list of
-# `_CARD_PAYMENT_RE` (which already includes bare "PAYMENT"/"PMT"), `resolve_kind` never reaches
-# this helper through a public call: any description an issuer-term match would catch already
-# matches `_CARD_PAYMENT_RE` on its own "PAYMENT"/"PMT" token. It is kept for A26's literal wording
-# and to keep working correctly if that word list is ever narrowed.
+# `_issuer_payment_match` is also exercised directly, for its proximity edge cases.
 
 
 def test_issuer_payment_match_no_terms_configured() -> None:

@@ -28,6 +28,7 @@ from __future__ import annotations
 import re
 from datetime import date
 
+from spend_analyzer.classify.kinds import CARD_PAYMENT_RE
 from spend_analyzer.core.errors import ParserError
 from spend_analyzer.core.types import (
     AccountHint,
@@ -69,12 +70,11 @@ _HEADER_ROW_RE = re.compile(
 #: not income, so they get `refund` instead of the section's default `transfer`.
 _REFUND_RE = re.compile(r"\b(RETURN|REFUND|PURCHASE\s+RETURN)\b", re.IGNORECASE)
 
-#: Card-payment patterns (I11, A26): the spend was already counted on the card statement, so a
-#: payment *to* a credit card from this account is a `transfer`, never a `purchase`, no matter
-#: which section it printed in.
-_CARD_PAYMENT_RE = re.compile(
-    r"\b(AUTOPAY|CRD\s*PMT|CREDIT\s*CARD\s*PAYMENT|EPAY|PAYMENT|PMT)\b", re.IGNORECASE
-)
+# Card payments (I11, A26): the spend was already counted on the card statement, so a payment *to*
+# a credit card from this account is a `transfer`, never a `purchase`, no matter which section it
+# printed in. The pattern lives in `classify.kinds` (`CARD_PAYMENT_RE`) so the parser and the
+# hint-less fallback agree; it needs card-specific words, since a bare PAYMENT/PMT/EPAY is as
+# likely rent, a utility or a loan, which is real spend.
 
 #: A trailing foreign-currency line, e.g. ``FOREIGN AMOUNT 45.00 EUR RATE 1.0921``.
 _FX_LINE_RE = re.compile(
@@ -253,7 +253,7 @@ class LayoutDBankParser:
 
     @staticmethod
     def _kind_hint(section: str, description: str) -> KindHint:
-        if _CARD_PAYMENT_RE.search(description):
+        if CARD_PAYMENT_RE.search(description):
             return "transfer"
         base: Kind = _SECTION_KIND[section]  # type: ignore[assignment]
         if section == "deposits and additions" and _REFUND_RE.search(description):
