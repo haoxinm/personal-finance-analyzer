@@ -138,6 +138,11 @@ function documentTitle(section: SectionSpec | null, tab: TabSpec | null): string
   return [...parts, APP_NAME].join(" · ");
 }
 
+/** Labels of the sections with at least one compare-capable tab, for the user bar's explanation. */
+export function compareSectionLabels(): string[] {
+  return SECTIONS.filter((s) => !s.hidden && s.tabs.some((t) => t.compare)).map((s) => s.label);
+}
+
 /** The tabs a section lists in its second nav row. */
 export function visibleTabs(section: SectionSpec): TabSpec[] {
   return section.tabs.filter((t) => !t.hidden);

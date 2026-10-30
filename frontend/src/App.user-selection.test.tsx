@@ -151,11 +151,71 @@ describe("global user bar", () => {
     expect(await within(await screen.findByTestId("user-bar")).findByText("Rules apply to all users.")).toBeInTheDocument();
   });
 
-  it("disables Compare with an explanation where the screen cannot be split", async () => {
+  it("disables Compare and says why in visible text, linked with aria-describedby", async () => {
     await renderApp("/spending/rules");
     const button = await within(await screen.findByTestId("user-bar")).findByRole("button", { name: "Compare" });
     expect(button).toBeDisabled();
-    expect(button).toHaveAttribute("title", expect.stringContaining("Spending"));
+    const help = document.getElementById(button.getAttribute("aria-describedby")!);
+    expect(help).toBeVisible();
+    expect(help).toHaveTextContent("Compare isn’t available on this page. Try Spending, Income & Tax or Net worth.");
+    expect(button).not.toHaveAttribute("title");
+  });
+
+  it("shows no compare explanation where Compare works", async () => {
+    await renderApp("/spending");
+    const button = await within(await screen.findByTestId("user-bar")).findByRole("button", { name: "Compare" });
+    expect(button).toBeEnabled();
+    expect(button).not.toHaveAttribute("aria-describedby");
+    expect(within(bar()).queryByText(/isn’t available/)).not.toBeInTheDocument();
+  });
+
+  it("links 'Add one in Settings' to the Users section when there are no users", async () => {
+    await renderApp("/spending", []);
+    const link = await within(await screen.findByTestId("user-bar")).findByRole("link", { name: "Add one in Settings" });
+    expect(link).toHaveAttribute("href", "/settings#users");
+  });
+});
+
+describe("shell chrome", () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+  });
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("skips to the main content: the first tab stop moves focus to <main>", async () => {
+    const user = userEvent.setup();
+    await renderApp("/spending");
+    await user.tab();
+    const skip = screen.getByRole("link", { name: "Skip to content" });
+    expect(skip).toHaveFocus();
+    await user.keyboard("{Enter}");
+    const main = screen.getByRole("main");
+    expect(main).toHaveAttribute("id", "main-content");
+    expect(main).toHaveFocus();
+    // No fragment leaks into the router's location.
+    expect(screen.getByTestId("location").textContent).toBe("/spending");
+  });
+
+  it("makes the product name a link home, outside the main nav", async () => {
+    await renderApp("/tax");
+    const brand = screen.getByRole("link", { name: "Spend Analyzer" });
+    expect(brand).toHaveAttribute("href", "/");
+    expect(within(screen.getByRole("navigation", { name: "Main" })).queryByRole("link", { name: "Spend Analyzer" })).toBeNull();
+  });
+
+  it("is sticky only from md up, and the nav rows scroll sideways instead of wrapping", async () => {
+    await renderApp("/spending");
+    const header = screen.getAllByRole("banner")[0]!;
+    expect(header.className).toContain("md:sticky");
+    expect(header.className).not.toMatch(/(^|\s)sticky/);
+    for (const nav of [screen.getByRole("navigation", { name: "Main" }), screen.getByRole("navigation", { name: "Spending sections" })]) {
+      expect(nav.className).toContain("flex-nowrap");
+      expect(nav.className).toContain("overflow-x-auto");
+    }
   });
 });
 

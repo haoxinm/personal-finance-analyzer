@@ -1,5 +1,5 @@
 import * as React from "react";
-import { NavLink, Route, Routes, useLocation } from "react-router-dom";
+import { Link, NavLink, Route, Routes, useLocation } from "react-router-dom";
 
 import { Toaster } from "@/components/ui/toaster";
 import { ToastContextProvider } from "@/components/ui/toast-provider";
@@ -47,6 +47,9 @@ const SCREENS = [
   { meta: forecastMeta, Component: ForecastScreen },
   { meta: settingsMeta, Component: SettingsScreen },
 ] as const;
+
+/** The id the "Skip to content" link targets. */
+const MAIN_ID = "main-content";
 
 /**
  * The app shell: top nav (sections), the active section's sub-tabs, the user bar, providers, error
@@ -105,33 +108,49 @@ function Shell() {
 
   const nameOf = (id: number | null) => sel.users.find((u) => u.id === id)?.name ?? "";
 
+  // A fragment link would put `#main-content` in the URL (the router listens to it); move focus
+  // to <main> directly instead, which also scrolls it into view.
+  function skipToContent(event: React.MouseEvent) {
+    event.preventDefault();
+    document.getElementById(MAIN_ID)?.focus();
+  }
+
   return (
     <div className="flex min-h-screen flex-col">
-      <header className="sticky top-0 z-30 bg-background">
+      <a
+        href={`#${MAIN_ID}`}
+        onClick={skipToContent}
+        className="sr-only focus:not-sr-only focus:fixed focus:left-2 focus:top-2 focus:z-50 focus:rounded-md focus:bg-background focus:px-3 focus:py-2 focus:text-sm focus:font-medium focus:shadow-md focus:ring-2 focus:ring-ring"
+      >
+        Skip to content
+      </a>
+      {/* Sticky only from `md` up: stacked on a phone the three header rows would eat the screen. */}
+      <header className="z-30 bg-background md:sticky md:top-0">
         <div className="border-b border-border">
-          <nav
-            aria-label="Main"
-            className="mx-auto flex max-w-screen-2xl flex-wrap items-center gap-4 px-4 py-3"
-          >
-            <span className="text-sm font-semibold tracking-tight">{APP_NAME}</span>
-            {SECTIONS.filter((section) => !section.hidden).map((section) => {
-              const first = section.tabs[0]!;
-              return (
-                <NavItem
-                  key={section.key}
-                  to={{
-                    pathname: first.path,
-                    // Keep an active compare across the screens that support it.
-                    search: carriedSearch(first, search, false),
-                  }}
-                  active={info.section?.key === section.key}
-                  className={section.pushRight ? "ml-auto" : undefined}
-                >
-                  {section.label}
-                </NavItem>
-              );
-            })}
-          </nav>
+          <div className="mx-auto flex max-w-screen-2xl items-center gap-4 px-4 py-3">
+            <Link to="/" className="shrink-0 rounded-sm text-sm font-semibold tracking-tight">
+              {APP_NAME}
+            </Link>
+            <nav aria-label="Main" className="-my-1 flex min-w-0 flex-1 flex-nowrap items-center gap-4 overflow-x-auto py-1">
+              {SECTIONS.filter((section) => !section.hidden).map((section) => {
+                const first = section.tabs[0]!;
+                return (
+                  <NavItem
+                    key={section.key}
+                    to={{
+                      pathname: first.path,
+                      // Keep an active compare across the screens that support it.
+                      search: carriedSearch(first, search, false),
+                    }}
+                    active={info.section?.key === section.key}
+                    className={section.pushRight ? "ml-auto" : undefined}
+                  >
+                    {section.label}
+                  </NavItem>
+                );
+              })}
+            </nav>
+          </div>
         </div>
         {info.section ? <SectionTabs section={info.section} /> : null}
         {showBar ? (
@@ -150,8 +169,10 @@ function Shell() {
         ) : null}
       </header>
       <main
+        id={MAIN_ID}
+        tabIndex={-1}
         className={cn(
-          "mx-auto flex w-full flex-1 flex-col px-4 py-6",
+          "mx-auto flex w-full flex-1 flex-col px-4 py-6 focus:outline-none",
           comparing ? "max-w-screen-2xl" : "max-w-6xl",
         )}
       >
@@ -190,7 +211,7 @@ function NavItem({
       // The section is active across all its tabs (including hidden ones), which NavLink's own
       // path matching cannot express.
       className={cn(
-        "rounded-md px-2 py-1 text-sm text-muted-foreground transition-colors hover:text-foreground",
+        "shrink-0 whitespace-nowrap rounded-md px-2 py-1 text-sm text-muted-foreground transition-colors hover:text-foreground",
         active && "bg-muted text-foreground",
         className,
       )}
