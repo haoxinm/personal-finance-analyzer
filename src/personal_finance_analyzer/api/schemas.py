@@ -224,6 +224,40 @@ class Job(_Model):
 # --- Transactions ----------------------------------------------------------------------------------
 
 
+#: Where a one-click category suggestion comes from (`classify/candidates.py`), in precedence
+#: order: a one-time edit you made, a payment/transfer's fixed filing, your rules (and legacy
+#: pins), built-in rules, the issuer's own label, the learned merchant cache, and the saved
+#: answer of an earlier LLM run.
+CandidateSource = Literal[
+    "one_time_edit", "kind", "user_rule", "builtin_rule", "issuer", "merchant_cache", "llm"
+]
+
+
+class TransactionCandidate(_Model):
+    """One cascade layer's answer for one transaction. Clicking it is an ordinary one-time edit
+    (`PATCH /transactions/{id}` with this category, subcategory and `kind` when set)."""
+
+    source: CandidateSource
+    category_key: str
+    subcategory_key: str
+    #: A rule's kind override; send it with the category so the click does what the rule does.
+    kind: Kind | None = None
+    #: The rule's pattern, the issuer's own label, or where the cached answer was learned.
+    label: str
+    rule_id: int | None = None
+    #: This is the answer the row is filed under now (the one-time edit, for an edited row).
+    is_current: bool
+
+
+class TransactionCandidates(_Model):
+    """`GET /api/transactions/{id}/candidates`: what each layer would say, in precedence order."""
+
+    transaction_id: int
+    candidates: list[TransactionCandidate]
+    #: At least two layers name different categories, and the row has no one-time edit.
+    conflict: bool
+
+
 class Transaction(_Model):
     id: int
     statement_id: int
@@ -240,6 +274,9 @@ class Transaction(_Model):
     merchant_key: str | None
     notes: str | None
     needs_review: bool
+    #: Only present when the list was asked for it (`include_candidates` / `include_conflict`).
+    candidates: list[TransactionCandidate] | None = None
+    conflict: bool | None = None
 
 
 class TransactionList(_Model):

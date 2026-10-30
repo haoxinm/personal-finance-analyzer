@@ -10,6 +10,11 @@ way"), which saves an exact user rule in addition to patching the transaction.
 A category/subcategory change goes through `classify.cascade.apply_user_correction` (§3.12a,
 P2-B) via `api/services/gateway.py`; a kind-only change goes through
 `crud.update_transaction_fields`, which marks the row the same way; notes never lock a row.
+
+**Suggestions.** `GET /transactions/{id}/candidates` (and the opt-in `candidates` / `conflict`
+fields of the list, plus its `?conflict=` filter) expose what *each* classification layer would
+say about a row (`classify.candidates`), read-only and without any LLM call. Applying one is just
+a `PATCH` with that category: a one-time edit, undoable like any other.
 """
 
 from __future__ import annotations
@@ -24,12 +29,36 @@ from sqlalchemy.orm import Session
 from personal_finance_analyzer.api import schemas
 from personal_finance_analyzer.api.deps import SessionDep
 from personal_finance_analyzer.api.services import crud, gateway
+from personal_finance_analyzer.classify import candidates as suggestions
 from personal_finance_analyzer.db.models import Transaction
 
 router = APIRouter(tags=["transactions"])
 
 
-def _transaction_response(session: Session, txn: Transaction) -> schemas.Transaction:
+def _candidates_response(
+    candidate_set: suggestions.CandidateSet,
+) -> list[schemas.TransactionCandidate]:
+    return [
+        schemas.TransactionCandidate(
+            source=c.source,
+            category_key=c.category_key,
+            subcategory_key=c.subcategory_key,
+            kind=c.kind,
+            label=c.label,
+            rule_id=c.rule_id,
+            is_current=c.is_current,
+        )
+        for c in candidate_set.candidates
+    ]
+
+
+def _transaction_response(
+    session: Session,
+    txn: Transaction,
+    candidate_set: suggestions.CandidateSet | None = None,
+    *,
+    with_candidates: bool = False,
+) -> schemas.Transaction:
     return schemas.Transaction(
         id=txn.id,
         statement_id=txn.statement_id,
@@ -46,6 +75,10 @@ def _transaction_response(session: Session, txn: Transaction) -> schemas.Transac
         merchant_key=txn.merchant_key,
         notes=txn.notes,
         needs_review=txn.needs_review,
+        candidates=_candidates_response(candidate_set)
+        if candidate_set is not None and with_candidates
+        else None,
+        conflict=candidate_set.conflict if candidate_set is not None else None,
     )
 
 
@@ -72,6 +105,7 @@ def _filters_dependency(
         uncategorized: bool | None = None,
         search: str | None = None,
         currency: str | None = currency_default,
+        conflict: bool | None = None,
     ) -> crud.TransactionFilters:
         return crud.TransactionFilters(
             user_ids=user_ids,
@@ -89,6 +123,7 @@ def _filters_dependency(
             uncategorized=uncategorized,
             search=search,
             currency=currency,
+            conflict=conflict,
         )
 
     return dependency
@@ -113,12 +148,29 @@ def list_transactions(
     page: int = 1,
     page_size: int = 50,
     sort: str | None = None,
+    include_candidates: bool = False,
+    include_conflict: bool = False,
 ) -> schemas.TransactionList:
+    """One page of transactions. `include_candidates` adds each row's per-layer suggestions
+    (`candidates`) and `conflict`; `include_conflict` adds just the `conflict` flag (the grid's
+    marker). Both are batch-computed for this page only. `conflict=true|false` (a filter)
+    narrows the whole result set to rows with, or without, conflicting suggestions."""
     items, total = crud.list_transactions(
         session, filters, page=page, page_size=page_size, sort=sort
     )
+    candidate_sets = (
+        suggestions.candidates_for_transactions(session, items)
+        if include_candidates or include_conflict
+        else {}
+    )
     return schemas.TransactionList(
-        items=[_transaction_response(session, t) for t in items], total=total
+        items=[
+            _transaction_response(
+                session, t, candidate_sets.get(t.id), with_candidates=include_candidates
+            )
+            for t in items
+        ],
+        total=total,
     )
 
 
@@ -130,6 +182,26 @@ def list_transaction_ids(
     cap), for "select all N matching" in the grid."""
     ids = crud.transaction_ids(session, filters, sort=sort)
     return schemas.TransactionIds(ids=ids, total=len(ids))
+
+
+@router.get("/transactions/{id}/candidates", response_model=schemas.TransactionCandidates)
+def get_transaction_candidates(
+    id: int,  # keep the name "id": the generated frontend path key derives from it
+    session: SessionDep,
+) -> schemas.TransactionCandidates:
+    """What each classification layer (your rules, built-in rules, the issuer's label, the learned
+    cache / saved LLM answer) would say about this transaction, highest priority first, and
+    whether they disagree. Read-only; never calls the LLM. Click-to-apply is `PATCH
+    /transactions/{id}` with the chosen category."""
+    txn = crud.get_transaction(session, id)
+    if txn is None:
+        raise HTTPException(status_code=404, detail="transaction not found")
+    candidate_set = suggestions.candidates_for_transaction(session, txn)
+    return schemas.TransactionCandidates(
+        transaction_id=txn.id,
+        candidates=_candidates_response(candidate_set),
+        conflict=candidate_set.conflict,
+    )
 
 
 @router.patch("/transactions/{id}", response_model=schemas.Transaction)
