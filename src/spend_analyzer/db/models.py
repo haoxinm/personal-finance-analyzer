@@ -596,3 +596,76 @@ class ForecastPreset(Base):
     updated_at: Mapped[str] = mapped_column(
         Text, nullable=False, default=utcnow_iso, onupdate=utcnow_iso
     )
+
+
+#: Filing statuses a profile may hold (the 1040 parser's vocabulary).
+TAX_FILING_STATUSES: tuple[str, ...] = ("single", "mfj", "mfs", "hoh", "qss")
+_PROFILE_AMOUNTS: tuple[str, ...] = (
+    "itemized_deductions_minor",
+    "adjustments_minor",
+    "other_income_minor",
+    "capital_loss_carryover_minor",
+    "nonrefundable_credits_minor",
+    "refundable_credits_minor",
+    "other_taxes_minor",
+    "estimated_payments_minor",
+    "other_payments_minor",
+)
+
+
+def _amount_column() -> Mapped[int]:
+    return mapped_column(Integer, nullable=False, default=0, server_default=text("0"))
+
+
+class TaxProfile(Base):
+    """Manual inputs for one user's federal tax estimate for one year (`analytics/tax_estimate.py`).
+
+    Everything the source forms cannot say: filing status, spouse link, deductions, credits,
+    other taxes and payments. All amounts are non-negative integer cents. `joint_with_user_id` is
+    the spouse for a married-filing-jointly profile (both spouses carry a profile that points at
+    the other). LOCAL ONLY, like the rest of the tax data.
+    """
+
+    __tablename__ = "tax_profiles"
+    __table_args__ = (
+        UniqueConstraint("user_id", "tax_year", name="uq_tax_profile_user_year"),
+        CheckConstraint(
+            f"filing_status IN ({_sql_in(TAX_FILING_STATUSES)})", name="ck_taxprofile_status"
+        ),
+        CheckConstraint(
+            "deduction_mode IN ('standard','itemized')", name="ck_taxprofile_deduction_mode"
+        ),
+        CheckConstraint("age65_or_blind_count BETWEEN 0 AND 4", name="ck_taxprofile_aged_blind"),
+        CheckConstraint("tax_year BETWEEN 1990 AND 2100", name="ck_taxprofile_year"),
+        CheckConstraint(
+            " AND ".join(f"{c} >= 0" for c in _PROFILE_AMOUNTS), name="ck_taxprofile_nonneg"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    tax_year: Mapped[int] = mapped_column(Integer, nullable=False)
+    filing_status: Mapped[str] = mapped_column(String, nullable=False)
+    joint_with_user_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    deduction_mode: Mapped[str] = mapped_column(
+        String, nullable=False, default="standard", server_default=text("'standard'")
+    )
+    itemized_deductions_minor: Mapped[int] = _amount_column()
+    age65_or_blind_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    adjustments_minor: Mapped[int] = _amount_column()
+    other_income_minor: Mapped[int] = _amount_column()
+    capital_loss_carryover_minor: Mapped[int] = _amount_column()
+    nonrefundable_credits_minor: Mapped[int] = _amount_column()
+    refundable_credits_minor: Mapped[int] = _amount_column()
+    other_taxes_minor: Mapped[int] = _amount_column()
+    estimated_payments_minor: Mapped[int] = _amount_column()
+    other_payments_minor: Mapped[int] = _amount_column()
+    updated_at: Mapped[str] = mapped_column(
+        Text, nullable=False, default=utcnow_iso, onupdate=utcnow_iso
+    )
