@@ -18,6 +18,13 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
+from spend_analyzer.core.forecast import (
+    MAX_AMOUNT_MINOR,
+    MAX_EVENTS,
+    MAX_HORIZON_YEARS,
+    MAX_YEAR,
+    MIN_YEAR,
+)
 from spend_analyzer.core.net_worth import BalanceCategory
 
 
@@ -1128,3 +1135,139 @@ class TaxIncomePayer(_Model):
     category: IncomeCategoryEnum
     label: str
     amount_minor: int
+
+
+# --- Net worth forecast ------------------------------------------------------------------------
+#
+# Rates are percent per year (3.0 = 3%); amounts are integer USD minor units. The projection itself
+# is computed in the browser; these schemas carry history in and presets out.
+
+
+class NetWorthHistoryPut(_Model):
+    amount_minor: int = Field(gt=-MAX_AMOUNT_MINOR, lt=MAX_AMOUNT_MINOR)  # signed
+    note: str | None = Field(default=None, max_length=_NOTE_MAX_LENGTH)
+
+
+class NetWorthHistory(_Model):
+    id: int
+    user_id: int
+    year: int
+    amount_minor: int
+    note: str | None
+    created_at: str
+    updated_at: str
+
+
+ForecastNetWorthSource = Literal["entries", "manual"]
+
+
+class ForecastHistoryRow(_Model):
+    year: int
+    #: Year-end net worth: from balance entries when the year has any, else the manual value.
+    net_worth_minor: int | None
+    source: ForecastNetWorthSource | None
+    #: "YYYY-MM" of the entries-derived value (the last month with data in that year).
+    as_of: str | None
+    #: The manual value for the year, even when entries override it (so the editor can show both).
+    manual_net_worth_minor: int | None
+    manual_note: str | None
+    #: Gross income on the imported tax forms, and all-in tax (federal + state + local + FICA).
+    income_minor: int | None
+    tax_minor: int | None
+    income_basis: TaxIncomeBasis | None
+    #: Net spending (purchases, fees, interest, refunds netted) and the months it covers.
+    spending_minor: int | None
+    spending_months: int
+    #: income - tax - spending; only for a year with all three and 12 months of spending.
+    savings_minor: int | None
+
+
+class ForecastDefaults(_Model):
+    """Values suggested from history; each is None when the data does not support it."""
+
+    net_worth_minor: int | None
+    net_worth_year: int | None
+    annual_income_minor: int | None
+    income_year: int | None
+    effective_tax_rate_pct: float | None
+    annual_spending_minor: int | None
+    spending_year: int | None
+    #: True when `annual_spending_minor` is a partial year scaled up to 12 months.
+    spending_annualized: bool
+    #: Compound annual growth over the years with data; None with fewer than two such years.
+    income_growth_pct: float | None
+    spending_growth_pct: float | None
+    savings_rate_pct: float | None
+
+
+class ForecastBaseline(_Model):
+    currency: Literal["USD"]
+    user_id: int | None
+    history: list[ForecastHistoryRow]
+    defaults: ForecastDefaults
+
+
+class ForecastEvent(_Model):
+    year: int = Field(ge=MIN_YEAR, le=MAX_YEAR)
+    amount_minor: int = Field(gt=-MAX_AMOUNT_MINOR, lt=MAX_AMOUNT_MINOR)  # signed
+    label: str = Field(default="", max_length=100)
+
+
+class ForecastParams(_Model):
+    """One forecast scenario. A None starting value means "use the figure derived from history"."""
+
+    #: Years after the base year to project; None (built-ins) keeps the user's current target.
+    horizon_years: int | None = Field(default=None, ge=1, le=MAX_HORIZON_YEARS)
+    start_net_worth_minor: int | None = Field(
+        default=None, gt=-MAX_AMOUNT_MINOR, lt=MAX_AMOUNT_MINOR
+    )
+    annual_income_minor: int | None = Field(default=None, ge=0, lt=MAX_AMOUNT_MINOR)
+    income_growth_pct: float = Field(default=3.0, ge=-50.0, le=50.0)
+    tax_rate_pct: float | None = Field(default=None, ge=0.0, le=100.0)
+    annual_spending_minor: int | None = Field(default=None, ge=0, lt=MAX_AMOUNT_MINOR)
+    spending_growth_pct: float = Field(default=2.5, ge=-50.0, le=50.0)
+    #: Fixed amount added to spending every year, on top of the percentage growth.
+    spending_change_minor: int = Field(default=0, gt=-MAX_AMOUNT_MINOR, lt=MAX_AMOUNT_MINOR)
+    return_pct: float = Field(default=6.0, ge=-20.0, le=30.0)
+    inflation_pct: float = Field(default=2.5, ge=-10.0, le=30.0)
+    #: Last year with salary; later years earn `retirement_income_minor` instead. None = never.
+    retirement_year: int | None = Field(default=None, ge=MIN_YEAR, le=MAX_YEAR)
+    #: Pre-tax annual income in retirement, in today's dollars (grows with inflation).
+    retirement_income_minor: int = Field(default=0, ge=0, lt=MAX_AMOUNT_MINOR)
+    events: list[ForecastEvent] = Field(default_factory=list, max_length=MAX_EVENTS)
+
+
+class BuiltinForecastPreset(_Model):
+    key: str
+    name: str
+    description: str
+    params: ForecastParams
+
+
+class ForecastPreset(_Model):
+    id: int
+    #: None = shared with every user.
+    user_id: int | None
+    name: str
+    params: ForecastParams
+    created_at: str
+    updated_at: str
+
+
+class ForecastPresetList(_Model):
+    builtin: list[BuiltinForecastPreset]
+    saved: list[ForecastPreset]
+
+
+class ForecastPresetCreate(_Model):
+    name: str = Field(min_length=1, max_length=60)
+    #: None saves a shared preset (also what the all-users view does).
+    user_id: int | None = None
+    params: ForecastParams
+
+
+class ForecastPresetUpdate(_Model):
+    """Rename and/or replace the parameters; omitted fields are left as they are."""
+
+    name: str | None = Field(default=None, min_length=1, max_length=60)
+    params: ForecastParams | None = None
