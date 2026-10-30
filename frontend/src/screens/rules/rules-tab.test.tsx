@@ -181,6 +181,96 @@ describe("RulesTab", () => {
   });
 });
 
+describe("RulesTab precedence and retroactive apply", () => {
+  const CREATED: Rule = {
+    id: 9,
+    pattern: "costco",
+    category_key: "food",
+    subcategory_key: "groceries",
+    kind: null,
+    source: "user",
+    match_type: "contains",
+    priority: 100,
+  };
+
+  async function createCostcoRule(
+    user: ReturnType<typeof userEvent.setup>,
+    existingMatches: number | null,
+  ) {
+    const applied: number[] = [];
+    setUpHandlers({
+      "POST /apply": (req) => {
+        applied.push(Number(new URL(req.url).pathname.split("/").at(-2)));
+        return { updated: 4 };
+      },
+      "POST /rules": () => ({ ...CREATED, existing_matches: existingMatches }),
+    });
+    render(<RulesTab />, { wrapper: TestProviders });
+    await screen.findByText("starbucks");
+    await user.type(screen.getByLabelText("Pattern"), "costco");
+    await user.selectOptions(screen.getByLabelText("Category / subcategory"), "food::groceries");
+    await user.click(screen.getByRole("button", { name: "Add rule" }));
+    return applied;
+  }
+
+  it("shows each rule's match type and priority, and the order rules are consulted in", async () => {
+    render(<RulesTab />, { wrapper: TestProviders });
+    await screen.findByText("starbucks");
+
+    expect(screen.getAllByTestId("rule-precedence")[0]).toHaveTextContent("contains match · priority 100");
+    expect(screen.getByTestId("precedence-note")).toHaveTextContent(
+      "your own rules first (lower priority number wins; ties go to the older rule), then merchants you corrected by hand, then the built-in rules",
+    );
+  });
+
+  it("offers to apply a new rule to the transactions it matches, and applies it on request", async () => {
+    const user = userEvent.setup();
+    const applied = await createCostcoRule(user, 4);
+
+    const offer = await screen.findByTestId("apply-offer");
+    expect(offer).toHaveTextContent("also matches 4 transactions you already have");
+    await user.click(screen.getByRole("button", { name: "Apply to 4 existing" }));
+
+    await waitFor(() => expect(applied).toEqual([9]));
+    await waitFor(() => expect(screen.queryByTestId("apply-offer")).not.toBeInTheDocument());
+  });
+
+  it("lets the offer be dismissed without applying anything", async () => {
+    const user = userEvent.setup();
+    const applied = await createCostcoRule(user, 4);
+
+    await screen.findByTestId("apply-offer");
+    await user.click(screen.getByRole("button", { name: "Not now" }));
+
+    expect(screen.queryByTestId("apply-offer")).not.toBeInTheDocument();
+    expect(applied).toEqual([]);
+  });
+
+  it("makes no offer when the new rule matches nothing already imported", async () => {
+    const user = userEvent.setup();
+    await createCostcoRule(user, 0);
+    await waitFor(() => expect(screen.getByLabelText("Pattern")).toHaveValue(""));
+    expect(screen.queryByTestId("apply-offer")).not.toBeInTheDocument();
+  });
+
+  it("applies an existing user rule from its row, but offers no such action on a built-in one", async () => {
+    const user = userEvent.setup();
+    const applied: number[] = [];
+    setUpHandlers({
+      "POST /apply": (req) => {
+        applied.push(Number(new URL(req.url).pathname.split("/").at(-2)));
+        return { updated: 0 };
+      },
+    });
+    render(<RulesTab />, { wrapper: TestProviders });
+    await screen.findByText("starbucks");
+
+    expect(screen.getAllByRole("button", { name: "Apply to existing" })).toHaveLength(1);
+    await user.click(screen.getByRole("button", { name: "Apply to existing" }));
+    await waitFor(() => expect(applied).toEqual([1]));
+  });
+});
+
 /** With ~120 built-in rules (§ the corpus) plus any the user adds, this list needs its own
  * paging so it never dumps every row onto one enormous page (a real usability bug — the whole
  * screen used to render as one ~8600px-tall page). */

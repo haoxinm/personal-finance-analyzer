@@ -10,6 +10,7 @@ import { EmptyState, ErrorState, LoadingState } from "@/components/primitives/st
 import { cn } from "@/utils";
 
 import {
+  useApplyRule,
   useCreateRule,
   useDeleteRule,
   useRules,
@@ -111,9 +112,19 @@ function CategorySubcategorySelect({
   );
 }
 
+/** What a rule's `Apply` reported, as a toast. */
+function applyResultTitle(updated: number): string {
+  return updated === 0
+    ? "Nothing to update"
+    : `Updated ${updated} existing transaction${updated === 1 ? "" : "s"}`;
+}
+
 function RuleCreateForm({ options }: { options: CategoryOption[] }) {
   const [form, setForm] = React.useState<RuleFormState>(EMPTY_FORM);
+  // A just-created rule that would change transactions already imported: offer to apply it.
+  const [offer, setOffer] = React.useState<{ id: number; pattern: string; matches: number } | null>(null);
   const createRule = useCreateRule();
+  const applyRule = useApplyRule();
   const { toast } = useToast();
 
   const validation = validatePattern(form.pattern, form.matchType);
@@ -133,9 +144,11 @@ function RuleCreateForm({ options }: { options: CategoryOption[] }) {
         kind: form.kind === "" ? null : form.kind,
       },
       {
-        onSuccess: () => {
+        onSuccess: (rule) => {
           toast({ title: "Rule created", variant: "success" });
           setForm(EMPTY_FORM);
+          const matches = rule?.existing_matches ?? 0;
+          setOffer(rule && matches > 0 ? { id: rule.id, pattern: rule.pattern, matches } : null);
         },
         onError: (err) => {
           toast({
@@ -199,6 +212,44 @@ function RuleCreateForm({ options }: { options: CategoryOption[] }) {
           {createRule.isPending ? "Adding…" : "Add rule"}
         </Button>
       </div>
+      {offer ? (
+        <div
+          role="status"
+          data-testid="apply-offer"
+          className="flex flex-wrap items-center gap-3 rounded-md border border-border bg-muted/40 p-3 text-sm"
+        >
+          <span>
+            &ldquo;{offer.pattern}&rdquo; also matches {offer.matches} transaction
+            {offer.matches === 1 ? "" : "s"} you already have. Rules only apply to new imports unless
+            you apply them. Transactions you categorized yourself are never changed.
+          </span>
+          <Button
+            type="button"
+            size="sm"
+            disabled={applyRule.isPending}
+            onClick={() =>
+              applyRule.mutate(offer.id, {
+                onSuccess: (updated) => {
+                  toast({ title: applyResultTitle(updated), variant: "success" });
+                  setOffer(null);
+                },
+                onError: (err) => {
+                  toast({
+                    title: "Could not apply the rule",
+                    description: err instanceof Error ? err.message : String(err),
+                    variant: "destructive",
+                  });
+                },
+              })
+            }
+          >
+            {applyRule.isPending ? "Applying…" : `Apply to ${offer.matches} existing`}
+          </Button>
+          <Button type="button" size="sm" variant="ghost" onClick={() => setOffer(null)}>
+            Not now
+          </Button>
+        </div>
+      ) : null}
     </form>
   );
 }
@@ -211,9 +262,23 @@ function RuleRow({ rule, options }: { rule: Rule; options: CategoryOption[] }) {
   );
   const updateRule = useUpdateRule();
   const deleteRule = useDeleteRule();
+  const applyRule = useApplyRule();
   const { toast } = useToast();
 
   const editable = rule.source === "user";
+
+  function applyToExisting() {
+    applyRule.mutate(rule.id, {
+      onSuccess: (updated) => toast({ title: applyResultTitle(updated), variant: "success" }),
+      onError: (err) => {
+        toast({
+          title: "Could not apply the rule",
+          description: err instanceof Error ? err.message : String(err),
+          variant: "destructive",
+        });
+      },
+    });
+  }
 
   function startEdit() {
     setPattern(rule.pattern);
@@ -289,9 +354,21 @@ function RuleRow({ rule, options }: { rule: Rule; options: CategoryOption[] }) {
         <span className="text-xs text-muted-foreground">
           → {rule.category_key} / {rule.subcategory_key}
         </span>
+        <span className="text-xs text-muted-foreground" data-testid="rule-precedence">
+          {rule.match_type} match · priority {rule.priority}
+        </span>
       </div>
       {editable ? (
         <div className="flex gap-2">
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={applyToExisting}
+            disabled={applyRule.isPending}
+            title="Apply this rule to transactions you have already imported"
+          >
+            Apply to existing
+          </Button>
           <Button size="sm" variant="outline" onClick={startEdit}>
             Edit
           </Button>
@@ -349,6 +426,11 @@ export function RulesTab() {
       <Card>
         <CardHeader>
           <CardTitle>Rules ({filtered.length}{filtered.length !== allRules.length ? ` of ${allRules.length}` : ""})</CardTitle>
+          <p className="text-sm text-muted-foreground" data-testid="precedence-note">
+            Order of precedence: your own rules first (lower priority number wins; ties go to the
+            older rule), then merchants you corrected by hand, then the built-in rules. A rule applies
+            to future imports; use &ldquo;Apply to existing&rdquo; to change transactions you already have.
+          </p>
         </CardHeader>
         <CardContent className={cn(rulesQuery.data && rulesQuery.data.length > 0 ? "" : undefined)}>
           {rulesQuery.isLoading ? <LoadingState rows={4} /> : null}

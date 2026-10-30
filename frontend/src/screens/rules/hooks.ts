@@ -35,6 +35,28 @@ export function useCreateRule() {
   });
 }
 
+/**
+ * `POST /rules/{id}/apply`: apply a rule to the transactions already imported (a new rule otherwise
+ * only affects future classification). Skips anything the user categorized by hand and anything a
+ * higher-priority rule claims. Resolves to how many rows changed.
+ */
+export function useApplyRule() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (id: number) => {
+      const { data, error } = await apiClient.POST("/rules/{rule_id}/apply", {
+        params: { path: { rule_id: id } },
+      });
+      throwIfError(error);
+      return data?.updated ?? 0;
+    },
+    onSuccess: () => {
+      // Every screen's cached transactions, review queue and analytics are now stale.
+      void queryClient.invalidateQueries();
+    },
+  });
+}
+
 export function useUpdateRule() {
   const queryClient = useQueryClient();
   return useMutation({
