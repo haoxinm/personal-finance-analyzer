@@ -13,6 +13,8 @@ export interface EditPopoverProps {
     subcategoryKey?: string;
     kind?: Kind;
     notes?: string;
+    /** Only present (and true) when "Also create a rule" was ticked. */
+    createRule?: boolean;
   }) => void;
   onClose: () => void;
   saving?: boolean;
@@ -23,14 +25,17 @@ export interface EditPopoverProps {
  * `kind` in place, without navigating away (Review, P3-B, is the dedicated queue for *working
  * through* `needs_review` transactions; this is the quick single-row correction for a grid
  * the user is already scanning). Saving goes through `PATCH /transactions/{id}` (§3.12) via
- * the shared `usePatchTransaction` hook, which — per that endpoint's contract — always writes
- * `merchant_map(source='user')` (I6).
+ * the shared `usePatchTransaction` hook. The edit is a one-time patch of this transaction only:
+ * it always wins over rules and re-runs, and nothing is remembered about the merchant. The
+ * optional "Also create a rule" checkbox (off by default) is the explicit merchant-level action:
+ * it sends `create_rule`, which saves an exact rule for the merchant's future transactions.
  */
 export function EditPopover({ transaction, categories, onSave, onClose, saving }: EditPopoverProps) {
   const [categoryKey, setCategoryKey] = React.useState(transaction.category_key ?? "");
   const [subcategoryKey, setSubcategoryKey] = React.useState(transaction.subcategory_key ?? "");
   const [kind, setKind] = React.useState<Kind>(transaction.kind);
   const [notes, setNotes] = React.useState(transaction.notes ?? "");
+  const [createRule, setCreateRule] = React.useState(false);
 
   const selectedCategory = categories.find((c) => c.key === categoryKey);
 
@@ -53,6 +58,11 @@ export function EditPopover({ transaction, categories, onSave, onClose, saving }
   const canSave =
     (categoryChanged ? categoryComplete : true) &&
     ((categoryChanged && categoryComplete) || kindChanged || notesChanged);
+  // A rule needs a merchant to match and a category to apply, so the box only works alongside a
+  // complete category change.
+  const merchant = transaction.merchant_key ?? "";
+  const canCreateRule = merchant !== "" && categoryChanged && categoryComplete;
+  const ruleRequested = createRule && canCreateRule;
 
   return (
     <div
@@ -118,6 +128,24 @@ export function EditPopover({ transaction, categories, onSave, onClose, saving }
           onChange={(e) => setNotes(e.target.value)}
         />
       </label>
+      <p className="text-xs text-muted-foreground" data-testid="edit-scope-note">
+        This change applies to this transaction only. Rules and re-classifying will not change it.
+      </p>
+      {merchant !== "" ? (
+        <label className="flex items-start gap-2 text-xs text-muted-foreground">
+          <input
+            type="checkbox"
+            className="mt-0.5"
+            checked={ruleRequested}
+            disabled={!canCreateRule}
+            onChange={(e) => setCreateRule(e.target.checked)}
+          />
+          <span>
+            Also create a rule for “{merchant}”: future transactions from this merchant get this
+            category. Existing ones change only if you apply the rule on the Rules screen.
+          </span>
+        </label>
+      ) : null}
       <div className="flex justify-end gap-2">
         <Button type="button" variant="outline" size="sm" onClick={onClose}>
           Cancel
@@ -131,6 +159,7 @@ export function EditPopover({ transaction, categories, onSave, onClose, saving }
               ...(categoryChanged && categoryComplete ? { categoryKey, subcategoryKey } : {}),
               ...(kindChanged ? { kind } : {}),
               ...(notesChanged ? { notes } : {}),
+              ...(ruleRequested ? { createRule: true } : {}),
             })
           }
         >

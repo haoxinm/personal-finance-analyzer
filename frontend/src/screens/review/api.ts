@@ -47,10 +47,12 @@ export async function fetchNeedsReviewQueue(userIds?: number[]): Promise<Transac
 }
 
 /**
- * `POST /review/accept`: accept one queue row as `categoryKey/subcategoryKey` (a user correction
- * that clears `needs_review` and writes `merchant_map(source='user')`, I6), optionally as the
- * merchant's standing rule, and for `similarIds` — other pending rows of the same merchant —
- * too. The response's `undo` token goes back to `undoReview` to reverse all of it.
+ * `POST /review/accept`: accept one queue row as `categoryKey/subcategoryKey` — a one-time edit
+ * of that transaction only (it clears `needs_review`, is marked as the user's own, and writes no
+ * rule or merchant memory, I6) — optionally also as the merchant's standing rule
+ * (`createRule`, "always categorize this merchant this way"), and for `similarIds` — other
+ * pending rows of the same merchant — as further one-time edits. The response's `undo` token goes
+ * back to `undoReview` to reverse all of it.
  */
 export async function acceptReview(body: {
   transactionId: number;

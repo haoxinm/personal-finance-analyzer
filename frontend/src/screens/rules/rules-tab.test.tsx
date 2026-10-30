@@ -219,7 +219,10 @@ describe("RulesTab precedence and retroactive apply", () => {
 
     expect(screen.getAllByTestId("rule-precedence")[0]).toHaveTextContent("contains match · priority 100");
     expect(screen.getByTestId("precedence-note")).toHaveTextContent(
-      "your own rules first (lower priority number wins; ties go to the older rule), then merchants you corrected by hand, then the built-in rules",
+      "one-time edits to a transaction > your own rules (lower priority number wins; ties go to the older rule) > built-in rules > issuer category and merchant cache > LLM",
+    );
+    expect(screen.getByTestId("precedence-note")).toHaveTextContent(
+      "A transaction you edited by hand is never changed by a rule.",
     );
   });
 

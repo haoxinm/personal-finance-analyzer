@@ -175,12 +175,20 @@ build is missing or stale).
   handle, parse them with an LLM — local or remote — after previewing the exact redacted text that
   would be sent. Opt-in per statement; never auto-confirmed.
 - **Classifies every transaction** into a fixed two-level category/subcategory taxonomy via a
-  rules-first cascade: kind detection → your own rules → your past corrections (which win over
-  everything but your own rules, and are never overwritten by one) → ~120 built-in high-precision rules → the issuer's own category column, where the statement
-  prints one → a cache of past classifications → an LLM, only for what nothing local could resolve
-  → an `others/uncategorized` fallback that still needs your review. A new rule can be applied to
-  the transactions you already have (never to one you corrected by hand), and the Review screen can
-  re-run the cascade over everything uncategorized.
+  rules-first cascade: kind detection → your own rules → ~120 built-in high-precision rules → the
+  issuer's own category column, where the statement prints one → a cache of past classifications →
+  an LLM, only for what nothing local could resolve → an `others/uncategorized` fallback that
+  still needs your review.
+- **Keeps two kinds of correction apart.** *Editing a transaction* (the edit popover, a bulk
+  update, or **Accept** on the Review screen) is a one-time edit: it changes only that transaction,
+  it always wins over every rule, the cache, the LLM and any re-classify, and it teaches the app
+  nothing about the merchant or about future transactions. *"Always categorize “merchant” this
+  way"* (Review's second button, or "Also create a rule" in the edit popover) is the explicit
+  merchant-level action: it saves a rule for that merchant's future transactions. A rule reaches
+  transactions you already have only when you press "Apply to existing" on the Rules screen, and
+  it never changes one you edited by hand. Precedence: one-time edits > your rules > built-in
+  rules > issuer category and merchant cache > LLM. The Review screen can re-run the cascade over
+  everything uncategorized.
 - **Reconciles every import** against the statement's own printed totals (section subtotals,
   running balance, or the opening/closing balance equation, whichever the layout provides), and
   banners a warning rather than silently accepting numbers that don't add up.

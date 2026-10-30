@@ -14,8 +14,9 @@ export interface CategoryChoice {
 }
 
 /** One entry of the undo stack: the server's undo token for an accept (it restores every row's
- * category, `needs_review` flag and kind, and deletes or restores the merchant-map entry and rule
- * the accept wrote) plus the queue rows the accept removed, so undo can put them back in place. */
+ * category, `needs_review` flag, kind and provenance, and deletes or restores the merchant's rule
+ * if the accept was an "always categorize" one) plus the queue rows the accept removed, so undo
+ * can put them back in place. */
 export interface UndoEntry {
   undo: AcceptUndoToken;
   /** Rows the accept took out of the visible queue, in ascending original position. */

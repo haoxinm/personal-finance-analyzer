@@ -31,15 +31,17 @@ import type { Transaction } from "./types";
  *   - `1`-`9`       stage that quick-pick category (and its default subcategory) on the
  *                   current transaction — click a chip afterwards to refine the subcategory
  *   - `Enter`       accept the current transaction: the staged pick, or the cascade's own
- *                   proposal if nothing was staged
+ *                   proposal if nothing was staged. A one-time edit of this transaction only:
+ *                   nothing is remembered about the merchant
  *   - `r`           accept, and also make it the merchant's standing rule ("always categorize
  *                   this merchant this way": future imports follow it with no review)
- *   - `u`           undo the single most recent accept (rows, rule and learned answer included)
+ *   - `u`           undo the single most recent accept (rows, and the rule if it created one)
  *
- * An accept also applies to the other queue rows from the same merchant (a checkbox on the card,
- * on by default), and "Re-classify uncategorized" in the header re-runs the cascade over rows
- * that are still uncategorized, which is how a rule or model set up after an import reaches the
- * transactions already imported.
+ * An accept also applies, as further one-time edits, to the other queue rows from the same
+ * merchant (a checkbox on the card, on by default), and "Re-classify uncategorized" in the header
+ * re-runs the cascade over rows that are still uncategorized, which is how a rule or model set up
+ * after an import reaches the transactions already imported. A transaction you accepted yourself
+ * is never changed by a re-classify or by any rule.
  *
  * The queue is built via `GET /transactions?needs_review=true` (`api.ts`'s
  * `fetchNeedsReviewQueue`); `description_raw` renders alongside `description_clean` (see
@@ -297,7 +299,12 @@ function TransactionCard({
           </label>
         ) : null}
         <div className="flex flex-wrap items-center gap-2">
-          <Button type="button" onClick={onAccept} disabled={disabled}>
+          <Button
+            type="button"
+            onClick={onAccept}
+            disabled={disabled}
+            title="Accepts this transaction only. Nothing is remembered about the merchant."
+          >
             Accept (Enter)
           </Button>
           <Button
@@ -305,14 +312,15 @@ function TransactionCard({
             variant="secondary"
             onClick={onAcceptAndCreateRule}
             disabled={disabled || ruleLabel === ""}
-            title="Accepts this one and makes it permanent: every future import of this merchant is categorized this way automatically."
+            title="Accepts this one and saves a rule: every future import of this merchant is categorized this way automatically. Transactions you already edited by hand are never changed by it."
           >
             {ruleLabel === "" ? "Always categorize this way (r)" : `Always categorize “${ruleLabel}” this way (r)`}
           </Button>
         </div>
         <p className="text-xs text-muted-foreground">
-          Enter remembers this answer for this merchant. The second button also saves a rule, so
-          future imports need no review at all (see Rules).
+          Accept (Enter) changes this transaction only; nothing is remembered about the merchant. The
+          second button also saves a rule, so future imports of this merchant need no review (see
+          Rules). Transactions you accept yourself are never changed by a rule or a re-classify.
         </p>
       </CardContent>
     </Card>

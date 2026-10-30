@@ -25,12 +25,10 @@ Precedence, highest first: one-time edit > your rules > built-in rules > merchan
 2. **User rules** — `rules` where `source='user'`, by `priority` then `id`, matched against
    `merchant_key` (`classify/rules.py`).
 3. **Legacy merchant pins** — a `merchant_map` hit with `source='user'`. Older versions wrote one
-   silently on every single-transaction edit; nothing writes them any more, and the data
-   migration `0010_user_merchant_pins_to_rules` turns the ones that exist into visible exact
-   rules. Until a database has been migrated they are still honored, but they rank *below* your
-   rules, exactly like a low-priority rule would, and they are recorded as
-   `classified_by='user_rule'` (never as a one-time edit, so they can still be changed later).
-   Increments `hit_count`.
+   silently on every single-transaction edit; nothing writes them any more. Any that exist are
+   still honored, but they rank *below* your rules, exactly like a low-priority rule would, and
+   they are recorded as `classified_by='user_rule'` (never as a one-time edit, so they can still
+   be changed later). Increments `hit_count`.
 4. **Built-in rules** — `rules` where `source='builtin'`, seeded from `builtin_rules.yaml` by
    `rules.sync_builtin_rules` (D8).
 5. **Issuer category** — `Transaction.issuer_category` resolved via `rules.resolve_issuer_category`

@@ -43,7 +43,7 @@ export interface UseReviewQueueResult {
   /**
    * Reverts the single most recent `accept` through the server's undo token: every row it touched
    * returns to its previous category (or to none), `needs_review` flag and kind, and the
-   * merchant-map entry and rule it wrote are removed or restored. The rows return to the queue
+   * rule it created (an "always categorize" accept) is removed or restored. The rows return to the queue
    * where they were, and survive a reload because the server state is genuinely restored.
    */
   undo: () => Promise<void>;

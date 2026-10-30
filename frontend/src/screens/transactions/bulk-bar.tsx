@@ -60,7 +60,7 @@ export function BulkBar({
             {selectedCategory.name} / {subcategoryName}
           </strong>{" "}
           on all <strong>{selectedCount.toLocaleString()}</strong> matching transactions? This replaces
-          their current category.
+          their current category. Each one is edited once; no rule is created.
         </span>
         <Button
           type="button"

@@ -161,6 +161,7 @@ export default function TransactionsScreen() {
     subcategoryKey?: string;
     kind?: Transaction["kind"];
     notes?: string;
+    createRule?: boolean;
   }) {
     if (!editing) return;
     try {
@@ -171,7 +172,8 @@ export default function TransactionsScreen() {
           subcategory_key: patch.subcategoryKey,
           kind: patch.kind,
           notes: patch.notes,
-          create_rule: false,
+          // Off unless the popover's "Also create a rule" box was ticked: an edit is one-time.
+          create_rule: patch.createRule ?? false,
         },
       });
       setEditing(null);

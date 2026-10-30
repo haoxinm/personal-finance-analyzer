@@ -237,6 +237,29 @@ describe("ReviewScreen", () => {
     expect(screen.queryByText(/Accept \+ create rule/)).not.toBeInTheDocument();
   });
 
+  it("says Accept is for this transaction only and the other button saves a rule", async () => {
+    const { fetchMock } = await renderScreen({
+      transactions: [makeTransaction({ id: 1, merchant_key: "trader joes", category_key: "groceries", subcategory_key: "groceries" })],
+      categories: CATEGORIES,
+    });
+    const accept = await screen.findByRole("button", { name: "Accept (Enter)" });
+    expect(accept).toHaveAttribute("title", expect.stringContaining("this transaction only"));
+    const note = screen.getByText(/changes this transaction only; nothing is remembered about the merchant/);
+    expect(note).toHaveTextContent(/second button also saves a rule/);
+
+    fireEvent.click(accept);
+    await waitFor(async () => expect((await lastAcceptBody(fetchMock)).create_rule).toBe(false));
+  });
+
+  it("the always-categorize button accepts with create_rule: true", async () => {
+    const { fetchMock } = await renderScreen({
+      transactions: [makeTransaction({ id: 1, merchant_key: "trader joes", category_key: "groceries", subcategory_key: "groceries" })],
+      categories: CATEGORIES,
+    });
+    fireEvent.click(await screen.findByRole("button", { name: "Always categorize “trader joes” this way (r)" }));
+    await waitFor(async () => expect((await lastAcceptBody(fetchMock)).create_rule).toBe(true));
+  });
+
   it("cannot make a rule for a row with no merchant name to match", async () => {
     await renderScreen({
       transactions: [makeTransaction({ id: 1, merchant_key: "", category_key: "groceries", subcategory_key: "groceries" })],

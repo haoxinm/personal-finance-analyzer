@@ -427,9 +427,10 @@ export function RulesTab() {
         <CardHeader>
           <CardTitle>Rules ({filtered.length}{filtered.length !== allRules.length ? ` of ${allRules.length}` : ""})</CardTitle>
           <p className="text-sm text-muted-foreground" data-testid="precedence-note">
-            Order of precedence: your own rules first (lower priority number wins; ties go to the
-            older rule), then merchants you corrected by hand, then the built-in rules. A rule applies
-            to future imports; use &ldquo;Apply to existing&rdquo; to change transactions you already have.
+            Order of precedence: one-time edits to a transaction &gt; your own rules (lower priority
+            number wins; ties go to the older rule) &gt; built-in rules &gt; issuer category and merchant
+            cache &gt; LLM. A rule applies to future imports; use &ldquo;Apply to existing&rdquo; to change
+            transactions you already have. A transaction you edited by hand is never changed by a rule.
           </p>
         </CardHeader>
         <CardContent className={cn(rulesQuery.data && rulesQuery.data.length > 0 ? "" : undefined)}>

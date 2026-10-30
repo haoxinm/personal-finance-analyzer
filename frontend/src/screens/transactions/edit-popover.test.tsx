@@ -80,3 +80,52 @@ describe("EditPopover", () => {
     expect(onSave).toHaveBeenCalledWith({ categoryKey: "groceries", subcategoryKey: "supermarket" });
   });
 });
+
+describe("EditPopover scope", () => {
+  const merchantTxn = () => makeTransaction({ merchant_key: "acme deposit" });
+
+  it("says the change applies to this transaction only", () => {
+    setup(merchantTxn());
+    expect(screen.getByTestId("edit-scope-note")).toHaveTextContent(
+      "This change applies to this transaction only.",
+    );
+  });
+
+  it("offers an unchecked rule checkbox naming the merchant, disabled until a category is chosen", async () => {
+    setup(merchantTxn());
+    const rule = screen.getByRole("checkbox", { name: /Also create a rule for “acme deposit”/ });
+    expect(rule).not.toBeChecked();
+    expect(rule).toBeDisabled();
+    await userEvent.selectOptions(screen.getByLabelText("Category"), "groceries");
+    expect(rule).toBeDisabled(); // still only half a category
+    await userEvent.selectOptions(screen.getByLabelText("Subcategory"), "supermarket");
+    expect(rule).toBeEnabled();
+    expect(rule).not.toBeChecked();
+  });
+
+  it("saves a plain edit without createRule by default", async () => {
+    const { onSave, save } = setup(merchantTxn());
+    await userEvent.selectOptions(screen.getByLabelText("Category"), "groceries");
+    await userEvent.selectOptions(screen.getByLabelText("Subcategory"), "supermarket");
+    await userEvent.click(save());
+    expect(onSave).toHaveBeenCalledWith({ categoryKey: "groceries", subcategoryKey: "supermarket" });
+  });
+
+  it("sends createRule only when the rule checkbox is ticked", async () => {
+    const { onSave, save } = setup(merchantTxn());
+    await userEvent.selectOptions(screen.getByLabelText("Category"), "groceries");
+    await userEvent.selectOptions(screen.getByLabelText("Subcategory"), "supermarket");
+    await userEvent.click(screen.getByRole("checkbox", { name: /Also create a rule/ }));
+    await userEvent.click(save());
+    expect(onSave).toHaveBeenCalledWith({
+      categoryKey: "groceries",
+      subcategoryKey: "supermarket",
+      createRule: true,
+    });
+  });
+
+  it("hides the rule checkbox for a transaction with no merchant to match", () => {
+    setup(makeTransaction({ merchant_key: "" }));
+    expect(screen.queryByRole("checkbox", { name: /Also create a rule/ })).not.toBeInTheDocument();
+  });
+});
