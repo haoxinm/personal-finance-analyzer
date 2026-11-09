@@ -2,11 +2,19 @@
 #
 #   1. mkdir -p pfa secrets
 #   2. Create the login password file, as the same NAS user whose ids you put in PUID/PGID below
-#      (a long passphrase; it is read once at start, hashed in memory, and never stored):
+#      (it is read once at start, hashed in memory, and never stored). A random one:
+#         openssl rand -base64 24 > secrets/pfa_password.txt && chmod 600 secrets/pfa_password.txt
+#         cat secrets/pfa_password.txt        # this is what you type on the login page
+#      or your own (at least 8 characters, longer is better):
 #         printf '%s' 'a long passphrase of your own' > secrets/pfa_password.txt
-#         chmod 600 secrets/pfa_password.txt
 #   3. Edit PUID, PGID, TZ and PFA_ALLOWED_HOSTS below, then:   docker compose up -d
 #   4. Open http://<nas-name-or-ip>:8756 and sign in.
+#
+# THIS IS A HOME-NETWORK APP. It only answers computers on your local network (private addresses),
+# and it must never be reachable from the internet: do NOT port-forward 8756 on your router, and
+# switch off UPnP / automatic port forwarding for it. For access away from home use a VPN
+# (Tailscale, WireGuard, your NAS's VPN server), not an open port. See "Keeping it off the
+# internet" in docs/DOCKER.md.
 #
 # YOUR DATA LIVES IN ./pfa ON THE HOST (a bind mount, not a Docker volume), so `docker volume prune`,
 # `docker compose down -v` and deleting the container or image never touch it:
@@ -25,7 +33,11 @@ services:
     restart: unless-stopped
 
     ports:
-      # LAN access. To put a reverse proxy in front instead, publish to this machine only:
+      # Publishes the port on every network interface of the NAS (fine on a home LAN; the app
+      # itself also refuses any client that is not on a private address). Better still, bind it
+      # to the NAS's own LAN address, so no other interface (and no IPv6 address) listens at all:
+      #   - "192.168.1.10:8756:8756"      <- your NAS's LAN IP (`ip addr`, or the NAS network page)
+      # Behind a reverse proxy on this machine, publish to the machine only instead:
       #   - "127.0.0.1:8756:8756"
       - "8756:8756"
 
@@ -40,15 +52,23 @@ services:
       PFA_ALLOWED_HOSTS: "nas.local,192.168.1.10"
       # The login password, from the secret below. (PFA_PASSWORD_HASH_FILE takes a hash made with
       # `docker run --rm -it --entrypoint pfa ghcr.io/haoxinm/personal-finance-analyzer auth hash-password`
-      # instead, so even the file never holds the password.)
+      # instead, so even the file never holds the password; see docs/DOCKER.md.)
       PFA_PASSWORD_FILE: /run/secrets/pfa_password
+
+      # Who may connect. The default is "private networks only" (192.168/16, 10/8, 172.16/12,
+      # link-local, IPv6 unique-local, loopback); anyone else gets 403 before the login page.
+      # Add networks with CIDRs; `private` stands for the default set. For example Tailscale
+      # (its addresses are 100.64.0.0/10) or one subnet only:
+      # PFA_ALLOWED_CLIENTS: "private,100.64.0.0/10"
+      # PFA_ALLOWED_CLIENTS: "192.168.1.0/24"
 
       # Optional LLM for classification: put the key in a secret (see "secrets" below).
       # PFA_LLM_API_KEY_FILE: /run/secrets/pfa_llm_api_key
 
-      # Behind a reverse proxy that terminates HTTPS: believe its X-Forwarded-* headers, so the
-      # session cookie is marked Secure and login limits count real client addresses. Use the
-      # proxy's address or Docker network (a wide range here weakens the login rate limit).
+      # Behind a reverse proxy (keep it LAN-only too): believe its X-Forwarded-* headers, so the
+      # network check, the Secure cookie and the login limits all see the real client address.
+      # Without this every visitor looks like the proxy. Use the proxy's address or Docker network
+      # (and, for a proxy on the NAS itself, the Docker bridge gateway, often 172.17.0.1).
       # PFA_TRUSTED_PROXIES: "172.18.0.0/16"
 
     volumes:

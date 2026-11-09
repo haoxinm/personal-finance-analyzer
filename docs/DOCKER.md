@@ -2,10 +2,15 @@
 
 The app is built to run on one computer and listen on `127.0.0.1`. The Docker image is the one
 supported way to run it on a machine you reach over the network, such as a NAS. It is the same
-program with four additions that exist only for that case: a **password login** (the server will
-not start on the network without one), a list of **allowed host names**, a **health endpoint**, and
-a **container entrypoint** that matches file ownership to your NAS user and migrates the database
-on every start.
+program with five additions that exist only for that case: a **password login** (the server will
+not start on the network without one), a **local-network-only rule** (clients outside your home
+network are refused before they even see the login), a list of **allowed host names**, a **health
+endpoint**, and a **container entrypoint** that matches file ownership to your NAS user and migrates
+the database on every start.
+
+> **This is a home-network app.** Never port-forward it on your router, never enable UPnP port
+> mapping for it, and reach it from away from home through a VPN. See
+> [Keeping it off the internet](#keeping-it-off-the-internet).
 
 - Image: `ghcr.io/haoxinm/personal-finance-analyzer` (`linux/amd64` and `linux/arm64`, so Intel/AMD
   and ARM NAS models alike; about 300 MB).
@@ -15,7 +20,9 @@ on every start.
   untouched by `docker volume prune`.
 
 Contents: [Quick start](#quick-start) · [Storage](#storage) · [NAS notes](#nas-notes) ·
-[Authentication](#authentication) · [HTTPS behind a reverse proxy](#https-behind-a-reverse-proxy) ·
+[Authentication](#authentication) · [Creating the password](#creating-the-password) ·
+[Keeping it off the internet](#keeping-it-off-the-internet) ·
+[HTTPS behind a reverse proxy](#https-behind-a-reverse-proxy) ·
 [Network and egress](#network-and-egress) · [Secrets and the LLM key](#secrets-and-the-llm-key) ·
 [Backups](#backups) · [Upgrading](#upgrading) · [Settings reference](#settings-reference) ·
 [Building and publishing](#building-and-publishing) · [Troubleshooting](#troubleshooting)
@@ -29,14 +36,17 @@ $ mkdir pfa-app && cd pfa-app
 $ curl -O https://raw.githubusercontent.com/haoxinm/spending-analysis-from-bills/main/docker-compose.yml
 $ id                                   # note the uid and gid of the user who should own the files
 $ mkdir -p pfa secrets
-$ printf '%s' 'a long passphrase of your own' > secrets/pfa_password.txt
+$ openssl rand -base64 24 > secrets/pfa_password.txt   # the login password; more ways in "Creating the password"
 $ chmod 600 secrets/pfa_password.txt   # create it as that same user (it is read as PUID)
 $ nano docker-compose.yml              # set PUID, PGID, TZ and PFA_ALLOWED_HOSTS
 $ docker compose up -d
 $ docker compose logs -f               # "listening on http://0.0.0.0:8756/ (password login on)"
+                                       # "Accepting connections only from: private (...)"
+$ cat secrets/pfa_password.txt         # what to type on the login page
 ```
 
-Open `http://<nas-name-or-ip>:8756`, sign in with the passphrase, and use the app as usual: import
+Open `http://<nas-name-or-ip>:8756` from a computer or phone on the same network, sign in with the
+password, and use the app as usual: import
 statements and tax forms, classify, chart. The first start creates the database and its folders
 inside `./pfa`.
 
@@ -182,7 +192,7 @@ so **the container refuses to start without a password**:
 pfa serve: refusing to listen on 0.0.0.0: that is reachable from other machines and no password is set. ...
 ```
 
-Provide exactly one of:
+Provide exactly one of the following (step by step in [Creating the password](#creating-the-password)):
 
 | Variable | Meaning |
 |---|---|
@@ -190,15 +200,11 @@ Provide exactly one of:
 | `PFA_PASSWORD` | the password itself (visible in `docker inspect`; fine for a trial) |
 | `PFA_PASSWORD_HASH_FILE` / `PFA_PASSWORD_HASH` | a hash instead of the password, so the plaintext is never stored |
 
-The password must be at least 8 characters; use a long passphrase. To store only a hash:
-
-```console
-$ docker run --rm -it --entrypoint pfa ghcr.io/haoxinm/personal-finance-analyzer auth hash-password > secrets/pfa_password_hash.txt
-```
-
-and set `PFA_PASSWORD_HASH_FILE=/run/secrets/pfa_password_hash` (use the `_FILE` form: a hash
-contains `$` characters, which Compose treats as variable references in plain values). A plaintext
-password is hashed with scrypt in memory at start and the plaintext is not kept.
+The password must be at least 8 characters (a startup error says so otherwise); use a long random
+one or a passphrase. It is one shared password for the whole installation: there are no user names
+or accounts, and everyone who has it sees the same data. A plaintext password is hashed with scrypt
+in memory at start and the plaintext is not kept; only trailing newlines are trimmed from a file, so
+spaces at the ends of a password count.
 
 How the login behaves:
 
@@ -224,19 +230,266 @@ rebinding). `nas.local` accepts any port, `nas.local:9000` only that port, `*` a
 together with a password). `localhost` and `127.0.0.1` on the container's own port are always
 accepted, which is also how the healthcheck reaches it.
 
+## Creating the password
+
+Do this once, before the first `docker compose up -d`. Do it as the NAS user whose ids you put in
+`PUID`/`PGID`, because the container reads the file as that user.
+
+### Option 1 (recommended): a Docker secret file
+
+```console
+$ mkdir -p secrets
+$ openssl rand -base64 24 > secrets/pfa_password.txt     # a random 32-character password
+$ chmod 600 secrets/pfa_password.txt                     # only you can read it
+```
+
+To choose your own instead: `printf '%s' 'a long passphrase of your own' > secrets/pfa_password.txt`
+(a trailing newline is harmless; spaces at the ends are part of the password). No `openssl` on the
+NAS? `head -c 24 /dev/urandom | base64 > secrets/pfa_password.txt` does the same.
+
+`docker-compose.yml` already wires it in. If you wrote your own compose file, you need exactly this:
+
+```yaml
+services:
+  pfa:
+    environment:
+      PFA_PASSWORD_FILE: /run/secrets/pfa_password
+    secrets:
+      - pfa_password
+
+secrets:
+  pfa_password:
+    file: ./secrets/pfa_password.txt
+```
+
+Keep the `secrets` folder out of `./pfa` (the data folder, which you may copy around or back up) and
+out of anything you share. The password never enters the image, `docker inspect` or the app's own
+backups; keep a copy in your password manager.
+
+**If you forget it:** it is a plain file, so `cat secrets/pfa_password.txt` shows it.
+
+**To change it:** write the new password into the same file, then recreate the container so it is
+read again (a plain `docker compose up -d` does not notice a changed file):
+
+```console
+$ openssl rand -base64 24 > secrets/pfa_password.txt
+$ docker compose up -d --force-recreate
+```
+
+Everyone is signed out whenever the container restarts, you included; sign in again with the new
+password.
+
+### Option 2: store only a hash
+
+If you do not want the password itself on the NAS at all, store its scrypt hash instead. A hash
+cannot be turned back into the password, so if you forget the password you make a new hash.
+
+```console
+$ docker run --rm -it --entrypoint pfa ghcr.io/haoxinm/personal-finance-analyzer:latest auth hash-password
+Password:
+Repeat for confirmation:
+scrypt$15$8$1$Zk3m...==$q8Xv...=
+```
+
+Type the password twice (nothing is shown as you type; at least 8 characters). The last line, which
+starts with `scrypt$`, is the hash. (`--entrypoint pfa` runs the image's `pfa` command instead of
+starting the server; without it the entrypoint first prepares `/pfa` and prints a misleading
+"nothing is mounted" warning. The command makes no network call and writes nothing.) Save only that
+line:
+
+```console
+$ nano secrets/pfa_password_hash.txt        # paste the scrypt$... line, save
+$ chmod 600 secrets/pfa_password_hash.txt
+```
+
+Then in `docker-compose.yml` use the hash secret in place of the password secret:
+
+```yaml
+    environment:
+      PFA_PASSWORD_HASH_FILE: /run/secrets/pfa_password_hash   # instead of PFA_PASSWORD_FILE
+    secrets:
+      - pfa_password_hash                                      # instead of pfa_password
+
+secrets:
+  pfa_password_hash:
+    file: ./secrets/pfa_password_hash.txt
+```
+
+Setting a password and a hash together is an error. Do not redirect the output with `> file` when you
+use `-it`: Docker's terminal mode mixes the prompts and line endings into it. To script it without a
+terminal, drop the `-t` and pipe the password in:
+
+```console
+$ printf '%s\n' "$PW" | docker run --rm -i --entrypoint pfa ghcr.io/haoxinm/personal-finance-analyzer:latest auth hash-password --stdin > secrets/pfa_password_hash.txt
+```
+
+(That puts the password in a shell variable and possibly your shell history; the interactive way
+does not.) If you put the hash straight into the compose file as `PFA_PASSWORD_HASH`, write every `$`
+as `$$` (`scrypt$$15$$8$$1$$...`), because Compose treats `$name` as a variable; the `_FILE` form
+avoids that.
+
+### Option 3: a plain environment variable
+
+The simplest and the least private: in `docker-compose.yml` replace `PFA_PASSWORD_FILE` (and the
+`secrets:` lines) with
+
+```yaml
+    environment:
+      PFA_PASSWORD: "a long passphrase of your own"
+```
+
+Anyone who can run `docker inspect` on the NAS or read the compose file sees it. Use it for a first
+try and move to Option 1 later. (A `$` in a password must be written `$$` here.)
+
+### What you will see
+
+- **The login page**: a plain page titled "Personal Finance Analyzer" with one **Password** field
+  and a **Sign in** button. After signing in the app opens, with **Sign out** at the top right.
+- **Lockout**: five wrong passwords from one address, or forty from all addresses together, within
+  five minutes lock the login (`429`, "Too many failed attempts. Try again in N seconds.", even for
+  the right password) until the window passes.
+- **One password, no accounts.** To give someone access, give them the password; to cut someone
+  off, change it (above). The per-person views (each household member's spending, tax and net worth)
+  are chosen inside the app after signing in; they are not separate logins.
+
+### Without Docker
+
+`pfa serve` on `127.0.0.1` needs no password. To serve your home network directly (a Raspberry Pi, a
+spare PC), the same variables apply, plus `--host`:
+
+```console
+$ umask 077; mkdir -p ~/.config/pfa
+$ openssl rand -base64 24 > ~/.config/pfa/password
+$ cat ~/.config/pfa/password                 # your login password
+$ pfa migrate                                # `serve` itself does not migrate
+$ PFA_PASSWORD_FILE=$HOME/.config/pfa/password PFA_ALLOWED_HOSTS=nas.local,192.168.1.10 \
+    pfa serve --host 0.0.0.0 --no-open-browser
+Personal Finance Analyzer is listening on http://0.0.0.0:8756/ (password login on)
+Accepting connections only from: private (...)
+```
+
+`PFA_PASSWORD`, `PFA_PASSWORD_HASH` and `PFA_PASSWORD_HASH_FILE` work the same way (`pfa auth
+hash-password` prints a hash; its prompts go to stderr, so `pfa auth hash-password > hashfile`
+captures just the hash). The same local-network-only rule applies. Without a password, `pfa serve
+--host 0.0.0.0` refuses to start.
+
+## Keeping it off the internet
+
+The app is meant to be used from inside your home network and nowhere else. It enforces that itself,
+in addition to the login.
+
+### What the app does
+
+When it listens beyond loopback (the Docker image always does), every request is checked against the
+allowed **client networks** before anything else. A visitor from the internet gets `403 Forbidden`
+and never sees the login page, so cannot even try passwords.
+
+- **Allowed by default:** loopback (`127.0.0.0/8`, `::1`), the private ranges `10.0.0.0/8`,
+  `172.16.0.0/12` and `192.168.0.0/16`, link-local (`169.254.0.0/16`, `fe80::/10`), IPv6
+  unique-local (`fc00::/7`), and IPv4-mapped forms of those (`::ffff:192.168.1.5`).
+- **Not allowed by default:** everything else, including `100.64.0.0/10` (carrier-grade NAT, which
+  Tailscale also uses; some ISPs put strangers in that range, so it is opt-in).
+- **`PFA_ALLOWED_CLIENTS`** replaces the list: comma-separated CIDRs or addresses, where the keyword
+  `private` stands for the default set. `private,100.64.0.0/10` adds Tailscale; `192.168.1.0/24`
+  restricts access to one subnet. A range as wide as "everybody" (`0.0.0.0/0`) is rejected at start.
+- **`PFA_ALLOW_PUBLIC_CLIENTS=1`** turns the check off (only the check; the login stays). It prints a
+  prominent warning at every start and is refused when there is no login. Do not use it unless you
+  have some other way to keep the port private.
+- **Behind a reverse proxy** the client address comes from `X-Forwarded-For`, but only when the
+  connection is from a proxy you listed in `PFA_TRUSTED_PROXIES`. The header is read from the right,
+  skipping other trusted proxies; the first address that is not one of yours is the client. A
+  request a trusted proxy forwards for a public client is refused. A trusted proxy that sends no
+  header, or one that cannot be parsed, is refused too (fail closed). A computer that is not a
+  trusted proxy cannot change its address by sending the header: it is ignored.
+  `PFA_TRUSTED_PROXIES=*` believes the header from everyone and so defeats the check; the app
+  warns at start if you set it.
+- **Health check:** `GET /api/health` is covered by the same rule. The container's own check comes
+  from `127.0.0.1`, which is allowed.
+- **Logs:** at start, `Accepting connections only from: ...` lists the effective ranges. The first
+  blocked request from each address is logged (`Refused a request from 203.0.113.9 ...`), the same
+  address is not logged again for an hour, and never more than a few lines a minute, so a scan
+  cannot flood the log (`docker compose logs pfa`).
+
+### What the app cannot do: the real lock is your router
+
+The check judges the address the app is *shown*, and that is not always the real one. **It is
+defense in depth, not the guarantee.** The guarantee is that the port is not reachable from the
+internet.
+
+- **Plain Docker on Linux (the usual NAS: bridge network, IPv4):** Docker forwards the port with
+  iptables NAT and keeps the sender's address, so the app sees your phone as `192.168.1.x` and a
+  stranger as a public address. The check works.
+- **Docker's userland proxy and some other paths replace the sender with the bridge gateway**
+  (typically `172.17.0.1` or `172.18.0.1`, a private address). Every client then looks local,
+  public ones included, and no IP check can tell them apart. This can happen with ports published
+  through `docker-proxy` (for example IPv6 on some Docker versions, or with `"userland-proxy": true`
+  where hairpin NAT is unavailable), **rootless Docker** (its port forwarder, by default),
+  **Docker Desktop** (macOS and Windows), and connections the NAS makes to its own published port.
+  `network_mode: host` and `macvlan`/`ipvlan` networks keep the true address.
+- **A NAS reverse proxy** (Synology Login Portal, QNAP, Nginx Proxy Manager on Unraid) connects from
+  its own address (the NAS itself, or a Docker gateway). Unless you list that address in
+  `PFA_TRUSTED_PROXIES` and the proxy sends `X-Forwarded-For`, every visitor looks like the proxy,
+  and a stranger who reaches a proxy you exposed passes the check. The app logs a one-time hint when
+  an address that is not a trusted proxy sends that header.
+- **IPv6** has no NAT: if the NAS has a public IPv6 address and the router's firewall allows
+  inbound connections, a published port is directly reachable. Publishing on the IPv4 LAN address
+  (below) leaves IPv6 out.
+
+**Test yours (two minutes).** In `docker-compose.yml` set `PFA_ALLOWED_CLIENTS` to your LAN subnet
+(`"192.168.1.0/24"`, matching your router) and run `docker compose up -d`. Browse to the app from a
+computer on the LAN. If the page loads, the app sees real LAN addresses and the check is meaningful.
+If you get `403` and `docker compose logs pfa` says `Refused a request from 172.x.x.x`, the app only
+ever sees the Docker gateway: the check cannot protect you in this setup, so rely on the router
+steps below (or use `network_mode: host`). Then remove the setting, or keep it.
+
+### What you should do
+
+1. **Never port-forward `8756`** (or whatever port you publish) on your router, and do not put the
+   NAS in the router's "DMZ". Delete any forwarding rule for the NAS that you did not create on
+   purpose.
+2. **Turn off UPnP / NAT-PMP automatic port mapping** for the NAS: in the router, and in the NAS
+   (Synology: *Control Panel > External Access > Router Configuration*; QNAP: the *myQNAPcloud*
+   automatic router configuration; Unraid and TrueNAS do not map ports themselves, but check the
+   router's UPnP list). Some apps ask the router to open ports without telling you.
+3. **Publish the port on the LAN address only**, so no other interface listens (and no IPv6
+   address). Give the NAS a fixed address in your router first:
+
+   ```yaml
+       ports:
+         - "192.168.1.10:8756:8756"      # the NAS's LAN IP
+   ```
+
+4. **Check from outside:** on a phone with Wi-Fi off (mobile data), try
+   `http://<your public IP>:8756` (search "what is my IP" from a LAN computer). It must fail to
+   connect or time out. A `403` also means the app refused you; a timeout means nobody could even
+   knock.
+5. **For access away from home, use a VPN, not an open port**: Tailscale, WireGuard, or the NAS's own
+   VPN server (Synology VPN Server, QNAP QVPN, a UniFi or router VPN). VPN clients arrive from a
+   private address and pass the default check; Tailscale addresses are `100.64.0.0/10`, so add them:
+   `PFA_ALLOWED_CLIENTS: "private,100.64.0.0/10"`.
+6. **If you use the NAS's reverse proxy for HTTPS, keep it LAN-only** (do not forward its HTTPS port
+   on the router either) and set `PFA_TRUSTED_PROXIES` to the proxy's address as the app sees it (a
+   proxy on the NAS itself often appears as the Docker gateway, for example `172.17.0.1`; the log
+   hint and `docker network inspect bridge` show it). Details in the next section.
+
 ## HTTPS behind a reverse proxy
 
 The login cookie and your data cross the network. On a LAN over plain HTTP anyone on the same Wi-Fi
 could read them, so put an HTTPS reverse proxy in front for anything beyond a home network you
 trust, and never expose the port to the internet directly (use the proxy plus a VPN such as
-WireGuard or Tailscale, not a bare port forward).
+WireGuard or Tailscale, not a bare port forward). This section is about HTTPS *inside* your network;
+the proxy itself must stay LAN-only too (see [Keeping it off the internet](#keeping-it-off-the-internet)),
+and a public-looking name such as `pfa.example.com` in the examples below should be a name your own
+DNS resolves to the NAS's LAN address, not an open door.
 
 What the proxy must do: pass the original `Host`, send `X-Forwarded-Proto` and `X-Forwarded-For`,
 allow large uploads (statement PDFs and backups), and not buffer the job-progress event stream
 (`/api/jobs/<id>/events`). What the app needs: `PFA_ALLOWED_HOSTS=<the public name>` and
 `PFA_TRUSTED_PROXIES=<the proxy's address or Docker network>`, which makes it believe those
-headers *from that address only*; the session cookie is then marked `Secure` whenever the request
-came in over HTTPS, and the login limit counts real client addresses. Publish the app's port only
+headers *from that address only*; the local-network check then judges the real client instead of
+the proxy (without this setting every visitor looks like the proxy, so the check cannot tell a
+stranger from your phone), the session cookie is marked `Secure` whenever the request came in over
+HTTPS, and the login limit counts real client addresses. Publish the app's port only
 to the proxy (`127.0.0.1:8756:8756`, or no `ports:` at all on a shared Docker network).
 
 **Caddy** (automatic certificates):
@@ -284,8 +537,10 @@ over `http://`, so you would be bounced to the login page forever.
 
 ## Network and egress
 
-**Ingress.** One TCP port, `8756` inside the container, published however you choose. Everything
-needs the login except `/login` and `/api/health`.
+**Ingress.** One TCP port, `8756` inside the container, published however you choose, but meant
+for your local network only ([Keeping it off the internet](#keeping-it-off-the-internet)): clients
+outside the allowed networks are refused before the login. Everything needs the login except
+`/login` and `GET /api/health`.
 
 **Egress.** The app makes **no outbound connection of its own**, has no telemetry, no update check
 and no external fonts or scripts (the UI is bundled). The only two things that can ever leave the
@@ -404,7 +659,9 @@ Auto-updaters such as Watchtower work, but take a backup schedule with them.
 | `PFA_PASSWORD[_FILE]`, `PFA_PASSWORD_HASH[_FILE]` | none | the login; one is required |
 | `PFA_INSECURE_NO_AUTH` | unset | `1` to run with no login (warns loudly) |
 | `PFA_ALLOWED_HOSTS` | unset | names the browser may use, comma separated |
-| `PFA_TRUSTED_PROXIES` | unset | proxy addresses whose `X-Forwarded-*` is believed |
+| `PFA_ALLOWED_CLIENTS` | `private` | client networks served, comma-separated CIDRs; `private` = loopback, 10/8, 172.16/12, 192.168/16, link-local, `fc00::/7` (e.g. `private,100.64.0.0/10`) |
+| `PFA_ALLOW_PUBLIC_CLIENTS` | unset | `1` to switch the client check off (loud warning; needs a login) |
+| `PFA_TRUSTED_PROXIES` | unset | proxy addresses or CIDRs whose `X-Forwarded-*` is believed (the real client is then checked, not the proxy) |
 | `PFA_COOKIE_SECURE` | unset | `1` to always mark the session cookie `Secure` |
 | `PFA_SESSION_IDLE_MINUTES` | `480` | idle session timeout |
 | `PFA_LLM_API_KEY[_FILE]` | unset | the LLM provider key |
@@ -468,6 +725,13 @@ tag).
 **`403 Host not allowed`.** The address in the browser is not in `PFA_ALLOWED_HOSTS`. Add it
 (`nas.local`, the IP, the proxy's public name) and `docker compose up -d`.
 
+**`403`, "This server only accepts connections from the local network."** The app refused the
+address you connected from. `docker compose logs pfa` shows `Refused a request from <address>`. If
+it is a VPN or Tailscale address (`100.64.0.0/10`, or the VPN's own range), add it with
+`PFA_ALLOWED_CLIENTS` (for example `private,100.64.0.0/10`). If it is your own LAN's address
+because you restricted `PFA_ALLOWED_CLIENTS`, widen it. If it names your reverse proxy with "missing
+or unreadable X-Forwarded-For", make the proxy send that header. Do not "fix" it by port forwarding.
+
 **The container exits immediately with `refusing to listen`.** No password is set. Set
 `PFA_PASSWORD_FILE` (and check the file exists on the host, because Docker would otherwise create
 a *directory* with that name).
@@ -486,6 +750,14 @@ forwards the original `Host`.
 
 **`429` on the login page.** Too many wrong passwords; wait the time shown. Behind a proxy without
 `PFA_TRUSTED_PROXIES`, every visitor looks like the proxy's address and shares one limit.
+
+**The container exits with `PFA_PASSWORD must be at least 8 characters` or `... is not a valid hash`.**
+The password in your file is shorter than 8 characters, or the hash file holds more than the
+`scrypt$...` line (for example the prompts, if you redirected `docker run -it` into it): recreate it
+as in [Creating the password](#creating-the-password).
+
+**`PFA_TRUSTED_PROXIES: ... is not an IP address or CIDR`** at start: list addresses or CIDR
+ranges (`172.18.0.0/16`, `172.17.0.1`), not host names.
 
 **A page worked, then every action says forbidden (`403`).** The container restarted; reload the
 tab (the per-launch token changed).
