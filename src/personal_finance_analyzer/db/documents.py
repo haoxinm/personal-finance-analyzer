@@ -262,7 +262,16 @@ def discard_copy(
     if stored_path and not _still_referenced(session, sha256, stored_path):
         path = docs.resolve(stored_path, base)
         if path is not None and path.is_file() and _deletable(path, base):
-            docs.discard_path(path, base)
+            # The path is only a name: the user may have put another PDF under it. Delete the
+            # file only if it is the content this row kept.
+            if docs.file_sha256(path) == sha256:
+                docs.discard_path(path, base)
+            else:
+                logger.info(
+                    "not deleting %s: it is not the PDF the deleted row kept (the content "
+                    "differs), so it is yours",
+                    stored_path,
+                )
     if not _any_row_with_sha(session, sha256):
         for folder in (staging_dir(), legacy_statements_dir()):
             (folder / f"{sha256}.pdf").unlink(missing_ok=True)
@@ -523,8 +532,9 @@ def reorganize(
         if row.stored_path:
             groups.setdefault(row.file_sha256, []).append(row)
     planned: set[str] = set()
+    index = docs.ShaIndex(base)  # one walk for the whole run, built only if a file is missing
     for sha, rows in sorted(groups.items(), key=lambda kv: _order_key(kv[1][0])):
-        _reorganize_group(session, sha, rows, base, report, planned, dry_run=dry_run)
+        _reorganize_group(session, sha, rows, base, report, planned, index, dry_run=dry_run)
     if not dry_run:
         session.commit()
     return report
@@ -541,6 +551,7 @@ def _reorganize_group(
     base: Path,
     report: ReorganizeReport,
     planned: set[str],
+    index: docs.ShaIndex,
     *,
     dry_run: bool,
 ) -> None:
@@ -555,7 +566,7 @@ def _reorganize_group(
             current, old = candidate, row.stored_path
             break
     if current is None:
-        found = docs.find_by_sha(sha, base)
+        found = index.find(sha)
         if found is None:
             report.missing.append((_kind(first), first.id))
             return

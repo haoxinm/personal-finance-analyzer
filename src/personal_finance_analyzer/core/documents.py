@@ -154,13 +154,15 @@ _HASHES: dict[str, tuple[int, int, str]] = {}
 
 
 def file_sha256(path: Path) -> str | None:
-    """SHA-256 of ``path`` (cached by size and mtime), or None if it cannot be read."""
+    """SHA-256 of ``path`` (cached by size and mtime), or None if it cannot be read. The lock is
+    held only for the cache lookups, never while the file is being read."""
     try:
         stat = path.stat()
     except OSError:
         return None
     key = str(path)
-    cached = _HASHES.get(key)
+    with _INDEX_LOCK:
+        cached = _HASHES.get(key)
     if cached is not None and cached[0] == stat.st_size and cached[1] == stat.st_mtime_ns:
         return cached[2]
     digest = hashlib.sha256()
@@ -170,8 +172,14 @@ def file_sha256(path: Path) -> str | None:
                 digest.update(chunk)
     except OSError:
         return None
-    _HASHES[key] = (stat.st_size, stat.st_mtime_ns, digest.hexdigest())
+    with _INDEX_LOCK:
+        _HASHES[key] = (stat.st_size, stat.st_mtime_ns, digest.hexdigest())
     return digest.hexdigest()
+
+
+def _forget(path: Path) -> None:
+    with _INDEX_LOCK:
+        _HASHES.pop(str(path), None)
 
 
 def invalidate_index() -> None:
@@ -225,18 +233,56 @@ def iter_files(root: Path | None = None, *, pdf_only: bool = True) -> Iterator[t
 def find_by_sha(sha256: str, root: Path | None = None) -> Path | None:
     """A PDF under the documents directory whose content hash is ``sha256``, wherever the user
     put it (``None`` when there is none). Hashes each file once per process (and again only when
-    it changes), so the first miss on a big folder is slow and later ones are a directory walk."""
+    it changes), so the first miss on a big folder is slow (on a network share, very) and later
+    ones are a directory walk. Walks and hashes *without* holding the index lock, so reading or
+    placing other files is never blocked behind it. Call it on demand (opening one PDF, `check`,
+    `reorganize`), never per row of a list; use `ShaIndex` to look several hashes up in one pass."""
+    base = root if root is not None else documents_dir()
+    for _rel, path in iter_files(base):
+        if file_sha256(path) == sha256:
+            return path
+    return None
+
+
+def known_by_sha(sha256: str, root: Path | None = None) -> Path | None:
+    """Like `find_by_sha`, but only consults hashes already computed (no walking, no hashing, one
+    ``stat`` per candidate): what a list view can afford. A file the user moved is found only if
+    something has hashed it before (opening it, `pfa documents check`); otherwise ``None``."""
+    base = str(root if root is not None else documents_dir())
     with _INDEX_LOCK:
-        found: Path | None = None
-        seen: set[str] = set()
-        for _rel, path in iter_files(root):
-            seen.add(str(path))
-            if found is None and file_sha256(path) == sha256:
-                found = path
-        base = str(root if root is not None else documents_dir())
-        for key in [k for k in _HASHES if k.startswith(base) and k not in seen]:
-            _HASHES.pop(key, None)
-        return found
+        candidates = [
+            (key, size, mtime)
+            for key, (size, mtime, digest) in _HASHES.items()
+            if digest == sha256 and key.startswith(base)
+        ]
+    for key, size, mtime in candidates:
+        try:
+            stat = os.stat(key)
+        except OSError:
+            continue
+        if stat.st_size == size and stat.st_mtime_ns == mtime:
+            return Path(key)
+    return None
+
+
+class ShaIndex:
+    """Content hash -> file for the whole documents folder, built once on first use (a walk plus
+    the hashes not cached yet) and then used for any number of lookups. Built without holding the
+    module's lock; use one per operation, not as a long-lived cache."""
+
+    def __init__(self, root: Path | None = None) -> None:
+        self._root = root if root is not None else documents_dir()
+        self._by_sha: dict[str, Path] | None = None
+
+    def find(self, sha256: str) -> Path | None:
+        if self._by_sha is None:
+            built: dict[str, Path] = {}
+            for _rel, path in iter_files(self._root):
+                digest = file_sha256(path)
+                if digest is not None:
+                    built.setdefault(digest, path)
+            self._by_sha = built
+        return self._by_sha.get(sha256)
 
 
 # --------------------------------------------------------------------------------------------
@@ -260,21 +306,36 @@ def resolve(stored_path: str, root: Path | None = None) -> Path | None:
     return (root if root is not None else documents_dir()).joinpath(*parts)
 
 
+def recorded_pdf(stored_path: str | None, root: Path | None = None) -> Path | None:
+    """The file at the recorded path, if it is there: one ``stat``, never a search."""
+    if not stored_path:
+        return None
+    recorded = resolve(stored_path, root)
+    return recorded if recorded is not None and recorded.is_file() else None
+
+
 def kept_pdf(
-    stored_path: str | None, file_sha256_hex: str, root: Path | None = None
+    stored_path: str | None,
+    file_sha256_hex: str,
+    root: Path | None = None,
+    *,
+    search: bool = True,
 ) -> Path | None:
     """The kept copy of an imported PDF (a statement, or a tax document), or ``None`` if there is
     none on disk. Only rows that recorded a copy (``stored_path``) have one.
 
     Looked up by the recorded path first; if the file is not there any more (the user moved or
     renamed it, the folder was restored elsewhere) by content hash across the documents directory;
-    and, for a row not yet carried over by the upgrade, in the old ``statements/`` folder."""
+    and, for a row not yet carried over by the upgrade, in the old ``statements/`` folder.
+
+    ``search=False`` is for list views: it never walks or hashes the folder (a network share may
+    take minutes), it only uses what is already known (`known_by_sha`)."""
     if not stored_path:
         return None
-    recorded = resolve(stored_path, root)
-    if recorded is not None and recorded.is_file():
+    recorded = recorded_pdf(stored_path, root)
+    if recorded is not None:
         return recorded
-    found = find_by_sha(file_sha256_hex, root)
+    found = find_by_sha(file_sha256_hex, root) if search else known_by_sha(file_sha256_hex, root)
     if found is not None:
         return found
     legacy = legacy_statements_dir() / f"{file_sha256_hex}.pdf"
@@ -392,7 +453,7 @@ def place_file(
                 publish_no_clobber(tmp, directory / name)
             except FileExistsError:
                 continue  # lost a race for this name: look at it again (it may be our content)
-            _HASHES.pop(str(directory / name), None)
+            _forget(directory / name)
             _sync_dir(directory)
             return rel
     finally:
@@ -428,8 +489,9 @@ def rename_within(
                 return f"{folder}/{existing}"  # already named so (letter case aside)
             if file_sha256(current) == sha256:
                 # An identical copy already sits there: it becomes the record's file, and the
-                # duplicate at the old place is removed (it is our own, verified by content).
-                discard_path(old, root)
+                # duplicate at the old place is removed, but only if it really is that content.
+                if file_sha256(old) == sha256:
+                    discard_path(old, root)
                 return f"{folder}/{existing}"
             attempt += 1
             continue
@@ -465,7 +527,7 @@ def publish_no_clobber_rename(old: Path, new: Path) -> None:
             old.unlink(missing_ok=True)
         return
     old.unlink(missing_ok=True)
-    _HASHES.pop(str(old), None)
+    _forget(old)
 
 
 def _same_file(a: Path, b: Path) -> bool:
@@ -492,17 +554,26 @@ def discard_path(path: Path, root: Path | None = None) -> bool:
         removed = False
     else:
         removed = True
-    _HASHES.pop(str(path), None)
+    _forget(path)
     prune_empty_dirs(path.parent, root)
     return removed
 
 
+#: Folders at this depth or shallower below the documents directory (``<Person>``,
+#: ``<Person>/Statements``, ``<Person>/Tax``) are where the user drops files: never pruned.
+_KEEP_DEPTH = 2
+
+
 def prune_empty_dirs(directory: Path, root: Path | None = None) -> None:
     """Remove ``directory`` and its parents while they are empty and inside the documents
-    directory (the directory itself is never removed)."""
+    directory, but only the folders *below* ``<Person>/Statements`` and ``<Person>/Tax`` (an
+    institution or a tax year): the documents directory, the person folders and their
+    ``Statements``/``Tax`` folders are the user's drop folders and stay even when empty."""
     root = root if root is not None else documents_dir()
     current = directory
     while current != root and root in current.parents:
+        if len(current.relative_to(root).parts) <= _KEEP_DEPTH:
+            return
         try:
             current.rmdir()
         except OSError:

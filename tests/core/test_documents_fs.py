@@ -216,6 +216,73 @@ def test_the_content_index_does_not_confuse_files(home: Path, tmp_path: Path) ->
     assert docs.find_by_sha("1" * 64) is None
 
 
+def test_a_list_lookup_never_walks_or_hashes_the_folder(
+    home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    src, sha = _pdf(tmp_path, "a")
+    rel = docs.place_file(src, "F", "x", sha)
+    moved = documents_dir() / "scans" / "x.pdf"
+    moved.parent.mkdir()
+    (documents_dir() / rel).rename(moved)
+    docs.invalidate_index()
+
+    def boom(*_a: object, **_k: object) -> None:
+        raise AssertionError("a list view must not walk or hash the folder")
+
+    with monkeypatch.context() as m:
+        m.setattr(docs, "iter_files", boom)
+        m.setattr(docs, "file_sha256", boom)
+        assert docs.kept_pdf(rel, sha, search=False) is None  # not known yet: "not found"
+        assert docs.kept_pdf("nope/x.pdf", "9" * 64, search=False) is None
+    assert docs.kept_pdf(rel, sha) == moved  # the on-demand lookup finds it...
+    with monkeypatch.context() as m:
+        m.setattr(docs, "iter_files", boom)
+        assert docs.kept_pdf(rel, sha, search=False) == moved  # ...and the list now knows too
+    moved.unlink()
+    assert docs.kept_pdf(rel, sha, search=False) is None  # a stale cache entry is not believed
+
+
+def test_the_search_does_not_hold_the_lock_while_hashing(
+    home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (a, sha_a), (b, sha_b) = _pdf(tmp_path, "a"), _pdf(tmp_path, "b")
+    docs.place_file(a, "F", "one", sha_a)
+    docs.place_file(b, "F", "two", sha_b)
+    docs.invalidate_index()
+    real = docs.file_sha256
+    held: list[bool] = []
+
+    def spy(path: Path) -> str | None:
+        held.append(docs._INDEX_LOCK.locked())
+        return real(path)
+
+    monkeypatch.setattr(docs, "file_sha256", spy)
+    assert docs.find_by_sha(sha_b) is not None
+    assert docs.ShaIndex().find(sha_a) is not None
+    assert held and not any(held)
+
+
+def test_sha_index_walks_once_for_many_lookups(
+    home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (a, sha_a), (b, sha_b) = _pdf(tmp_path, "a"), _pdf(tmp_path, "b")
+    docs.place_file(a, "F", "one", sha_a)
+    docs.place_file(b, "F", "two", sha_b)
+    walks: list[int] = []
+    real = docs.iter_files
+
+    def counting(*args: object, **kwargs: object):  # type: ignore[no-untyped-def]
+        walks.append(1)
+        return real(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(docs, "iter_files", counting)
+    index = docs.ShaIndex()
+    assert index.find(sha_a) == documents_dir() / "F" / "one.pdf"
+    assert index.find(sha_b) == documents_dir() / "F" / "two.pdf"
+    assert index.find("1" * 64) is None
+    assert len(walks) == 1
+
+
 def test_hidden_entries_and_symlinks_are_not_searched(home: Path, tmp_path: Path) -> None:
     src, sha = _pdf(tmp_path, "a")
     hidden = documents_dir() / ".pfa-restore-x"
@@ -249,8 +316,28 @@ def test_discard_removes_the_file_and_the_folders_it_leaves_empty(
     assert docs.discard_path(documents_dir() / one)
     assert (documents_dir() / two).exists()  # the folder still has a file
     assert docs.discard_path(documents_dir() / two)
-    assert not (documents_dir() / "Alex").exists()  # all three empty levels pruned
-    assert documents_dir().is_dir()  # but never the root
+    assert not (documents_dir() / "Alex/Statements/Chase").exists()  # the institution folder goes
+    assert (documents_dir() / "Alex/Statements").is_dir()  # but never the drop folders
+    assert documents_dir().is_dir()
+
+
+def test_prune_never_removes_the_root_person_statements_or_tax_folders(
+    home: Path,
+) -> None:
+    root = documents_dir()
+    leaf = root / "Alex" / "Tax" / "2024"
+    other = root / "Alex" / "Statements" / "Chase"
+    shared = root / "Shared"
+    for folder in (leaf, other, shared):
+        folder.mkdir(parents=True)
+    docs.prune_empty_dirs(leaf, root)
+    docs.prune_empty_dirs(other, root)
+    docs.prune_empty_dirs(shared, root)
+    assert not leaf.exists() and not other.exists()
+    assert (root / "Alex" / "Tax").is_dir() and (root / "Alex" / "Statements").is_dir()
+    assert (root / "Alex").is_dir() and shared.is_dir() and root.is_dir()
+    docs.prune_empty_dirs(root / "Alex" / "Tax", root)  # asked directly: still kept
+    assert (root / "Alex" / "Tax").is_dir()
 
 
 def test_discard_leaves_folders_with_other_files(home: Path, tmp_path: Path) -> None:

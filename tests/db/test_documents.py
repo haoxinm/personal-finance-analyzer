@@ -245,7 +245,8 @@ def test_deleting_one_row_keeps_a_file_another_row_uses(
     session.commit()
     doc_files.discard_copy(session, second.stored_path, sha)
     assert _on_disk() == []
-    assert not (documents_dir() / "Alice").exists()  # the emptied folders went with it
+    assert not (documents_dir() / "Alice/Tax/2024").exists()  # the emptied year folder went
+    assert (documents_dir() / "Alice/Tax").is_dir()  # the drop folders stay
 
 
 def test_deleting_a_row_does_not_delete_a_file_the_user_moved(
@@ -262,6 +263,22 @@ def test_deleting_a_row_does_not_delete_a_file_the_user_moved(
     session.commit()
     doc_files.discard_copy(session, rel, sha)
     assert moved.is_file()  # theirs now: only the file at the recorded path is ever deleted
+
+
+def test_deleting_a_row_keeps_a_different_pdf_the_user_put_under_its_name(
+    session: Session, world: World, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    src, sha = _pdf(tmp_path)
+    statement = _statement(session, sha, world)
+    rel = doc_files.file_statement(session, statement, src)
+    assert rel is not None
+    (documents_dir() / rel).write_bytes(b"%PDF- a different statement")  # same name, other content
+    session.delete(statement)
+    session.commit()
+    with caplog.at_level("INFO"):
+        doc_files.discard_copy(session, rel, sha)
+    assert (documents_dir() / rel).read_bytes() == b"%PDF- a different statement"
+    assert "not deleting" in caplog.text
 
 
 def test_deleting_never_follows_a_foreign_absolute_path(
@@ -542,7 +559,8 @@ def test_reorganize_applies_a_renamed_person(
     session.refresh(document)
     assert {c.new for c in real.changes} == {statement.stored_path, document.stored_path}
     assert set(_on_disk()) == {statement.stored_path, document.stored_path}
-    assert not (documents_dir() / "Alice").exists()  # the old person's folders are gone
+    assert not (documents_dir() / "Alice/Statements/Chase").exists()  # emptied folders go...
+    assert (documents_dir() / "Alice/Statements").is_dir()  # ...but not the person's drop folders
     assert doc_files.reorganize(session).changes == []  # idempotent
 
 
@@ -559,6 +577,28 @@ def test_reorganize_adopts_a_file_the_user_moved_instead_of_moving_it_back(
     assert statement.stored_path == "My Taxes/march.pdf"
     assert mine.is_file()  # left exactly where they put it
     assert [c.action for c in report.changes if c.row_id == statement.id] == ["adopted"]
+
+
+def test_reorganize_walks_the_folder_once_however_many_files_moved(
+    session: Session, world: World, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    statement, document = _filed(session, world, tmp_path)
+    for row in (statement, document):
+        assert row.stored_path is not None
+        moved = documents_dir() / "mine" / Path(row.stored_path).name
+        moved.parent.mkdir(exist_ok=True)
+        (documents_dir() / row.stored_path).rename(moved)
+    walks: list[int] = []
+    real = docs.iter_files
+
+    def counting(*args, **kwargs):  # type: ignore[no-untyped-def]
+        walks.append(1)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(docs, "iter_files", counting)
+    report = doc_files.reorganize(session)
+    assert [c.action for c in report.changes] == ["adopted", "adopted"]
+    assert len(walks) == 1
 
 
 def test_reorganize_reports_a_deleted_file_without_inventing_one(

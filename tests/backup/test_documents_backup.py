@@ -265,7 +265,8 @@ def test_a_failed_swap_and_failed_rollback_never_deletes_the_documents_folder(
     stranded = next(stages[0].rglob("my own scan.pdf"))
     assert stranded.read_bytes() == b"%PDF- mine"
     assert str(stages[0]) in str(caught.value)  # and the message says where it is
-    assert any(str(stages[0]) in r.getMessage() for r in caplog.records)
+    # (the log filter may redact the path itself; the error above always carries it)
+    assert any("could not be put back" in r.getMessage() for r in caplog.records)
 
 
 def test_documents_are_moved_in_only_after_the_swap(

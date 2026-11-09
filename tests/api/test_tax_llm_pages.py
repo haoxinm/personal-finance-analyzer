@@ -272,7 +272,7 @@ def test_deleting_a_document_removes_its_kept_pdf(client: TestClient, doc: dict[
     assert kept.relative_to(documents_dir()).parts[1] == "Tax"  # a readable path, not a hash
     assert client.delete(f"/api/tax/documents/{doc['id']}").status_code == 204
     assert list(documents_dir().rglob("*.pdf")) == []
-    assert not kept.parent.exists()  # the folders it left empty are gone too
+    assert not kept.parent.exists()  # the year folder it left empty is gone too
 
 
 def test_send_adds_a_form_to_a_partly_parsed_document(

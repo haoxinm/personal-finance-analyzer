@@ -141,7 +141,10 @@ def _form_fields(form: TaxForm) -> dict[str, object]:
 
 
 def _document(doc: TaxDocument) -> schemas.TaxDocument:
-    stored = _stored_pdf(doc)
+    # A list view: only the recorded path (and hashes already known) are consulted. Searching the
+    # whole documents folder per row would walk (and hash) a network share once per missing file;
+    # opening the PDF does that search, on demand (`_stored_pdf`).
+    stored = _stored_pdf(doc, search=False)
     return schemas.TaxDocument(
         id=doc.id,
         user_id=doc.user_id,
@@ -159,12 +162,13 @@ def _document(doc: TaxDocument) -> schemas.TaxDocument:
     )
 
 
-def _stored_pdf(doc: TaxDocument) -> Path | None:
-    """The kept PDF copy (`[privacy] store_tax_pdf_copies`), or `None`."""
+def _stored_pdf(doc: TaxDocument, *, search: bool = True) -> Path | None:
+    """The kept PDF copy (`[privacy] store_tax_pdf_copies`), or `None`. Relative to the documents
+    folder; with ``search`` (the default) found by content when the user moved or renamed the
+    file, which may walk and hash the whole folder: not for list views."""
     if not doc.stored_path:
         return None
-    # Relative to the documents folder; found by content when the user moved or renamed the file.
-    return kept_pdf(doc.stored_path, doc.file_sha256)
+    return kept_pdf(doc.stored_path, doc.file_sha256, search=search)
 
 
 def _document_detail(doc: TaxDocument) -> schemas.TaxDocumentDetail:

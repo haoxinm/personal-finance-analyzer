@@ -101,7 +101,9 @@ def test_reorganize_dry_run_then_real(home: Path) -> None:
     )
     assert rows["tax"] == "Alexandra Q/Tax/2025/W-2 - Acme Corp.pdf"
     assert (home / "documents" / str(rows["statement"])).is_file()
-    assert not (home / "documents" / USER_NAME).exists()
+    # The old person's emptied year/institution folders go; the person and drop folders stay.
+    assert not (home / "documents" / USER_NAME / "Statements" / "Fixture Bank").exists()
+    assert not any((home / "documents" / USER_NAME).rglob("*.pdf"))
 
     again = runner.invoke(app, ["documents", "reorganize"])
     assert "Nothing to rename" in again.output

@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
 from personal_finance_analyzer.config import PrivacyConfig, Settings, save_settings
+from personal_finance_analyzer.core import documents as docs
 from personal_finance_analyzer.core.paths import documents_dir, staging_dir
 from personal_finance_analyzer.db.models import Issuer, Statement, TaxDocument, User
 from personal_finance_analyzer.ingest import pipeline
@@ -212,9 +213,29 @@ def test_a_moved_tax_pdf_is_still_found(client: TestClient, session: Session) ->
     moved = documents_dir() / "scans" / "w2.pdf"
     moved.parent.mkdir()
     (documents_dir() / document.stored_path).rename(moved)
+    # The list only looks at the recorded path (it must never walk a share): not found yet...
+    listed = client.get("/api/tax/documents").json()[0]
+    assert listed["has_pdf"] is False and listed["pdf_missing"] is True
+    # ...opening the PDF searches by content and finds it, and the list knows from then on.
+    assert client.get(f"/api/tax/documents/{document.id}/pages").status_code == 200
     listed = client.get("/api/tax/documents").json()[0]
     assert listed["has_pdf"] is True and listed["pdf_missing"] is False
-    assert client.get(f"/api/tax/documents/{document.id}/pages").status_code == 200
+
+
+def test_listing_tax_documents_never_searches_the_documents_folder(
+    client: TestClient, session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    document = _import_tax(session)
+    assert document.stored_path is not None
+    (documents_dir() / document.stored_path).unlink()
+
+    def boom(*_a: object, **_k: object) -> None:
+        raise AssertionError("the list walked the documents folder")
+
+    monkeypatch.setattr(docs, "iter_files", boom)
+    monkeypatch.setattr(docs, "find_by_sha", boom)
+    listed = client.get("/api/tax/documents").json()[0]
+    assert listed["has_pdf"] is False and listed["pdf_missing"] is True
 
 
 def test_a_tax_document_without_a_kept_copy_is_not_reported_missing(
