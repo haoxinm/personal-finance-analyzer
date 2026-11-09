@@ -1174,6 +1174,8 @@ def restore_backup(
     stage = Path(tempfile.mkdtemp(prefix=f".{target.name}.restore-", dir=target.parent))
     doc_stage: Path | None = None
     keep_doc_stage = False
+    swapped = False
+    made_top: Path | None = None  # the highest folder of the documents path this call created
     keep_stage = False  # the user's documents folder is inside it and could not be moved back
     try:
         work = stage / "work"
@@ -1190,6 +1192,7 @@ def restore_backup(
             has_documents = any(p.startswith(DOCUMENTS_PREFIX) for p in listed)
             has_legacy = any(p.startswith("statements/") for p in listed)
             if has_documents or has_legacy:
+                made_top = _topmost_missing(docs_root)
                 doc_stage = _make_doc_stage(docs_root)
             try:
                 _extract(zf, manifest, new_home, doc_stage)
@@ -1265,6 +1268,7 @@ def restore_backup(
                     ) from exc
                 raise
             stranded_docs = None  # the folder came across with the swap: it is at its path again
+            swapped = True
         finally:
             if stranded_docs is not None:
                 keep_stage = True
@@ -1298,6 +1302,33 @@ def restore_backup(
             shutil.rmtree(stage, ignore_errors=True)
         if doc_stage is not None and not keep_doc_stage:
             shutil.rmtree(doc_stage, ignore_errors=True)
+        if not swapped and made_top is not None:
+            _prune_empty(docs_root, made_top)  # a failed restore leaves no empty folders behind
+
+
+def _topmost_missing(path: Path) -> Path | None:
+    """The highest ancestor of ``path`` (or ``path`` itself) that does not exist yet, or ``None``
+    when ``path`` exists."""
+    top: Path | None = None
+    current = path
+    while not current.exists() and current != current.parent:
+        top = current
+        current = current.parent
+    return top
+
+
+def _prune_empty(path: Path, top: Path) -> None:
+    """Remove ``path`` and its empty parents up to and including ``top``, stopping at the first
+    one that is not empty."""
+    current = path
+    while True:
+        try:
+            current.rmdir()
+        except OSError:
+            return
+        if current == top or current == current.parent:
+            return
+        current = current.parent
 
 
 def _carry_documents_folder(
