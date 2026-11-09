@@ -345,3 +345,57 @@ def test_both_debit_and_credit_filled_raises_parser_error() -> None:
     doc = _extract_doc(_GENERATED_DIR / "layout_d_bank_malformed.pdf")
     with pytest.raises(ParserError, match="both the debit and credit column"):
         PARSER.parse(doc)
+
+
+_BARE_NUMBER_HEAD = [
+    "Lakeshore Community Bank",
+    "Transaction Detail",
+    "Checking Account Statement",
+    "March 1, 2026 through March 31, 2026",
+    "Beginning Balance $1,000.00",
+    "Ending Balance $900.00",
+    "",
+]
+
+
+@pytest.mark.parametrize(
+    ("description", "balance"),
+    [
+        ("CHASE CREDIT CRD AUTOPAY ending in 1234", 90_000),
+        ("STORE 4471", 90_000),
+        ("CHECK 1052", None),
+        ("POS DEBIT 0412 WHOLE FOODS 2210", 90_000),
+    ],
+)
+def test_bare_numbers_in_description_are_not_amounts(
+    tmp_path: Path, description: str, balance: int | None
+) -> None:
+    """A bare integer in the description (card suffix, store or check number) is not money: the
+    amount columns are the trailing tokens printed with cents."""
+    lines = [
+        *_BARE_NUMBER_HEAD,
+        format_row(_HEADER, _WIDTHS),
+        "Electronic Withdrawals",
+        _data_row("03/05", description, debit=10_000, credit=None, balance=balance),
+    ]
+    pdf_path = tmp_path / "layout_d_bare_number.pdf"
+    render_lines_pdf(pdf_path, [lines])
+    statement = PARSER.parse(_extract_doc(pdf_path))
+    (txn,) = statement.transactions
+    assert txn.description == description
+    assert txn.amount_minor == 10_000
+    assert statement.warnings == ()
+
+
+def test_bare_number_before_a_deposit_keeps_credit_sign(tmp_path: Path) -> None:
+    lines = [
+        *_BARE_NUMBER_HEAD,
+        format_row(_HEADER, _WIDTHS),
+        "Deposits and Additions",
+        _data_row("03/06", "MOBILE DEPOSIT 7788", debit=None, credit=123_456, balance=223_456),
+    ]
+    pdf_path = tmp_path / "layout_d_bare_deposit.pdf"
+    render_lines_pdf(pdf_path, [lines])
+    (txn,) = PARSER.parse(_extract_doc(pdf_path)).transactions
+    assert txn.description == "MOBILE DEPOSIT 7788"
+    assert txn.amount_minor == -123_456
