@@ -973,7 +973,7 @@ def revert_to_automatic(
             outcome,
             needs_review=outcome.needs_review_override or below_threshold,
         )
-        snapshots.append(TransactionSnapshot(txn.id, before, _state_of(txn)))
+        snapshots.append(TransactionSnapshot(txn.id, before, _state_of(txn), txn.dedupe_hash))
         reverted.append(txn.id)
     session.flush()
     return RevertResult(
