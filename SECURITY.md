@@ -21,7 +21,11 @@ some proxies and NAT layers the real client address is hidden, and the app logs 
 sees requests from a gateway address. The guarantee is not exposing the port: never forward it on
 your router. Login attempts are counted before the password is checked and at most two scrypt
 verifications run at once, so a burst of parallel guesses gets no extra tries and cannot exhaust a
-small host's memory. It is still a single-user design: one password, one set of data, not for
+small host's memory. Failures are limited per client (an IPv4 address, or an IPv6 /64, so rotating
+addresses within a /64 buys nothing) and overall; once the overall limit is hit each client gets one
+try per window, and a hard ceiling of five times that limit (200 attempts per five minutes) refuses
+every client, even with the right password, so total guesses are bounded however many addresses
+are used. It is still a single-user design: one password, one set of data, not for
 exposure to the internet.
 
 Given that, the threats this project actually defends against are:

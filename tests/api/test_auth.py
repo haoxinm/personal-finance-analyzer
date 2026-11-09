@@ -671,3 +671,87 @@ def test_session_store_is_bounded_and_independent() -> None:
     store.clear()
     assert not store.valid(ids[-1])
     assert not store.valid(None)
+
+
+# --- client buckets and the hard ceiling ----------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("host", "bucket"),
+    [
+        ("192.168.1.9", "192.168.1.9"),
+        ("::ffff:192.168.1.9", "192.168.1.9"),
+        ("fe80::1%eth0", "fe80::/64"),
+        ("fd00:1:2:3:aaaa:bbbb:cccc:dddd", "fd00:1:2:3::/64"),
+        ("fd00:1:2:3::1", "fd00:1:2:3::/64"),
+        ("fd00:1:2:4::1", "fd00:1:2:4::/64"),
+        ("not-an-address", "not-an-address"),
+    ],
+)
+def test_client_bucket_groups_ipv6_by_64_and_maps_ipv4(host: str, bucket: str) -> None:
+    from personal_finance_analyzer.api.auth import client_bucket
+
+    assert client_bucket(host) == bucket
+
+
+def test_one_ipv6_host_rotating_addresses_in_its_64_shares_one_budget(
+    engine: Engine, session: Session, web_dir: Path, clock: FakeClock
+) -> None:
+    del session
+    app = _app_with(engine, web_dir, clock, max_failures_per_client=2, max_failures_global=100)
+
+    def browser(address: str) -> TestClient:
+        return TestClient(
+            app,
+            base_url="http://nas.local:8756",
+            follow_redirects=False,
+            client=(address, 50000),
+        )
+
+    codes = []
+    for i in range(4):
+        with browser(f"fd00:1:2:3::{i + 1:x}") as guesser:
+            codes.append(sign_in(guesser, "wrong guess").status_code)  # type: ignore[attr-defined]
+    assert codes == [401, 401, 429, 429]
+    # A different /64 is a different client.
+    with browser("fd00:1:2:4::1") as other:
+        assert sign_in(other, "wrong guess").status_code == 401  # type: ignore[attr-defined]
+
+
+def test_hard_ceiling_refuses_every_client_even_with_the_right_password(
+    engine: Engine, session: Session, web_dir: Path, clock: FakeClock
+) -> None:
+    del session
+    # Ceiling = 5 * 2 = 10 attempts per window.
+    app = _app_with(engine, web_dir, clock, max_failures_per_client=100, max_failures_global=2)
+
+    def browser(address: str) -> TestClient:
+        return TestClient(
+            app,
+            base_url="http://nas.local:8756",
+            follow_redirects=False,
+            client=(address, 50000),
+        )
+
+    codes = []
+    for i in range(10):
+        with browser(f"192.168.1.{100 + i}") as guesser:
+            codes.append(sign_in(guesser, "wrong guess").status_code)  # type: ignore[attr-defined]
+    assert codes == [401] * 10  # one try per address once the global limit is reached
+    # Ceiling reached: a fresh address is refused, with the right password too.
+    with browser("192.168.1.200") as owner:
+        assert sign_in(owner).status_code == 429  # type: ignore[attr-defined]
+    clock.advance(301)
+    with browser("192.168.1.200") as owner:
+        assert sign_in(owner).status_code == 303  # type: ignore[attr-defined]
+
+
+def test_throttle_ceiling_default_is_five_times_the_global_limit() -> None:
+    now = [0.0]
+    throttle = LoginThrottle(1000, 3, 60, lambda: now[0])
+    assert all(throttle.reserve(f"c{i}").allowed for i in range(15))
+    refused = throttle.reserve("late")
+    assert not refused.allowed
+    assert refused.wait >= 1
+    now[0] = 61
+    assert throttle.reserve("late").allowed

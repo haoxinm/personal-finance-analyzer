@@ -175,7 +175,11 @@ kept, in memory. Pick one of three ways to hand it over, in order of preference:
 When you open the site you get a plain page titled **Personal Finance Analyzer** with a single
 **Password** box and a **Sign in** button; after that the app opens, with **Sign out** at the top
 right. Five wrong passwords from one device within five minutes lock the login for that device for
-the rest of the window, even for the right password; wait and try again.
+the rest of the window, even for the right password; wait and try again. (A device is its IPv4
+address, or its whole IPv6 /64, since one machine can use any address in it.) After 40 wrong
+passwords from all devices together, every other device gets a single try per window, so you can
+still sign in while someone guesses; after 200 attempts in five minutes the login refuses everyone,
+even the right password, until the window has passed.
 A session ends after 8 hours without use, or when the server restarts.
 
 #### Keeping it off the internet

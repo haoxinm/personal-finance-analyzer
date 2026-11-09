@@ -41,6 +41,7 @@ import contextlib
 import hashlib
 import hmac
 import html
+import ipaddress
 import secrets
 import threading
 import time
@@ -202,6 +203,9 @@ class AuthConfig:
     #: Failed logins allowed per client address, and in total, per `window_seconds`.
     max_failures_per_client: int = 5
     max_failures_global: int = 40
+    #: Hard ceiling on attempts (any client, any outcome but success) per window, as a multiple of
+    #: ``max_failures_global``: beyond it every attempt is refused, even a correct password.
+    global_ceiling_factor: int = 5
     window_seconds: int = 300
     #: scrypt verifications that may run at once (each holds ~32 MiB), and how long another login
     #: request waits for a free slot before it is answered 429.
@@ -293,7 +297,10 @@ class LoginThrottle:
     concurrent attempts cannot all pass a check that none of them has charged yet; `succeed`
     takes the charge back when the password was right. Once the global limit is reached each
     client is allowed one attempt per window (instead of ``max_per_client``), so a correct
-    password still gets through while a distributed guesser is held to one guess per address.
+    password still gets through while a distributed guesser is held to one guess per client
+    bucket (see `client_address`). Because clients can still be many, a hard ceiling
+    (``max_ceiling`` attempts per window across all clients) refuses every attempt, whoever
+    sends it, so total guesses per window are bounded no matter how many addresses are used.
     """
 
     #: Sweep clients with no failures left in the window when the table grows beyond this.
@@ -305,9 +312,11 @@ class LoginThrottle:
         max_global: int,
         window_seconds: int,
         clock: Callable[[], float] = time.monotonic,
+        max_ceiling: int | None = None,
     ) -> None:
         self._max_client = max_per_client
         self._max_global = max_global
+        self._max_ceiling = max_ceiling if max_ceiling is not None else 5 * max_global
         self._window = window_seconds
         self._clock = clock
         self._lock = threading.Lock()
@@ -328,6 +337,9 @@ class LoginThrottle:
     def _wait(self, client: str, now: float) -> int:
         """Seconds until ``client`` may try again; 0 when it may try now. Lock held by the caller."""
         self._trim(self._all, now)
+        if len(self._all) >= self._max_ceiling:
+            # Hard ceiling: nobody gets through until the oldest charged attempt leaves the window.
+            return max(1, int(self._all[0] + self._window - now) + 1)
         limit = self._max_client
         if len(self._all) >= self._max_global:
             limit = min(limit, 1)
@@ -390,6 +402,7 @@ class AuthState:
             config.max_failures_global,
             config.window_seconds,
             config.clock,
+            config.max_failures_global * max(1, config.global_ceiling_factor),
         )
         self._slots: asyncio.Semaphore | None = None
         self._slots_loop: asyncio.AbstractEventLoop | None = None
@@ -404,10 +417,26 @@ class AuthState:
         return self._slots
 
 
+def client_bucket(host: str) -> str:
+    """The throttle bucket for a client address: an IPv4 address (also when written as an
+    IPv4-mapped IPv6 address) by itself, an IPv6 address by its /64, since one host can use any
+    address in its /64 and would otherwise get a fresh set of tries for each."""
+    try:
+        address = ipaddress.ip_address(host.split("%", 1)[0])
+    except ValueError:
+        return host
+    if isinstance(address, ipaddress.IPv6Address):
+        if address.ipv4_mapped is not None:
+            return str(address.ipv4_mapped)
+        return str(ipaddress.ip_network(f"{address}/64", strict=False))
+    return str(address)
+
+
 def client_address(request: Request) -> str:
-    """The client's address as `api/clients.py` resolved it (behind a trusted reverse proxy, the
-    forwarded address rather than the proxy's own)."""
-    return request.client.host if request.client else "unknown"
+    """The client's throttle bucket: its address as `api/clients.py` resolved it (behind a
+    trusted reverse proxy, the forwarded address rather than the proxy's own), normalised by
+    `client_bucket`."""
+    return client_bucket(request.client.host) if request.client else "unknown"
 
 
 def safe_next(value: str | None) -> str:
