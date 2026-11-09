@@ -218,6 +218,56 @@ def test_a_failed_restore_leaves_the_folder_exactly_as_it_was(
     assert not home_b.exists()
 
 
+def _refuse_swap(*_args: object, **_kwargs: object) -> Path:
+    raise OSError("disk went away")
+
+
+def test_a_failed_swap_puts_the_documents_folder_back(
+    source: tuple[Path, dict[str, str]], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    backup = tmp_path / "b.pfabackup"
+    archive.create_backup(backup, passphrase=None)
+    home_b = _target(tmp_path)
+    seed_home(home_b)
+    mine = home_b / "documents" / "Alex" / "my own scan.pdf"
+    mine.parent.mkdir(parents=True, exist_ok=True)
+    mine.write_bytes(b"%PDF- mine")
+    monkeypatch.setattr(archive, "_move_aside", _refuse_swap)
+
+    with pytest.raises(BackupError, match="could not move"):
+        archive.restore_backup(backup, passphrase=None, replace=True, home=home_b)
+
+    assert mine.read_bytes() == b"%PDF- mine"
+    assert not [p for p in home_b.parent.iterdir() if ".restore-" in p.name]  # stage cleaned up
+
+
+def test_a_failed_swap_and_failed_rollback_never_deletes_the_documents_folder(
+    source: tuple[Path, dict[str, str]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    backup = tmp_path / "b.pfabackup"
+    archive.create_backup(backup, passphrase=None)
+    home_b = _target(tmp_path)
+    seed_home(home_b)
+    mine = home_b / "documents" / "Alex" / "my own scan.pdf"
+    mine.parent.mkdir(parents=True, exist_ok=True)
+    mine.write_bytes(b"%PDF- mine")
+    monkeypatch.setattr(archive, "_move_aside", _refuse_swap)
+    monkeypatch.setattr(archive, "_undo_carry", _refuse_swap)
+
+    with pytest.raises(BackupError, match="could NOT be put back") as caught:
+        archive.restore_backup(backup, passphrase=None, replace=True, home=home_b)
+
+    stages = [p for p in home_b.parent.iterdir() if ".restore-" in p.name]
+    assert len(stages) == 1  # left in place, not deleted
+    stranded = next(stages[0].rglob("my own scan.pdf"))
+    assert stranded.read_bytes() == b"%PDF- mine"
+    assert str(stages[0]) in str(caught.value)  # and the message says where it is
+    assert any(str(stages[0]) in r.getMessage() for r in caplog.records)
+
+
 def test_documents_are_moved_in_only_after_the_swap(
     source: tuple[Path, dict[str, str]], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

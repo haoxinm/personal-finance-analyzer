@@ -65,6 +65,7 @@ import contextlib
 import hashlib
 import itertools
 import json
+import logging
 import os
 import re
 import shutil
@@ -127,6 +128,7 @@ _COPY_CHUNK = 1024 * 1024
 _MAX_MANIFEST_BYTES = 1024 * 1024
 _PDF_NAME = re.compile(r"^[0-9a-f]{64}\.pdf$")
 #: A path component of a ``documents/`` member: portable on Windows, macOS, Linux and SMB.
+_log = logging.getLogger(__name__)
 _DOC_BAD_CHARS = re.compile(r'[\\:<>"|?*\x00-\x1f\x7f]')
 _MAX_DOC_DEPTH = 8
 DOCUMENTS_PREFIX = "documents/"
@@ -1172,6 +1174,7 @@ def restore_backup(
     stage = Path(tempfile.mkdtemp(prefix=f".{target.name}.restore-", dir=target.parent))
     doc_stage: Path | None = None
     keep_doc_stage = False
+    keep_stage = False  # the user's documents folder is inside it and could not be moved back
     try:
         work = stage / "work"
         new_home = stage / "home"
@@ -1223,18 +1226,48 @@ def restore_backup(
         previous: Path | None = None
         now = datetime.now(UTC)
         carried = _carry_documents_folder(target, docs_root, new_home)
+        # While this is set the user's own PDF folder sits inside ``stage``, so ``stage`` must not
+        # be deleted (see the ``finally`` below).
+        stranded_docs = carried[1] if carried is not None else None
         try:
-            if target.exists():
-                if _contains_files(target):
-                    previous = _move_aside(target, now)
-                else:
-                    _remove_empty_tree(target)
-            new_home.rename(target)
-        except OSError as exc:
-            if previous is not None and not target.exists():
-                previous.rename(target)
-            _undo_carry(carried)
-            raise BackupError(f"could not move the restored data into place: {exc}") from exc
+            try:
+                if target.exists():
+                    if _contains_files(target):
+                        previous = _move_aside(target, now)
+                    else:
+                        _remove_empty_tree(target)
+                new_home.rename(target)
+            except BaseException as exc:
+                if previous is not None and not target.exists():
+                    with contextlib.suppress(OSError):
+                        previous.rename(target)
+                try:
+                    _undo_carry(carried)
+                except OSError as undo_exc:
+                    keep_stage = True
+                    _log.error(
+                        "restore failed and the documents folder could not be put back; it is "
+                        "at %s (%s)",
+                        stranded_docs,
+                        undo_exc,
+                    )
+                    if isinstance(exc, OSError):
+                        raise BackupError(
+                            f"could not move the restored data into place: {exc}. Your documents "
+                            f"folder could NOT be put back and was left at {stranded_docs}; move it "
+                            f"back to {docs_root} yourself (nothing was deleted)."
+                        ) from exc
+                    raise
+                stranded_docs = None
+                if isinstance(exc, OSError):
+                    raise BackupError(
+                        f"could not move the restored data into place: {exc}"
+                    ) from exc
+                raise
+            stranded_docs = None  # the folder came across with the swap: it is at its path again
+        finally:
+            if stranded_docs is not None:
+                keep_stage = True
         if kept_secrets and previous is not None:
             _discard_old_secrets(previous, target)
 
@@ -1261,7 +1294,8 @@ def restore_backup(
             documents_pending=doc_stage if keep_doc_stage else None,
         )
     finally:
-        shutil.rmtree(stage, ignore_errors=True)
+        if not keep_stage:
+            shutil.rmtree(stage, ignore_errors=True)
         if doc_stage is not None and not keep_doc_stage:
             shutil.rmtree(doc_stage, ignore_errors=True)
 
