@@ -748,8 +748,11 @@ describe("TransactionsScreen", () => {
         .clone()
         .json()) as unknown;
       expect(body).toEqual({ transaction_ids: [1, 2] });
-      expect(await screen.findByText("Reverted to automatic")).toBeInTheDocument();
-      expect(screen.getByText(/1 had no one-time edit and was left as is/)).toBeInTheDocument();
+      // Radix mounts a visually hidden copy of every toast in a live region for a second (it is
+      // what screen readers announce), so the same sentence is in the document twice for a while
+      // and an unscoped query is flaky. Read the description off the visible toast itself.
+      const toastBody = (await screen.findByText("Reverted to automatic")).parentElement!;
+      expect(within(toastBody).getByText(/1 had no one-time edit and was left as is/)).toBeInTheDocument();
       await waitFor(() => expect(screen.queryByText("2 selected")).not.toBeInTheDocument());
     });
   });
