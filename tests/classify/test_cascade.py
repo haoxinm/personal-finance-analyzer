@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import replace
 from uuid import uuid4
 
 import pytest
@@ -10,6 +11,7 @@ from sqlalchemy import Engine, select
 from sqlalchemy.orm import Session
 
 from personal_finance_analyzer.classify import cascade
+from personal_finance_analyzer.classify.llm import batching
 from personal_finance_analyzer.classify.llm.batching import ClassifyResult as LlmClassifyResult
 from personal_finance_analyzer.classify.llm.batching import ClassifyRunResult
 from personal_finance_analyzer.classify.llm.egress import BatchResult
@@ -715,6 +717,90 @@ def test_no_provider_configured_falls_back_to_uncategorized_needs_review(
     subcategory = session.get(Subcategory, refreshed.subcategory_id)
     assert category is not None and category.key == "others"
     assert subcategory is not None and subcategory.key == "uncategorized"
+    # Nothing classified it: not the AI's claim, confidence 0, and nothing cached.
+    assert refreshed.classified_by == "unplaced"
+    assert refreshed.confidence == 0.0
+    assert session.get(MerchantMap, "unknown merchant no provider") is None
+
+
+def test_model_returning_nothing_for_an_item_is_unplaced_and_not_cached(
+    session: Session, engine: Engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The real `classify_all` path: the model answers for one row and omits the other, even on
+    retry. The answered row stays `llm`; the omitted one is `unplaced` and not in `merchant_map`."""
+    account = _account(session)
+    statement = _statement(session)
+    answered = _txn(
+        session,
+        account=account,
+        statement=statement,
+        description="ANSWERED MERCHANT",
+        merchant_key="answered merchant",
+    )
+    omitted = _txn(
+        session,
+        account=account,
+        statement=statement,
+        description="OMITTED MERCHANT",
+        merchant_key="omitted merchant",
+    )
+    session.commit()
+
+    def _partial(descriptions: list[str], cfg: LLMConfig) -> BatchResult:
+        items = [_item(i) for i, d in enumerate(descriptions, 1) if d == "ANSWERED MERCHANT"]
+        missing = tuple(i for i, d in enumerate(descriptions, 1) if d != "ANSWERED MERCHANT")
+        return replace(_ok_batch_result(descriptions, items), missing_ids=missing)
+
+    monkeypatch.setattr(batching, "classify_batch", _partial)
+
+    cascade.classify_transactions(
+        make_session_factory(engine),
+        [answered.id, omitted.id],
+        cfg=_cfg(),
+        group_id="g-unplaced",
+        progress_cb=_noop_progress,
+    )
+
+    session.expire_all()
+    a = session.get(Transaction, answered.id)
+    o = session.get(Transaction, omitted.id)
+    assert a is not None and o is not None
+    assert (a.classified_by, a.needs_review) == ("llm", False)
+    assert (o.classified_by, o.confidence, o.needs_review) == ("unplaced", 0.0, True)
+    assert _category_key_of(session, o) == "others"
+    assert session.get(MerchantMap, "answered merchant") is not None
+    assert session.get(MerchantMap, "omitted merchant") is None
+
+
+def test_an_unplaced_row_is_not_final_and_a_later_run_can_place_it(
+    session: Session, engine: Engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    account = _account(session)
+    statement = _statement(session)
+    txn = _txn(
+        session,
+        account=account,
+        statement=statement,
+        description="LATER MERCHANT",
+        merchant_key="later merchant",
+    )
+    session.commit()
+    factory = make_session_factory(engine)
+    cascade.classify_transactions(
+        factory, [txn.id], cfg=_no_provider_cfg(), group_id="g1", progress_cb=_noop_progress
+    )
+    session.expire_all()
+    first = session.get(Transaction, txn.id)
+    assert first is not None and first.classified_by == "unplaced"
+
+    _calls, fake = _fake_classify_all_factory({"LATER MERCHANT": _item(1)})
+    monkeypatch.setattr(cascade, "classify_all", fake)
+    cascade.classify_transactions(
+        factory, [txn.id], cfg=_cfg(), group_id="g2", progress_cb=_noop_progress
+    )
+    session.expire_all()
+    placed = session.get(Transaction, txn.id)
+    assert placed is not None and placed.classified_by == "llm"
 
 
 # --------------------------------------------------------------------------------------------

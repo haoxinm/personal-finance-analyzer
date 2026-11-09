@@ -121,11 +121,61 @@ def test_revert_with_no_deterministic_answer_is_uncategorized_and_needs_review(
     session.expire_all()
     stored = session.get(Transaction, txn.id)
     assert stored is not None
-    assert stored.classified_by == "llm"  # what the import path writes for an unplaced row
+    assert stored.classified_by == "unplaced"  # no layer answered, and no LLM was asked
     assert stored.needs_review is True
+    assert stored.confidence == 0.0
     assert _pair(session, txn) == UNCATEGORIZED
+    assert session.get(MerchantMap, "nobody knows") is None
     # The model is only ever asked through an explicit re-classify, never here.
     assert fake_llm.requests == []
+
+
+def test_undo_of_a_revert_to_unplaced_restores_the_one_time_edit(
+    client: TestClient, session: Session, fake_llm: FakeLLM
+) -> None:
+    seed = base(session)
+    sync_builtin_rules(session)
+    txn = add_txn(session, seed, 1, merchant_key="nobody knows", category=GAS, classified_by="user")
+    session.commit()
+    reverted = client.post(f"/api/transactions/{txn.id}/revert-to-automatic").json()
+    assert reverted["undo"]["transactions"][0]["after"]["classified_by"] == "unplaced"
+
+    undone = client.post("/api/review/undo", json=reverted["undo"])
+
+    assert undone.status_code == 200, undone.text
+    assert undone.json()["restored"] == 1
+    session.expire_all()
+    restored = session.get(Transaction, txn.id)
+    assert restored is not None
+    assert (restored.classified_by, restored.needs_review) == ("user", False)
+    assert _pair(session, txn) == GAS
+    assert fake_llm.requests == []
+
+
+def test_an_accept_on_an_unplaced_row_undoes_back_to_unplaced(
+    client: TestClient, session: Session
+) -> None:
+    """`unplaced` is a valid `before` in an undo token (it is validated against the value set)."""
+    seed = base(session)
+    txn = add_txn(session, seed, 1, merchant_key="mystery", category=UNCATEGORIZED)
+    txn.classified_by = "unplaced"
+    txn.needs_review = True
+    txn.confidence = 0.0
+    session.commit()
+    accepted = client.post(
+        "/api/review/accept",
+        json={"transaction_id": txn.id, "category_key": DINING[0], "subcategory_key": DINING[1]},
+    )
+    assert accepted.status_code == 200, accepted.text
+    assert accepted.json()["undo"]["transactions"][0]["before"]["classified_by"] == "unplaced"
+
+    undone = client.post("/api/review/undo", json=accepted.json()["undo"])
+
+    assert undone.status_code == 200, undone.text
+    session.expire_all()
+    stored = session.get(Transaction, txn.id)
+    assert stored is not None and stored.classified_by == "unplaced"
+    assert _pair(session, txn) == UNCATEGORIZED
 
 
 def test_revert_uses_the_saved_merchant_cache_answer_without_calling_the_llm(

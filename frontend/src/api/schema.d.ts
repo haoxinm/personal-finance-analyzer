@@ -4231,7 +4231,7 @@ export interface components {
             /** Confidence */
             confidence?: number | null;
             /** Classified By */
-            classified_by: ("cache" | "user_rule" | "builtin_rule" | "issuer" | "llm" | "user" | "kind") | null;
+            classified_by: ("cache" | "user_rule" | "builtin_rule" | "issuer" | "llm" | "user" | "kind" | "unplaced") | null;
             /** Needs Review */
             needs_review: boolean;
             kind: components["schemas"]["Kind"];
