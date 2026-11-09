@@ -24,7 +24,8 @@ def hash_password_cmd(
     if stdin:
         password = sys.stdin.readline().rstrip("\r\n")
     else:
-        password = typer.prompt("Password", hide_input=True, confirmation_prompt=True)
+        # The prompts go to stderr so `pfa auth hash-password > file` captures the hash alone.
+        password = typer.prompt("Password", hide_input=True, confirmation_prompt=True, err=True)
     if len(password) < MIN_PASSWORD_LENGTH:
         typer.echo(f"The password must be at least {MIN_PASSWORD_LENGTH} characters.", err=True)
         raise typer.Exit(code=1)

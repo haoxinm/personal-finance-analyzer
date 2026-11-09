@@ -324,6 +324,8 @@ class AuthState:
 
 
 def client_address(request: Request) -> str:
+    """The client's address as `api/clients.py` resolved it (behind a trusted reverse proxy, the
+    forwarded address rather than the proxy's own)."""
     return request.client.host if request.client else "unknown"
 
 

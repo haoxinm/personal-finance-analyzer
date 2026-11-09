@@ -176,8 +176,12 @@ def test_cli_serve_passes_the_settings_to_the_app_and_uvicorn(
     result = runner.invoke(app, ["serve", "--no-open-browser", "--host", "0.0.0.0"])
     assert result.exit_code == 0, result.output
     assert calls["kwargs"]["host"] == "0.0.0.0"
-    assert calls["kwargs"]["proxy_headers"] is True
-    assert calls["kwargs"]["forwarded_allow_ips"] == "10.0.0.5"
+    # Forwarding headers are read by the app's own ClientGuardMiddleware (it can fail closed),
+    # never by uvicorn.
+    assert calls["kwargs"]["proxy_headers"] is False
+    assert "forwarded_allow_ips" not in calls["kwargs"]
+    assert any(m.cls.__name__ == "ClientGuardMiddleware" for m in calls["app"].user_middleware)
+    assert "Accepting connections only from: private (" in result.output
     assert calls["app"].state.auth is not None
     # The per-launch token must not be printed where a container log would expose it.
     assert calls["app"].state.token not in result.output
@@ -196,6 +200,8 @@ def test_cli_serve_default_is_unchanged(monkeypatch: pytest.MonkeyPatch, tmp_pat
     assert calls["host"] == "127.0.0.1"
     assert calls["proxy_headers"] is False
     assert not hasattr(calls["app"].state, "auth")
+    assert not any(m.cls.__name__ == "ClientGuardMiddleware" for m in calls["app"].user_middleware)
+    assert "Accepting connections only" not in result.output
     assert f"/?token={calls['app'].state.token}" in result.output
     assert f"Per-launch API token: {calls['app'].state.token}" in result.output
 
@@ -212,3 +218,118 @@ def test_cli_hash_password_refuses_a_short_password() -> None:
     result = runner.invoke(app, ["auth", "hash-password", "--stdin"], input="short\n")
     assert result.exit_code == 1
     assert "at least 8" in result.output
+
+
+# --- LAN-only: PFA_ALLOWED_CLIENTS, PFA_ALLOW_PUBLIC_CLIENTS, PFA_TRUSTED_PROXIES -----------------
+
+
+def test_beyond_loopback_the_client_check_defaults_to_private_networks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PFA_PASSWORD", PASSWORD)
+    monkeypatch.setenv("PFA_ALLOWED_HOSTS", "nas.local")
+    config = resolve_serve_config("0.0.0.0")
+    assert config.client_policy is not None
+    assert config.client_policy.allows("192.168.1.20")
+    assert not config.client_policy.allows("8.8.8.8")
+    assert not config.client_policy.allows("100.64.0.9")  # CGNAT is opt-in
+    assert config.warnings == ()
+
+
+def test_loopback_bind_has_no_client_check(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert resolve_serve_config(None).client_policy is None
+    monkeypatch.setenv("PFA_PASSWORD", PASSWORD)
+    assert resolve_serve_config("127.0.0.1").client_policy is None
+
+
+def test_a_reverse_proxy_in_front_of_a_loopback_bind_turns_the_check_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PFA_PASSWORD", PASSWORD)
+    monkeypatch.setenv("PFA_TRUSTED_PROXIES", "127.0.0.1")
+    config = resolve_serve_config("127.0.0.1")
+    assert config.client_policy is not None
+    assert config.proxies is not None
+
+
+def test_allowed_clients_replaces_the_default_and_understands_private(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PFA_PASSWORD", PASSWORD)
+    monkeypatch.setenv("PFA_ALLOWED_CLIENTS", "192.168.1.0/24")
+    only_lan = resolve_serve_config("0.0.0.0").client_policy
+    assert only_lan is not None
+    assert only_lan.allows("192.168.1.7")
+    assert not only_lan.allows("192.168.2.7")
+    assert not only_lan.allows("10.0.0.1")
+
+    monkeypatch.setenv("PFA_ALLOWED_CLIENTS", "private, 100.64.0.0/10")
+    plus_tailscale = resolve_serve_config("0.0.0.0").client_policy
+    assert plus_tailscale is not None
+    assert plus_tailscale.allows("10.0.0.1")
+    assert plus_tailscale.allows("100.101.102.103")
+    assert not plus_tailscale.allows("8.8.8.8")
+
+
+@pytest.mark.parametrize("value", ["nonsense", "192.168.1.0/99", "0.0.0.0/0", "::/0", "0.0.0.0/4"])
+def test_allowed_clients_refuses_garbage_and_everyone(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    monkeypatch.setenv("PFA_PASSWORD", PASSWORD)
+    monkeypatch.setenv("PFA_ALLOWED_CLIENTS", value)
+    with pytest.raises(ServeConfigError, match="PFA_ALLOWED_CLIENTS"):
+        resolve_serve_config("0.0.0.0")
+
+
+def test_trusted_proxies_must_be_addresses(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PFA_PASSWORD", PASSWORD)
+    monkeypatch.setenv("PFA_TRUSTED_PROXIES", "traefik")
+    with pytest.raises(ServeConfigError, match="PFA_TRUSTED_PROXIES"):
+        resolve_serve_config("0.0.0.0")
+
+
+def test_allow_public_clients_switches_the_check_off_with_a_loud_warning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PFA_PASSWORD", PASSWORD)
+    monkeypatch.setenv("PFA_ALLOW_PUBLIC_CLIENTS", "1")
+    monkeypatch.setenv("PFA_ALLOWED_CLIENTS", "192.168.1.0/24")
+    config = resolve_serve_config("0.0.0.0")
+    assert config.client_policy is None
+    joined = " ".join(config.warnings)
+    assert "PFA_ALLOW_PUBLIC_CLIENTS=1" in joined
+    assert "OFF" in joined
+    assert "internet" in joined
+    assert "PFA_ALLOWED_CLIENTS is ignored" in joined
+
+
+@pytest.mark.parametrize("value", ["yes please", "public", "0", ""])
+def test_allow_public_clients_needs_an_explicit_true(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    monkeypatch.setenv("PFA_PASSWORD", PASSWORD)
+    monkeypatch.setenv("PFA_ALLOW_PUBLIC_CLIENTS", value)
+    assert resolve_serve_config("0.0.0.0").client_policy is not None
+
+
+def test_allow_public_clients_is_refused_without_a_login(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PFA_INSECURE_NO_AUTH", "1")
+    monkeypatch.setenv("PFA_ALLOW_PUBLIC_CLIENTS", "1")
+    with pytest.raises(ServeConfigError, match="whole internet"):
+        resolve_serve_config("0.0.0.0")
+
+
+def test_wildcard_trusted_proxies_warns_that_it_defeats_the_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PFA_PASSWORD", PASSWORD)
+    monkeypatch.setenv("PFA_TRUSTED_PROXIES", "*")
+    config = resolve_serve_config("0.0.0.0")
+    assert any("PFA_TRUSTED_PROXIES=*" in w for w in config.warnings)
+
+
+def test_cli_hash_password_prompts_on_stderr_so_redirecting_stdout_captures_only_the_hash() -> None:
+    result = runner.invoke(app, ["auth", "hash-password"], input=f"{PASSWORD}\n{PASSWORD}\n")
+    assert result.exit_code == 0, result.output
+    assert verify_password(PASSWORD, result.stdout.strip())  # nothing but the hash on stdout
+    assert "Password" in result.stderr

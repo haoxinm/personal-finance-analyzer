@@ -218,6 +218,8 @@ def serve_cmd(
             settings=settings,
             auth=serve_config.auth,
             allowed_hosts=serve_config.allowed_hosts,
+            client_policy=serve_config.client_policy,
+            trusted_proxies=serve_config.proxies,
         )
         token = app_instance.state.token
         port = settings.server.port
@@ -231,6 +233,10 @@ def serve_cmd(
             url = f"http://{serve_config.host}:{port}/"
             login = "password login on" if serve_config.auth is not None else "NO LOGIN"
             typer.echo(f"Personal Finance Analyzer is listening on {url} ({login})")
+        if serve_config.client_policy is not None:
+            networks = serve_config.client_policy.describe()
+            typer.echo(f"Accepting connections only from: {networks}")
+            get_logger("serve").info("Accepting connections only from: %s", networks)
         if open_browser and serve_config.loopback:
             webbrowser.open(url)
         uvicorn.run(
@@ -238,9 +244,9 @@ def serve_cmd(
             host=serve_config.host,
             port=port,
             log_level="warning",
-            # X-Forwarded-For/Proto are believed only from the proxies PFA_TRUSTED_PROXIES names.
-            proxy_headers=serve_config.trusted_proxies is not None,
-            forwarded_allow_ips=serve_config.trusted_proxies,
+            # Off: the app's own ClientGuardMiddleware reads X-Forwarded-For/Proto, only from the
+            # proxies PFA_TRUSTED_PROXIES names, and fails closed (api/clients.py).
+            proxy_headers=False,
         )
 
 

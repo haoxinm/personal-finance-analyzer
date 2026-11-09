@@ -9,9 +9,17 @@ Everything here comes from the command line and the environment (deployment sett
 - ``PFA_ALLOWED_HOSTS``: comma list of extra ``Host`` names, e.g. ``nas.local,192.168.1.10:9000``,
   or ``*`` (with a password only).
 - ``PFA_TRUSTED_PROXIES``: addresses or CIDRs whose ``X-Forwarded-For/Proto`` headers are believed
-  (or ``*``); needed for a ``Secure`` cookie and per-client login limits behind a reverse proxy.
+  (or ``*``); needed for a ``Secure`` cookie, per-client login limits and the client-network check
+  behind a reverse proxy.
+- ``PFA_ALLOWED_CLIENTS``: comma list of CIDRs a *client* address must be in (default: the private
+  ranges; the keyword ``private`` stands for that set). ``PFA_ALLOW_PUBLIC_CLIENTS=1`` turns the
+  check off, loudly. See `api/clients.py`.
 - ``PFA_COOKIE_SECURE``: ``1`` to mark the session cookie ``Secure`` even over plain HTTP.
 - ``PFA_SESSION_IDLE_MINUTES``: idle session timeout (default 480).
+
+LAN-only: a bind beyond loopback (or any ``PFA_TRUSTED_PROXIES``, i.e. a reverse proxy in front)
+turns the client-network check on, so the default is that nobody outside the local network is
+even shown the login page. A plain loopback bind has no such check.
 
 Rule: a loopback bind needs nothing (a password, if set, still turns the login on). A bind
 beyond loopback needs a password or ``PFA_INSECURE_NO_AUTH=1``, otherwise the server refuses to
@@ -25,12 +33,15 @@ import os
 from dataclasses import dataclass
 
 from personal_finance_analyzer.api.auth import AuthConfig, AuthConfigError, load_password_hash
+from personal_finance_analyzer.api.clients import ClientPolicy, TrustedProxies
 from personal_finance_analyzer.core.container import env_flag
 from personal_finance_analyzer.core.errors import PfaError
 
 HOST_ENV = "PFA_HOST"
 ALLOWED_HOSTS_ENV = "PFA_ALLOWED_HOSTS"
 TRUSTED_PROXIES_ENV = "PFA_TRUSTED_PROXIES"
+ALLOWED_CLIENTS_ENV = "PFA_ALLOWED_CLIENTS"
+ALLOW_PUBLIC_ENV = "PFA_ALLOW_PUBLIC_CLIENTS"
 INSECURE_ENV = "PFA_INSECURE_NO_AUTH"
 COOKIE_SECURE_ENV = "PFA_COOKIE_SECURE"
 SESSION_IDLE_ENV = "PFA_SESSION_IDLE_MINUTES"
@@ -48,8 +59,13 @@ class ServeConfig:
     #: None: no login (loopback without a password, or the explicit insecure opt-out).
     auth: AuthConfig | None
     allowed_hosts: tuple[str, ...]
-    #: Passed to uvicorn's ``forwarded_allow_ips``; None leaves proxy headers untrusted.
+    #: The raw ``PFA_TRUSTED_PROXIES``; None leaves forwarding headers untrusted.
     trusted_proxies: str | None
+    #: The parsed form of ``trusted_proxies`` (see `api/clients.py`).
+    proxies: TrustedProxies | None
+    #: Which client addresses are served; None when the check is off (a plain loopback bind, or
+    #: ``PFA_ALLOW_PUBLIC_CLIENTS=1``).
+    client_policy: ClientPolicy | None
     #: Printed at startup, in order.
     warnings: tuple[str, ...]
 
@@ -148,10 +164,48 @@ def resolve_serve_config(host: str | None) -> ServeConfig:
             f"{ALLOWED_HOSTS_ENV}=nas.local,192.168.1.10 (or * behind the login)."
         )
 
+    trusted_raw = os.environ.get(TRUSTED_PROXIES_ENV, "").strip() or None
+    proxies: TrustedProxies | None = None
+    if trusted_raw is not None:
+        try:
+            proxies = TrustedProxies.parse(trusted_raw)
+        except ValueError as exc:
+            raise ServeConfigError(f"{TRUSTED_PROXIES_ENV}: {exc}") from None
+    try:
+        policy = ClientPolicy.parse(os.environ.get(ALLOWED_CLIENTS_ENV))
+    except ValueError as exc:
+        raise ServeConfigError(f"{ALLOWED_CLIENTS_ENV}: {exc}") from None
+
+    client_policy: ClientPolicy | None = None
+    if not loopback or proxies is not None:
+        client_policy = policy
+        if env_flag(ALLOW_PUBLIC_ENV):
+            if auth is None:
+                raise ServeConfigError(
+                    f"{ALLOW_PUBLIC_ENV}=1 together with no login would serve your financial data "
+                    "to the whole internet; set a password first."
+                )
+            client_policy = None
+            warnings.append(
+                f"{ALLOW_PUBLIC_ENV}=1: the network check is OFF. Requests from ANY address, "
+                "including the public internet, reach the login page. Make sure this port is not "
+                "forwarded on your router, or remove this setting."
+            )
+            if os.environ.get(ALLOWED_CLIENTS_ENV, "").strip():
+                warnings.append(f"{ALLOWED_CLIENTS_ENV} is ignored because {ALLOW_PUBLIC_ENV}=1.")
+        elif proxies is not None and proxies.any_sender:
+            warnings.append(
+                f"{TRUSTED_PROXIES_ENV}=* believes X-Forwarded-For from every sender, so anyone "
+                "who can reach the port directly can claim a local address and pass the network "
+                "check. Name your reverse proxy's address or network instead."
+            )
+
     return ServeConfig(
         host=bind,
         auth=auth,
         allowed_hosts=allowed_hosts,
-        trusted_proxies=os.environ.get(TRUSTED_PROXIES_ENV, "").strip() or None,
+        trusted_proxies=trusted_raw,
+        proxies=proxies,
+        client_policy=client_policy,
         warnings=tuple(warnings),
     )

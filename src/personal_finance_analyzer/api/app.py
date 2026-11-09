@@ -30,6 +30,12 @@ from personal_finance_analyzer.api.auth import (
     AuthState,
     register_auth_routes,
 )
+from personal_finance_analyzer.api.clients import (
+    BlockLog,
+    ClientGuardMiddleware,
+    ClientPolicy,
+    TrustedProxies,
+)
 from personal_finance_analyzer.api.restore_gate import RestoreGate, RestoreGateMiddleware
 from personal_finance_analyzer.api.routers import (
     accounts,
@@ -81,14 +87,18 @@ def create_app(
     web_dir: Path | None = None,
     auth: AuthConfig | None = None,
     allowed_hosts: Sequence[str] = (),
+    client_policy: ClientPolicy | None = None,
+    trusted_proxies: TrustedProxies | None = None,
 ) -> FastAPI:
     """Build a fresh FastAPI app. `engine` defaults to the configured data directory's database;
     tests pass a temp-file engine. `token` defaults to a fresh random per-launch token (A31).
 
     `allowed_hosts` adds `Host` names to the allowlist (`api/security.py`'s `HostPolicy`), and
     `auth` puts the single-password login (`api/auth.py`) in front of everything; `pfa serve`
-    passes both from its environment when it listens beyond loopback. Without them the app is the
-    plain localhost one."""
+    passes both from its environment when it listens beyond loopback. `client_policy` refuses (403,
+    before the login) every client whose address is outside it, and `trusted_proxies` names the
+    reverse proxies whose `X-Forwarded-*` headers decide that address and the scheme
+    (`api/clients.py`). Without any of these the app is the plain localhost one."""
     resolved_settings = settings if settings is not None else Settings()
     if engine is None:
         prepare_home()  # app startup is an explicit step: carries a pre-rename data dir/db over
@@ -121,7 +131,7 @@ def create_app(
         allowed_hosts=allowed_hosts,
     )
     if auth is not None:
-        # Added last, so it is the outermost: an anonymous request never reaches the token check.
+        # Outside the token check: an anonymous request never reaches it.
         auth_state = AuthState(auth)
         app.state.auth = auth_state
         app.add_middleware(
@@ -130,6 +140,15 @@ def create_app(
             policy=HostPolicy(resolved_settings.server.port, allowed_hosts),
         )
         register_auth_routes(app, auth_state)
+    if client_policy is not None or trusted_proxies is not None:
+        # Added after everything else, so it is the outermost layer: a client outside the local
+        # network never reaches the login, and the login sees the real client address.
+        app.add_middleware(
+            ClientGuardMiddleware,
+            policy=client_policy,
+            trusted=trusted_proxies,
+            block_log=BlockLog(allowed=client_policy.describe()) if client_policy else None,
+        )
 
     @app.get(HEALTH_PATH, include_in_schema=False)
     def health() -> JSONResponse:
