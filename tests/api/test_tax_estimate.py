@@ -74,18 +74,31 @@ def test_profile_validation(client: TestClient) -> None:
         {"filing_status": "single", "age65_or_blind_count": 5},
         {"filing_status": "single", "age65_or_blind_count": 3},  # one person: at most 2 boxes
         {"filing_status": "hoh", "age65_or_blind_count": 3},
+        {"filing_status": "mfs", "age65_or_blind_count": 3},
+        {"filing_status": "qss", "age65_or_blind_count": 4},
         {"filing_status": "mfj", "age65_or_blind_count": 5},
-        # a profile is one person's: a household count (3-4 boxes, 2 seniors) is not accepted
-        {"filing_status": "mfj", "age65_or_blind_count": 3},
-        {"filing_status": "mfj", "age65_or_blind_count": 4, "age65_count": 2},
+        # a joint profile may carry both spouses (4 boxes, 2 seniors) but no more
+        {"filing_status": "mfj", "age65_count": 3, "age65_or_blind_count": 4},
+        # the senior count is at most 1 for every status but mfj, and a subset of the boxes
         {"filing_status": "single", "age65_count": 2, "age65_or_blind_count": 2},
-        {"filing_status": "mfj", "age65_count": 2, "age65_or_blind_count": 2},
+        {"filing_status": "hoh", "age65_count": 2, "age65_or_blind_count": 2},
+        {"filing_status": "mfj", "age65_count": 3, "age65_or_blind_count": 2},
+        {"filing_status": "mfj", "age65_count": 2, "age65_or_blind_count": 1},
         {"filing_status": "single", "age65_count": 1, "age65_or_blind_count": 0},
         {"filing_status": "single", "other_income_minor": 10**13},
         {"filing_status": "single", "other_income_minor": 1.5},
         {},
     ):
         assert client.put(url, json=bad).status_code == 422, bad
+    for good in (
+        {"filing_status": "mfj", "age65_or_blind_count": 3},
+        {"filing_status": "mfj", "age65_or_blind_count": 4, "age65_count": 2},
+        {"filing_status": "mfj", "age65_or_blind_count": 2, "age65_count": 2},
+        {"filing_status": "single", "age65_or_blind_count": 2, "age65_count": 1},
+    ):
+        r = client.put(url, json=good)
+        assert r.status_code in (200, 201), good
+        assert r.json()["age65_or_blind_count"] == good["age65_or_blind_count"]
     assert client.put(f"/api/tax/profiles/{uid}/1800", json=_profile()).status_code == 400
     assert client.put("/api/tax/profiles/999/2024", json=_profile()).status_code == 404
     assert client.get("/api/tax/profiles/999/2024").status_code == 404

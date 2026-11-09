@@ -430,9 +430,12 @@ or `GET /api/tax/estimate?user_id=&tax_year=` (the web UI's Estimate screen come
 - **A tax profile** per user and year (`tax_profiles`; `GET`/`PUT`/`DELETE
   /api/tax/profiles/{user_id}/{tax_year}`): filing status, spouse (`joint_with_user_id`, only with
   `mfj`), standard or itemized deduction (and the itemized total), the number of age 65 / blind boxes
-  (`age65_or_blind_count`: at most 2) and whether the user is 65 or older (`age65_count`: 0 or 1, for
-  the 2025-2028 senior deduction). A profile describes only its own user: with a linked spouse both
-  profiles are added together (up to 4 boxes and 2 seniors), so each spouse enters their own, adjustments to income, other income, capital loss carryover from the previous year, nonrefundable
+  (`age65_or_blind_count`) and how many people are 65 or older (`age65_count`, for the 2025-2028
+  senior deduction). A profile describes its own user: at most 2 boxes and 1 person aged 65+, or
+  4 and 2 for `mfj`. With a linked spouse who has a profile too, the estimate limits each profile
+  to 2 / 1 and adds them together, so each spouse enters their own; when the spouse is not an app
+  user (or has no profile), put both spouses' boxes on the one `mfj` profile (up to 4 / 2). The
+  profile also holds adjustments to income, other income, capital loss carryover from the previous year, nonrefundable
   and refundable credits, other taxes, estimated payments and other payments. All amounts are
   non-negative cents. **Without a profile**: the filing status of the user's own 1040 if there is
   one, else single, and the standard deduction.
@@ -495,7 +498,7 @@ the Social Security credit and the deferral limit stay per person; the Additiona
 both spouses' wages together. Itemized deductions are **summed** across the two profiles: enter each
 spouse's own share, or the household total on one profile and nothing on the other (a warning
 appears when both profiles have an amount). The age 65 / blind boxes and the 65-or-older count are
-summed too (at most 4 and 2). Each spouse's view is an **allocation**: the household tax
+summed too (each profile limited to 2 and 1 when both spouses have a profile, the household to 4 and 2). Each spouse's view is an **allocation**: the household tax
 split by share of gross income (equal shares when there is no income; the parts always sum to the
 household tax), with that user's own payments and the result that follows. It is labelled
 `scope: household_allocation`; it is not a separate liability. If the two profiles disagree (the

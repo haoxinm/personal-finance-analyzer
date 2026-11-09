@@ -107,17 +107,29 @@ _MEDICARE_RATE_BP = 290
 _EMPLOYEE_SS_RATE_BP = 620
 _ADDITIONAL_MEDICARE_RATE_BP = 90
 _NIIT_RATE_BP = 380
-#: Boxes that can be checked for the aged / blind additional standard deduction: two per person.
+#: Boxes that can be checked for the aged / blind additional standard deduction (two per person,
+#: four on a joint return) and the people aged 65+ who can claim the senior deduction.
 MAX_AGED_BLIND_JOINT = 4
 MAX_AGED_BLIND_SINGLE = 2
+MAX_SENIORS_JOINT = 2
+MAX_SENIORS_SINGLE = 1
 
 
-def _person_boxes(profile: TaxProfile | None) -> tuple[int, int]:
-    """(aged / blind boxes, people aged 65+) one profile contributes: its own user's only."""
+def profile_count_limits(filing_status: str, *, household_total: bool) -> tuple[int, int]:
+    """(aged / blind boxes, people aged 65+) one profile may count. A profile describes its own
+    user (2, 1), except a married-filing-jointly profile that stands for the whole household
+    because the spouse has no profile of their own: it carries both spouses' boxes (4, 2)."""
+    if filing_status == "mfj" and household_total:
+        return MAX_AGED_BLIND_JOINT, MAX_SENIORS_JOINT
+    return MAX_AGED_BLIND_SINGLE, MAX_SENIORS_SINGLE
+
+
+def _person_boxes(profile: TaxProfile | None, limits: tuple[int, int]) -> tuple[int, int]:
+    """(aged / blind boxes, people aged 65+) one profile contributes, clamped to `limits`."""
     if profile is None:
         return 0, 0
-    boxes = min(max(profile.age65_or_blind_count, 0), MAX_AGED_BLIND_SINGLE)
-    return boxes, min(max(profile.age65_count, 0), 1, boxes)
+    boxes = min(max(profile.age65_or_blind_count, 0), limits[0])
+    return boxes, min(max(profile.age65_count, 0), limits[1], boxes)
 
 
 class EstimateError(ValueError):
@@ -788,17 +800,37 @@ def run_tax_estimate(session: Session, user_id: int, tax_year: int) -> UserEstim
             "joint return. Enter each spouse's own share, or the household total on one profile "
             "and nothing on the other."
         )
-    # A profile describes only its own user (at most 2 aged / blind boxes, 1 person aged 65+), so a
-    # household is the sum of its profiles; rows saved with a household count are clamped.
-    person_boxes = [_person_boxes(p) for p in profiles]
+    # A profile describes its own user (at most 2 aged / blind boxes, 1 person aged 65+), so two
+    # profiles of a household are added together. A single mfj profile (the spouse has none of
+    # their own) is the household total: up to 4 boxes and 2 people aged 65+. Rows saved with more
+    # than the limit allows are clamped, with a note.
+    count_limits = profile_count_limits(
+        status, household_total=sum(1 for p in profiles if p is not None) <= 1
+    )
+    person_boxes = [_person_boxes(p, count_limits) for p in profiles]
     if any(
-        p is not None and (p.age65_or_blind_count > MAX_AGED_BLIND_SINGLE or p.age65_count > 1)
+        p is not None
+        and (p.age65_or_blind_count > count_limits[0] or p.age65_count > count_limits[1])
         for p in profiles
     ):
         notes.append(
-            "A tax profile counts more age 65 / blind boxes than one person can have: each profile "
-            "is limited to its own user's 2 boxes and one 65-or-older person."
+            f"A tax profile counts more age 65 / blind boxes than allowed: it is limited to "
+            f"{count_limits[0]} boxes and {count_limits[1]} person(s) aged 65 or over"
+            + (
+                " (each spouse's profile covers only their own boxes)."
+                if len(members) > 1 and count_limits[0] == MAX_AGED_BLIND_SINGLE
+                else "."
+            )
         )
+    household_boxes = min(
+        sum(boxes for boxes, _ in person_boxes),
+        MAX_AGED_BLIND_JOINT if status == "mfj" else MAX_AGED_BLIND_SINGLE,
+    )
+    household_seniors = min(
+        sum(senior for _, senior in person_boxes),
+        MAX_SENIORS_JOINT if status == "mfj" else MAX_SENIORS_SINGLE,
+        household_boxes,
+    )
     inputs = EstimateInputs(
         tax_year=tax_year,
         filing_status=status,
@@ -814,8 +846,8 @@ def run_tax_estimate(session: Session, user_id: int, tax_year: int) -> UserEstim
         adjustments_minor=total("adjustments_minor"),
         deduction_mode="itemized" if itemized_any else "standard",
         itemized_deductions_minor=total("itemized_deductions_minor"),
-        aged_or_blind_count=sum(boxes for boxes, _ in person_boxes),
-        senior_count=sum(senior for _, senior in person_boxes),
+        aged_or_blind_count=household_boxes,
+        senior_count=household_seniors,
         nonrefundable_credits_minor=total("nonrefundable_credits_minor"),
         refundable_credits_minor=total("refundable_credits_minor"),
         other_taxes_minor=total("other_taxes_minor"),

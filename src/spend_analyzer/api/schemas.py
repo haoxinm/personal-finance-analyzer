@@ -1175,18 +1175,21 @@ MAX_TAX_AMOUNT_MINOR = 10**12
 class TaxProfileIn(_Model):
     """`PUT /api/tax/profiles/{user_id}/{tax_year}` body: the manual inputs of the estimate.
     Amounts are non-negative cents. `joint_with_user_id` (the spouse, another existing user) is
-    only valid with `filing_status` `mfj`. A profile describes only its own user: with a linked
-    spouse the two profiles are added together, so each spouse enters their own boxes.
+    only valid with `filing_status` `mfj`. A profile describes its own user: with a linked spouse
+    who has a profile too, the two profiles are added together, so each spouse enters their own
+    boxes (the estimate limits each to 2 boxes and 1 person aged 65+). A joint profile whose
+    spouse has no profile of their own carries the household total.
     `age65_or_blind_count` counts the boxes checked for the additional standard deduction (age 65
-    or older, blind): at most 2 per person. `age65_count` is 1 when this user is 65 or older (for
-    the 2025-2028 senior deduction) and not more than the boxes."""
+    or older, blind): at most 2 per person, 4 for `mfj` (both spouses). `age65_count` is the
+    number of people aged 65 or older (for the 2025-2028 senior deduction): at most 1, 2 for
+    `mfj`, and not more than the boxes."""
 
     filing_status: TaxFilingStatus
     joint_with_user_id: int | None = None
     deduction_mode: TaxDeductionMode = "standard"
     itemized_deductions_minor: int = Field(default=0, ge=0, le=MAX_TAX_AMOUNT_MINOR)
-    age65_or_blind_count: int = Field(default=0, ge=0, le=2)
-    age65_count: int = Field(default=0, ge=0, le=1)
+    age65_or_blind_count: int = Field(default=0, ge=0, le=4)
+    age65_count: int = Field(default=0, ge=0, le=2)
     adjustments_minor: int = Field(default=0, ge=0, le=MAX_TAX_AMOUNT_MINOR)
     other_income_minor: int = Field(default=0, ge=0, le=MAX_TAX_AMOUNT_MINOR)
     capital_loss_carryover_minor: int = Field(default=0, ge=0, le=MAX_TAX_AMOUNT_MINOR)
@@ -1198,6 +1201,16 @@ class TaxProfileIn(_Model):
 
     @model_validator(mode="after")
     def _check_boxes(self) -> TaxProfileIn:
+        max_boxes, max_seniors = (4, 2) if self.filing_status == "mfj" else (2, 1)
+        if self.age65_or_blind_count > max_boxes:
+            raise ValueError(
+                f"age65_or_blind_count is at most {max_boxes} for filing status "
+                f"{self.filing_status}"
+            )
+        if self.age65_count > max_seniors:
+            raise ValueError(
+                f"age65_count is at most {max_seniors} for filing status {self.filing_status}"
+            )
         if self.age65_count > self.age65_or_blind_count:
             raise ValueError("age65_count cannot exceed age65_or_blind_count (it is a subset)")
         return self

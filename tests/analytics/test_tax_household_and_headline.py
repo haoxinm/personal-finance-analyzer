@@ -656,7 +656,9 @@ def test_a_profile_counts_only_its_own_user_so_spouses_are_not_double_counted(
     assert est.calc.senior_deduction_minor == 12_000 * D
     assert est.calc.deduction_minor == (31_500 + 4 * 1_600) * D
     assert not any("at most 4 apply" in w for w in est.warnings)
-    assert any("more age 65 / blind boxes than one person" in w for w in est.warnings)
+    assert any(
+        "more age 65 / blind boxes than allowed" in w and "own boxes" in w for w in est.warnings
+    )
 
 
 def test_senior_deduction_for_a_household_sums_both_profiles(session: Session) -> None:

@@ -12651,14 +12651,14 @@
           },
           "age65_or_blind_count": {
             "type": "integer",
-            "maximum": 2.0,
+            "maximum": 4.0,
             "minimum": 0.0,
             "title": "Age65 Or Blind Count",
             "default": 0
           },
           "age65_count": {
             "type": "integer",
-            "maximum": 1.0,
+            "maximum": 2.0,
             "minimum": 0.0,
             "title": "Age65 Count",
             "default": 0
@@ -12783,14 +12783,14 @@
           },
           "age65_or_blind_count": {
             "type": "integer",
-            "maximum": 2.0,
+            "maximum": 4.0,
             "minimum": 0.0,
             "title": "Age65 Or Blind Count",
             "default": 0
           },
           "age65_count": {
             "type": "integer",
-            "maximum": 1.0,
+            "maximum": 2.0,
             "minimum": 0.0,
             "title": "Age65 Count",
             "default": 0
@@ -12857,7 +12857,7 @@
           "filing_status"
         ],
         "title": "TaxProfileIn",
-        "description": "`PUT /api/tax/profiles/{user_id}/{tax_year}` body: the manual inputs of the estimate.\nAmounts are non-negative cents. `joint_with_user_id` (the spouse, another existing user) is\nonly valid with `filing_status` `mfj`. A profile describes only its own user: with a linked\nspouse the two profiles are added together, so each spouse enters their own boxes.\n`age65_or_blind_count` counts the boxes checked for the additional standard deduction (age 65\nor older, blind): at most 2 per person. `age65_count` is 1 when this user is 65 or older (for\nthe 2025-2028 senior deduction) and not more than the boxes."
+        "description": "`PUT /api/tax/profiles/{user_id}/{tax_year}` body: the manual inputs of the estimate.\nAmounts are non-negative cents. `joint_with_user_id` (the spouse, another existing user) is\nonly valid with `filing_status` `mfj`. A profile describes its own user: with a linked spouse\nwho has a profile too, the two profiles are added together, so each spouse enters their own\nboxes (the estimate limits each to 2 boxes and 1 person aged 65+). A joint profile whose\nspouse has no profile of their own carries the household total.\n`age65_or_blind_count` counts the boxes checked for the additional standard deduction (age 65\nor older, blind): at most 2 per person, 4 for `mfj` (both spouses). `age65_count` is the\nnumber of people aged 65 or older (for the 2025-2028 senior deduction): at most 1, 2 for\n`mfj`, and not more than the boxes."
       },
       "TaxSettings": {
         "properties": {

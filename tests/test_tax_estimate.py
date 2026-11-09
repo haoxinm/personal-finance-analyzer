@@ -739,6 +739,65 @@ def test_both_profiles_inputs_are_summed(session: Session) -> None:
     assert est.calc.deduction_minor == (29_200 + 2 * 1_550) * D
 
 
+def test_joint_profile_without_a_spouse_profile_carries_the_household_boxes(
+    session: Session,
+) -> None:
+    """The spouse is not an app user (or has no profile): one mfj profile holds both spouses'
+    boxes, so 4 boxes and 2 seniors all count."""
+    u = make_user(session, "a")
+    _w2(session, u, 2025, 60_000, withheld=5_000)
+    add_profile(session, u, 2025, "mfj", age65_or_blind_count=4, age65_count=2)  # no linked spouse
+    est = run_tax_estimate(session, u, 2025)
+    assert est.calc.deduction_minor == (31_500 + 4 * 1_600) * D
+    assert est.calc.senior_deduction_minor == 12_000 * D
+    assert not any("counts more age 65" in w for w in est.warnings)
+
+
+def test_linked_spouse_without_a_profile_still_gets_the_household_total(session: Session) -> None:
+    a, b = _couple(session)
+    add_profile(
+        session, a, 2024, "mfj", joint_with_user_id=b, age65_or_blind_count=3, age65_count=2
+    )
+    est = run_tax_estimate(session, a, 2024)
+    assert est.calc.deduction_minor == (29_200 + 3 * 1_550) * D
+    assert not any("counts more age 65" in w for w in est.warnings)
+
+
+def test_two_linked_profiles_are_clamped_per_person_then_summed(session: Session) -> None:
+    a, b = _couple(session)
+    # A (wrongly) enters the household total; B enters their own: A is cut to 2 boxes / 1 senior
+    add_profile(
+        session, a, 2025, "mfj", joint_with_user_id=b, age65_or_blind_count=4, age65_count=2
+    )
+    add_profile(session, b, 2025, "mfj", joint_with_user_id=a, age65_or_blind_count=1)
+    _w2(session, a, 2025, 120_000, withheld=15_000)
+    _w2(session, b, 2025, 60_000, withheld=5_000)
+    est = run_tax_estimate(session, a, 2025)
+    assert est.calc.deduction_minor == (31_500 + 3 * 1_600) * D  # 2 + 1 boxes
+    assert any("counts more age 65" in w and "own boxes" in w for w in est.warnings)
+    # both spouses each at their own maximum: 2 + 2 = 4 boxes, 1 + 1 seniors, no note
+    for uid, other in ((a, b), (b, a)):
+        row = session.query(TaxProfile).filter_by(user_id=uid, tax_year=2025).one()
+        row.age65_or_blind_count, row.age65_count = 2, 1
+        row.joint_with_user_id = other
+    session.commit()
+    full = run_tax_estimate(session, b, 2025)
+    assert full.calc.deduction_minor == (31_500 + 4 * 1_600) * D
+    assert not any("counts more age 65" in w for w in full.warnings)
+    # MAGI 180,000: each person's 6,000 - 6% x 30,000 = 4,200
+    assert full.calc.senior_deduction_minor == 8_400 * D
+
+
+def test_non_joint_profile_rows_with_household_counts_are_clamped(session: Session) -> None:
+    u = make_user(session, "a")
+    _w2(session, u, 2025, 60_000, withheld=5_000)
+    add_profile(session, u, 2025, "single", age65_or_blind_count=4, age65_count=2)  # old row
+    est = run_tax_estimate(session, u, 2025)
+    assert est.calc.deduction_minor == (15_750 + 2 * 2_000) * D
+    assert est.calc.senior_deduction_minor == 6_000 * D
+    assert any("counts more age 65" in w for w in est.warnings)
+
+
 def test_conflicting_profiles_raise(session: Session) -> None:
     a, b = _couple(session)
     c = make_user(session, "c")
