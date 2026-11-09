@@ -111,16 +111,29 @@ def _resolve(module_path: str, attr: str) -> Callable[..., Any]:
 
 
 def propose_import(
-    session: Session, pdf_path: Path, *, user_id: int, original_name: str
+    session: Session,
+    pdf_path: Path,
+    *,
+    user_id: int,
+    original_name: str,
+    in_place: str | None = None,
 ) -> ImportProposal:
     """Phase 1 of A22: extract text, match the issuer, propose an extractor. Commits the
-    `statements` row; never parses transactions.
+    `statements` row; never parses transactions. ``in_place`` (folder imports): the path of a
+    file the user put in the documents folder, kept where it is.
 
     Raises:
         ModuleNotFoundError: `ingest/pipeline.py` (P2-A) is not present in this build.
     """
     fn = _resolve("personal_finance_analyzer.ingest.pipeline", "propose_import")
-    return cast(ImportProposal, fn(session, pdf_path, user_id=user_id, original_name=original_name))
+    if in_place is None:
+        return cast(
+            ImportProposal, fn(session, pdf_path, user_id=user_id, original_name=original_name)
+        )
+    return cast(
+        ImportProposal,
+        fn(session, pdf_path, user_id=user_id, original_name=original_name, in_place=in_place),
+    )
 
 
 def confirm_import(
@@ -132,13 +145,16 @@ def confirm_import(
     layout_spec_id: int | None,
     remember: bool,
     pages: Sequence[int] | None = None,
+    keep_in_place: bool = False,
 ) -> ImportResult:
     """Phase 2 of A22: parse and persist. Commits the statement and its transactions atomically.
+    ``keep_in_place`` (folder imports): the PDF stays where the user put it.
 
     Raises:
         ModuleNotFoundError: `ingest/pipeline.py` (P2-A) is not present in this build.
     """
     fn = _resolve("personal_finance_analyzer.ingest.pipeline", "confirm_import")
+    extra: dict[str, Any] = {"keep_in_place": True} if keep_in_place else {}
     return cast(
         ImportResult,
         fn(
@@ -149,6 +165,7 @@ def confirm_import(
             layout_spec_id=layout_spec_id,
             remember=remember,
             pages=pages,
+            **extra,
         ),
     )
 
@@ -297,14 +314,18 @@ def import_tax_document(
     original_name: str,
     tax_year: int | None = None,
     fallback: TaxFallbackExtractor | None = None,
+    in_place: str | None = None,
 ) -> TaxImportResult:
     """Import one W-2 / 1099 / 1040 PDF in a single step. Commits. `fallback` is the opt-in LLM
     fallback from `api.services.tax_llm.build_tax_fallback` (`None` = deterministic only).
+    ``in_place`` (folder imports): the path of a file the user put in the documents folder, kept
+    where it is.
 
     Raises:
         ModuleNotFoundError: `ingest/tax/pipeline.py` is not present in this build.
     """
     fn = _resolve("personal_finance_analyzer.ingest.tax.pipeline", "import_tax_document")
+    extra: dict[str, Any] = {"in_place": in_place} if in_place is not None else {}
     return cast(
         TaxImportResult,
         fn(
@@ -314,5 +335,6 @@ def import_tax_document(
             original_name=original_name,
             tax_year=tax_year,
             fallback=fallback,
+            **extra,
         ),
     )

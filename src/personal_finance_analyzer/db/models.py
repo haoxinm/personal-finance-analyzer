@@ -675,3 +675,51 @@ class TaxProfile(Base):
     updated_at: Mapped[str] = mapped_column(
         Text, nullable=False, default=utcnow_iso, onupdate=utcnow_iso
     )
+
+
+# --- Folder imports (`watch/`): what the background scan did with each file it found. ---
+
+WATCH_OUTCOMES: tuple[str, ...] = ("imported", "known", "failed", "ignored")
+
+
+class WatchedFile(Base):
+    """One PDF the folder scan has dealt with, keyed by its path under the documents folder.
+
+    `size_bytes` + `mtime_ns` are the file's identity for "has it changed since": a failed or
+    ignored file is not looked at again until they change (or the user presses Retry, which deletes
+    the row). `outcome`: ``imported`` (the scan imported it), ``known`` (its content was already
+    in the app: informational), ``failed`` (needs the user: `code`/`message`/`hint` say what) or
+    ``ignored`` (not in a folder the scan imports from). `message` and `hint` never hold document
+    text. `path` and `folder_person` are LOCAL ONLY.
+    """
+
+    __tablename__ = "watch_files"
+    __table_args__ = (
+        UniqueConstraint("path"),
+        Index("ix_watch_outcome_seen", "outcome", "last_seen"),
+        CheckConstraint(f"outcome IN ({_sql_in(WATCH_OUTCOMES)})", name="ck_watch_outcome"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    path: Mapped[str] = mapped_column(String, nullable=False)  # relative, "/"-separated
+    sha256: Mapped[str | None] = mapped_column(String, nullable=True)
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    mtime_ns: Mapped[int] = mapped_column(Integer, nullable=False)
+    outcome: Mapped[str] = mapped_column(String, nullable=False)
+    code: Mapped[str | None] = mapped_column(String, nullable=True)
+    message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    hint: Mapped[str | None] = mapped_column(Text, nullable=True)
+    kind: Mapped[str | None] = mapped_column(String, nullable=True)  # statement | tax
+    folder_person: Mapped[str | None] = mapped_column(String, nullable=True)
+    user_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    statement_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("statements.id", ondelete="SET NULL"), nullable=True
+    )
+    tax_document_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("tax_documents.id", ondelete="SET NULL"), nullable=True
+    )
+    warnings: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON list[str]
+    first_seen: Mapped[str] = mapped_column(Text, nullable=False, default=utcnow_iso)
+    last_seen: Mapped[str] = mapped_column(Text, nullable=False, default=utcnow_iso)

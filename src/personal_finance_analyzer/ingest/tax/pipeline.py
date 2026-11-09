@@ -45,6 +45,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from personal_finance_analyzer.config import load_settings
+from personal_finance_analyzer.core import documents as docs
 from personal_finance_analyzer.core.errors import (
     EgressViolation,
     ParserError,
@@ -117,11 +118,29 @@ def _is_staged_upload(pdf_path: Path, file_sha256: str) -> bool:
 
 
 def _finalize_copy(
-    session: Session, doc: TaxDocument, pdf_path: Path, file_sha256: str, *, keep: bool
+    session: Session,
+    doc: TaxDocument,
+    pdf_path: Path,
+    file_sha256: str,
+    *,
+    keep: bool,
+    in_place: str | None = None,
 ) -> None:
     """Apply `[privacy] store_tax_pdf_copies` once the outcome is recorded: file the PDF in the
     documents directory when kept, and remove the hash-named upload (the caller's own original
-    file is never touched). If filing fails the upload stays, so the copy is not lost."""
+    file is never touched). If filing fails the upload stays, so the copy is not lost.
+
+    ``in_place``: the PDF is a file the user put in the documents folder themselves (folder
+    imports, `watch/`). Its location is recorded whatever `store_tax_pdf_copies` says (that
+    setting decides whether the app *copies* an upload; this file is already where the user wants
+    it) and it is neither copied nor renamed. A copy the row already keeps on disk is not
+    replaced."""
+    if in_place is not None:
+        current = docs.resolve(doc.stored_path) if doc.stored_path else None
+        if current is None or not current.is_file():
+            doc.stored_path = in_place
+            session.commit()
+        return
     if keep and doc_files.file_tax_document(session, doc, pdf_path) is None:
         return
     _unstage(pdf_path, file_sha256)
@@ -393,6 +412,7 @@ def import_tax_document(
     tax_year: int | None = None,
     fallback: TaxFallbackExtractor | None = None,
     pii_terms: Sequence[str] | None = None,
+    in_place: str | None = None,
 ) -> TaxImportResult:
     """Import one tax PDF for ``user_id``. Commits; never raises for bad documents.
 
@@ -407,6 +427,9 @@ def import_tax_document(
             database write, so no network call happens inside a write transaction.
         pii_terms: the user's personal-info terms; parsers never take a match for a payer name.
             ``None`` = `[privacy] pii_terms` plus this user's aliases (`db.pii_terms`).
+        in_place: folder imports (`watch/`): the path, relative to the documents directory, of a
+            file the user put there themselves. It is recorded as the document's PDF (whatever
+            `store_tax_pdf_copies` says) and is never copied or renamed.
 
     Returns:
         A `TaxImportResult`. ``status`` is 'parsed', 'duplicate' (same file already parsed for this
@@ -432,6 +455,7 @@ def import_tax_document(
             tax_year=tax_year,
             fallback=fallback,
             pii_terms=pii_terms,
+            in_place=in_place,
         )
     except EgressViolation:
         raise
@@ -651,6 +675,7 @@ def _import(
     tax_year: int | None,
     fallback: TaxFallbackExtractor | None = None,
     pii_terms: Sequence[str] = (),
+    in_place: str | None = None,
 ) -> TaxImportResult:
     doc_row = _find_document(session, user_id, file_sha256)
     if doc_row is not None and doc_row.status == STATUS_PARSED:
@@ -659,7 +684,7 @@ def _import(
         )
         if has_forms is not None:
             # Re-import of an identical, already-parsed file is a no-op (I9 analogue).
-            _finalize_copy(session, doc_row, pdf_path, file_sha256, keep=keep)
+            _finalize_copy(session, doc_row, pdf_path, file_sha256, keep=keep, in_place=in_place)
             return _existing_summary(session, doc_row)
         # Parsed but holds no forms (they were all deduped into another document that has since
         # been deleted): the import is re-run so the figures come back.
@@ -679,6 +704,7 @@ def _import(
             message=_safe_message(exc),
             tax_year=tax_year,
             page_count=None,
+            in_place=in_place,
         )
 
     # Parse (and, when opted in, consult the LLM fallback) BEFORE anything is written: a network
@@ -716,7 +742,7 @@ def _import(
         if extracted.has_text_layer:
             message += _no_result_hint(tried=run.attempted)
         result = _failure(session, doc_row, status=status, message=message, tax_year=tax_year)
-        _finalize_copy(session, doc_row, pdf_path, file_sha256, keep=keep)
+        _finalize_copy(session, doc_row, pdf_path, file_sha256, keep=keep, in_place=in_place)
         return result
     if outcome is not None:
         doc_row.parser_id = outcome.parser_id
@@ -777,7 +803,7 @@ def _import(
         run.requests_sent,
         llm_forms,
     )
-    _finalize_copy(session, doc_row, pdf_path, file_sha256, keep=keep)
+    _finalize_copy(session, doc_row, pdf_path, file_sha256, keep=keep, in_place=in_place)
     return TaxImportResult(
         document_id=doc_row.id,
         status=STATUS_PARSED,
@@ -808,6 +834,7 @@ def _record_failure(
     message: str,
     tax_year: int | None,
     page_count: int | None,
+    in_place: str | None = None,
 ) -> TaxImportResult:
     """Record a failure that happened before extraction produced a document (unreadable PDF)."""
     if doc_row is None:
@@ -822,7 +849,7 @@ def _record_failure(
     doc_row.page_count = page_count
     session.flush()
     result = _failure(session, doc_row, status=status, message=message, tax_year=tax_year)
-    _finalize_copy(session, doc_row, pdf_path, file_sha256, keep=keep)
+    _finalize_copy(session, doc_row, pdf_path, file_sha256, keep=keep, in_place=in_place)
     return result
 
 
