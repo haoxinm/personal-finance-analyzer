@@ -12,7 +12,14 @@ from spend_analyzer.classify import cascade
 from spend_analyzer.classify.taxonomy import sync_taxonomy
 from spend_analyzer.config import LLMConfig
 from spend_analyzer.db.migrate import build_alembic_config, upgrade_head
-from spend_analyzer.db.models import Account, Issuer, Statement, Transaction, User
+from spend_analyzer.db.models import (
+    Account,
+    Classification,
+    Issuer,
+    Statement,
+    Transaction,
+    User,
+)
 from spend_analyzer.db.session import make_engine_for_path, make_session_factory
 
 _PREVIOUS = "0009_tax_profiles"
@@ -261,5 +268,202 @@ def test_a_converted_pin_keeps_the_precedence_the_pin_had(tmp_path: Path) -> Non
                 _rule(conn, "widgets", grocery, match_type="contains", priority=100)
             row = run()
             assert row.category_id == grocery[0] and row.subcategory_id == grocery[1]
+    finally:
+        engine.dispose()
+
+
+# --- rows the pins classified are not frozen as one-time edits -------------------------------------
+
+_PIN_TIME = "2026-02-01T10:00:00.000000+00:00"
+_LATER = "2026-03-15T09:30:00.000000+00:00"
+
+
+def _txn_rows(
+    engine: Engine,
+    pairs: dict[str, tuple[int, int]],
+    specs: list[tuple[str, str, str, list[tuple[str, str]]]],
+) -> list[int]:
+    """Transactions given as (merchant key, category pair name, classified_by, audit entries
+    (method, created_at) oldest first). Returns their ids."""
+    ids: list[int] = []
+    with make_session_factory(engine)() as session:
+        user = User(name="alex")
+        issuer = Issuer(name="Bank", slug="bank")
+        session.add_all([user, issuer])
+        session.flush()
+        account = Account(
+            user_id=user.id, issuer_id=issuer.id, account_type="credit", display_name="Card"
+        )
+        statement = Statement(
+            file_sha256="b" * 64, original_name="s.pdf", status="parsed", ingested_at="now"
+        )
+        session.add_all([account, statement])
+        session.flush()
+        for n, (key, pair_name, classified_by, audits) in enumerate(specs):
+            category_id, subcategory_id = pairs[pair_name]
+            txn = Transaction(
+                statement_id=statement.id,
+                account_id=account.id,
+                user_id=user.id,
+                posted_date="2026-01-05",
+                description_raw=key.upper(),
+                description_clean=key.upper(),
+                merchant_key=key,
+                amount_minor=100,
+                currency="USD",
+                kind="purchase",
+                is_spend=True,
+                dedupe_hash=f"h{n}",
+                category_id=category_id,
+                subcategory_id=subcategory_id,
+                classified_by=classified_by,
+            )
+            session.add(txn)
+            session.flush()
+            for method, created_at in audits:
+                session.add(
+                    Classification(
+                        transaction_id=txn.id,
+                        category_key="x",
+                        subcategory_key="y",
+                        confidence=1.0,
+                        method=method,
+                        created_at=created_at,
+                    )
+                )
+            ids.append(txn.id)
+        session.commit()
+    return ids
+
+
+def _classified_by(engine: Engine) -> dict[int, str]:
+    with engine.connect() as conn:
+        return {
+            row.id: row.classified_by
+            for row in conn.execute(text("SELECT id, classified_by FROM transactions"))
+        }
+
+
+def test_rows_a_pin_classified_are_unfrozen_but_real_edits_stay(tmp_path: Path) -> None:
+    url, db, engine, pairs = _seeded(tmp_path)
+    grocery = pairs["grocery/grocery_stores"]
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO merchant_map (merchant_key, merchant_canonical, category_id, "
+                "subcategory_id, source, confidence, hit_count, updated_at) "
+                "VALUES ('acme widgets', NULL, :c, :s, 'user', 1.0, 3, :t)"
+            ),
+            {"c": grocery[0], "s": grocery[1], "t": _PIN_TIME},
+        )
+    edit_audit = [("llm", "2026-01-06T00:00:00+00:00"), ("user", _PIN_TIME)]
+    ids = _txn_rows(
+        engine,
+        pairs,
+        [
+            # the correction that created the pin: audit written with it -> a real edit
+            ("acme widgets", "grocery/grocery_stores", "user", edit_audit),
+            # a later import hit the pin: an audit entry weeks after the pin -> not an edit
+            (
+                "acme widgets",
+                "grocery/grocery_stores",
+                "user",
+                [("cache", "2026-01-06T00:00:00+00:00"), ("user", _LATER)],
+            ),
+            # edited to another category than the pin's: a real edit
+            ("acme widgets", "fuel/gasoline", "user", [("user", _LATER)]),
+            # a merchant that never had a pin (a one-time edit made after pins were retired)
+            ("no pin here", "grocery/grocery_stores", "user", [("user", _LATER)]),
+            # the latest audit entry is not a user one: the row is not what it claims, leave it
+            ("acme widgets", "grocery/grocery_stores", "user", [("user", _LATER), ("llm", _LATER)]),
+            # already a rule hit: untouched
+            ("acme widgets", "grocery/grocery_stores", "user_rule", [("user_rule", _LATER)]),
+        ],
+    )
+    engine.dispose()
+
+    _rerun(url)
+
+    engine = make_engine_for_path(db)
+    try:
+        after = _classified_by(engine)
+        assert [after[i] for i in ids] == [
+            "user",  # the edit that made the pin
+            "user_rule",  # the pin hit: now follows the converted rule
+            "user",  # edited away from the pin's target
+            "user",  # no pin for this merchant
+            "user",  # latest audit entry is not a user entry
+            "user_rule",
+        ]
+    finally:
+        engine.dispose()
+    # idempotent: another pass changes nothing (the pin is gone)
+    for _ in range(2):
+        _rerun(url)
+    engine = make_engine_for_path(db)
+    try:
+        assert [_classified_by(engine)[i] for i in ids] == [after[i] for i in ids]
+    finally:
+        engine.dispose()
+
+
+def test_an_unfrozen_row_follows_new_rules_but_an_edit_does_not(tmp_path: Path) -> None:
+    """The point of the fix: after migration "Apply to existing" / re-classify reaches the rows the
+    pin classified and still skips the one-time edit."""
+    url, db, engine, pairs = _seeded(tmp_path)
+    grocery, fuel = pairs["grocery/grocery_stores"], pairs["fuel/gasoline"]
+    with engine.begin() as conn:
+        _pin(conn, "acme widgets", grocery)  # updated_at is not a timestamp: nothing is "the edit"
+    ids = _txn_rows(
+        engine,
+        pairs,
+        [
+            ("acme widgets", "grocery/grocery_stores", "user", [("user", _LATER)]),
+            ("acme widgets", "fuel/gasoline", "user", [("user", _LATER)]),  # a real edit
+        ],
+    )
+    engine.dispose()
+    _rerun(url)
+
+    engine = make_engine_for_path(db)
+    try:
+        with engine.begin() as conn:
+            _rule(conn, "acme", fuel, match_type="contains", priority=100)
+        factory = make_session_factory(engine)
+        cascade.classify_transactions(
+            factory,
+            ids,
+            cfg=LLMConfig(),
+            group_id="g",
+            progress_cb=lambda done, total, cost: None,
+        )
+        with factory() as session:
+            hit = session.get(Transaction, ids[0])
+            edit = session.get(Transaction, ids[1])
+            assert hit is not None and edit is not None
+            assert (hit.category_id, hit.subcategory_id) == fuel  # re-classified by the new rule
+            assert hit.classified_by == "user_rule"
+            assert edit.classified_by == "user"  # the edit was never touched
+    finally:
+        engine.dispose()
+
+
+def test_covered_check_is_case_and_whitespace_insensitive(tmp_path: Path) -> None:
+    url, db, engine, pairs = _seeded(tmp_path)
+    grocery, fuel = pairs["grocery/grocery_stores"], pairs["fuel/gasoline"]
+    with engine.begin() as conn:
+        _pin(conn, "Acme Widgets", grocery)
+        _rule(conn, " acme widgets ", fuel)  # matches the pin's key as the cascade compares them
+        _pin(conn, "Beta Corp", grocery)
+        _pin(conn, "beta corp", fuel)  # two pins that fold to one key: one rule is enough
+    engine.dispose()
+
+    _rerun(url)
+
+    engine = make_engine_for_path(db)
+    try:
+        patterns = [r["pattern"] for r in _user_rules(engine)]
+        assert patterns.count(" acme widgets ") == 1 and "Acme Widgets" not in patterns
+        assert len([p for p in patterns if p.casefold() == "beta corp"]) == 1
     finally:
         engine.dispose()

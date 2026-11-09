@@ -236,7 +236,9 @@ build is missing or stale).
   or a rule application never reverts something you edited afterwards. Precedence: one-time edits > your rules > built-in
   rules > issuer category and merchant cache > LLM. Older versions silently pinned a merchant on
   every single-transaction edit; on upgrade those pins become ordinary rules you can see, edit and
-  delete on the Rules screen (ranked after your other rules). The Review screen can re-run the
+  delete on the Rules screen (ranked after your other rules), and the transactions those pins had
+  classified are no longer treated as hand edits, so "Apply to existing" reaches them (an edit you made
+  by hand stays). The Review screen can re-run the
   cascade over everything uncategorized.
 - **Reconciles every import** against the statement's own printed totals (section subtotals,
   running balance, or the opening/closing balance equation, whichever the layout provides), and
