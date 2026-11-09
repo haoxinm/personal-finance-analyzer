@@ -390,6 +390,11 @@ computed once and an "allocation" block shows this user's share. Options: `--yea
 year with no bundled parameters is an error, see `tax params show`) and `--user-id` (default: the
 default user). Local only: no network.
 
+The total tax includes the net investment income tax and the Additional Medicare Tax and is never
+negative. Refundable credits, the Additional Medicare Tax an employer already withheld and the
+excess Social Security tax credit are listed under **payments**, not subtracted from the tax; for
+2025-2028 a "Senior deduction" line appears when the profile has people aged 65 or over.
+
 ### `tax params`
 
 ```console
@@ -408,10 +413,11 @@ The brackets, deductions and limits behind `tax estimate` and the 1040 split. `s
 file in effect and the state of the update check. `update` is the **only command that touches
 the network for tax data**: one plain `GET` of the project's public parameter file (no user data),
 whatever `[tax] auto_update_params` says (that setting only controls the automatic once-a-year
-check); a file is accepted only if it validates and its `params_version` is newer, and the date of
-the check is recorded. It exits 1 when the download fails or is rejected. `import FILE` validates
-your own file and makes it win over the bundled and downloaded ones; `clear` removes it. Precedence
-and the opt-in are described in
+check); the downloaded file may only add tax years the app lacks, each checked against the year before
+it (ranges, structure, year-over-year change), and the date of the check is recorded. It exits 1
+when the download fails or is rejected. `import FILE` validates your own file and lets the years it
+lists replace the bundled ones (the other years stay); `clear` removes it. Precedence and the opt-in
+are described in
 [TAX.md](TAX.md#where-the-parameters-come-from-and-the-opt-in-update).
 
 ### `tax delete`

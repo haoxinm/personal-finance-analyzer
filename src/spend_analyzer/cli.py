@@ -1116,6 +1116,7 @@ def tax_estimate_cmd(
             ("Half of self-employment tax", c.se_tax_deduction_minor),
             ("Adjusted gross income", c.agi_minor),
             (f"Deduction ({c.deduction_mode})", c.deduction_minor),
+            ("Senior deduction", c.senior_deduction_minor or None),
             ("Taxable income", c.taxable_income_minor),
             ("  of which dividends and gains", c.preferential_income_minor),
         ]
@@ -1126,10 +1127,11 @@ def tax_estimate_cmd(
             ("Income tax", c.income_tax_minor),
             ("  on ordinary income", c.ordinary_tax_minor),
             ("  on dividends and gains", c.preferential_tax_minor),
-            ("Nonrefundable credits", -c.nonrefundable_credits_minor),
+            ("Nonrefundable credits used", -c.nonrefundable_credits_minor),
             ("Self-employment tax", c.se_tax_minor),
+            ("Net investment income tax", c.net_investment_income_tax_minor or None),
+            ("Additional Medicare Tax", c.additional_medicare_tax_minor or None),
             ("Other taxes", c.other_taxes_minor),
-            ("Refundable credits", -c.refundable_credits_minor),
             ("Total tax", est.calc.total_tax_minor),
         ]
     )
@@ -1139,6 +1141,9 @@ def tax_estimate_cmd(
             ("Federal tax withheld", c.federal_withheld_minor),
             ("Estimated payments", c.estimated_payments_minor),
             ("Other payments", c.other_payments_minor),
+            ("Refundable credits", c.refundable_credits_minor),
+            ("Additional Medicare Tax withheld", c.additional_medicare_withheld_minor or None),
+            ("Excess Social Security credit", c.excess_social_security_credit_minor or None),
             ("Total payments", c.total_payments_minor),
             ("Refund" if c.result_minor >= 0 else "Amount owed", abs(c.result_minor)),
         ]

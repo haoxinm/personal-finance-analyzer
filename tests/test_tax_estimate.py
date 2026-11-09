@@ -39,11 +39,15 @@ def _calc(year: int = 2024, status: str = "single", **kw: Any) -> EstimateResult
             self_employment_minor=kw.pop("se", 0) * D,
             social_security_wages_minor=kw.pop("ss_wages", 0) * D,
             retirement_deferral_minor=kw.pop("deferral", 0) * D,
+            deferral_457b_minor=kw.pop("deferral_457b", 0) * D,
+            medicare_tax_withheld_minor=kw.pop("medicare_withheld", 0) * D,
+            social_security_tax_withheld_minor=kw.pop("ss_withheld", 0) * D,
+            social_security_employers=kw.pop("employers", 0),
         ),
     )
     fields: dict[str, Any] = {}
     for key, value in kw.items():
-        plain = key in ("deduction_mode", "aged_or_blind_count")
+        plain = key in ("deduction_mode", "aged_or_blind_count", "senior_count")
         fields[key if plain else f"{key}_minor"] = value if plain else value * D
     params = tax_calc.params_for(year)
     assert params is not None
@@ -213,16 +217,49 @@ def test_credits_taxes_and_payments() -> None:
         refundable_credits=1_000,
         other_taxes=300,
     )
-    assert r.total_tax_minor == base.total_tax_minor - 2_000 * D - 1_000 * D + 300 * D
-    assert r.total_payments_minor == 10_500 * D
+    # nonrefundable credits and other taxes change the total tax; refundable credits are payments
+    assert r.total_tax_minor == base.total_tax_minor - 2_000 * D + 300 * D
+    assert r.total_payments_minor == (9_000 + 1_000 + 500 + 1_000) * D
     assert r.result_minor == r.total_payments_minor - r.total_tax_minor
+    # the lines of the breakdown add up
+    assert (
+        r.income_tax_minor
+        - r.nonrefundable_credits_minor
+        + r.se_tax_minor
+        + r.net_investment_income_tax_minor
+        + r.additional_medicare_tax_minor
+        + r.other_taxes_minor
+        == r.total_tax_minor
+    )
+    assert (
+        r.federal_withheld_minor
+        + r.estimated_payments_minor
+        + r.other_payments_minor
+        + r.refundable_credits_minor
+        + r.additional_medicare_withheld_minor
+        + r.excess_social_security_credit_minor
+        == r.total_payments_minor
+    )
 
 
-def test_nonrefundable_credits_cannot_go_below_zero_but_refundable_can() -> None:
+def test_nonrefundable_credits_are_capped_and_the_breakdown_shows_the_cap() -> None:
     r = _calc(wages=20_000, nonrefundable_credits=50_000, refundable_credits=1_200)
     assert r.income_tax_minor == 543 * D  # 5,400 taxable: Table midpoint 5,425 x 10% = 542.50
-    assert r.total_tax_minor == -1_200 * D  # credits exceed the tax: floor at 0, then -refundable
-    assert r.result_minor == 1_200 * D
+    assert r.nonrefundable_credits_minor == 543 * D  # only what the tax can absorb
+    assert r.nonrefundable_credits_entered_minor == 50_000 * D
+    assert r.total_tax_minor == 0  # never negative
+    assert r.total_payments_minor == 1_200 * D and r.result_minor == 1_200 * D
+    assert any("Nonrefundable credits" in w for w in r.warnings)
+
+
+def test_refundable_credit_is_a_payment_not_negative_tax() -> None:
+    # 2025 single, 30,000 wages, 3,000 earned income credit: taxable 14,250, Table midpoint 14,275:
+    # 10% x 11,925 + 12% x 2,350 = 1,474.50 -> 1,475
+    r = _calc(2025, wages=30_000, refundable_credits=3_000)
+    assert r.income_tax_minor == r.total_tax_minor == 1_475 * D  # not 1,475 - 3,000
+    assert r.total_payments_minor == 3_000 * D
+    assert r.result_minor == 1_525 * D and r.refund_minor == 1_525 * D
+    assert r.effective_rate == round(1_475 / 30_000, 4)  # not a negative rate
 
 
 # --- self-employment tax -----------------------------------------------------------------------------
@@ -288,14 +325,174 @@ def test_deferral_over_the_limit_warns_per_person() -> None:
     assert len(warned) == 1 and "user 2" in warned[0]
 
 
-def test_threshold_warnings() -> None:
-    high = _calc(2024, wages=260_000, interest=10_000)
-    assert any("Additional Medicare" in w for w in high.warnings)
-    assert any("net investment income" in w for w in high.warnings)
-    low = _calc(2024, wages=100_000, interest=10_000)
-    assert not any("Additional Medicare" in w or "investment income tax" in w for w in low.warnings)
-    # the joint threshold is higher
-    assert not any("Additional Medicare" in w for w in _calc(2024, "mfj", wages=240_000).warnings)
+def test_457b_has_its_own_limit_and_the_catch_up_is_mentioned() -> None:
+    # 20,000 of 401(k) plus 20,000 of 457(b): neither is over 23,000 on its own
+    r = _calc(2024, wages=100_000, deferral=40_000, deferral_457b=20_000)
+    assert not any("deferral" in w for w in r.warnings)
+    over_457 = _calc(2024, wages=100_000, deferral=30_000, deferral_457b=30_000)
+    assert any("457(b)" in w for w in over_457.warnings)
+    assert not any("Pre-tax 401(k)" in w for w in over_457.warnings)
+    over_401 = _calc(2024, wages=100_000, deferral=25_000)
+    warning = next(w for w in over_401.warnings if "Pre-tax 401(k)" in w)
+    assert "50 or older" in warning and "AA, BB" in warning  # catch-up and Roth caveats
+
+
+# --- net investment income tax, Additional Medicare Tax, excess Social Security -------------------------
+
+
+def test_niit_single_300k_wages_and_50k_investment_income() -> None:
+    # AGI 350,000; 3.8% x min(50,000, 350,000 - 200,000) = 1,900
+    r = _calc(2024, wages=300_000, interest=50_000)
+    assert r.net_investment_income_tax_minor == 1_900 * D
+    assert r.total_tax_minor == (
+        r.income_tax_minor + r.net_investment_income_tax_minor + r.additional_medicare_tax_minor
+    )
+    assert any("Net investment income tax of $1,900" in w for w in r.warnings)
+
+
+def test_niit_is_limited_by_the_excess_over_the_threshold_and_needs_investment_income() -> None:
+    # AGI 210,000: only 10,000 is above the threshold, though 50,000 is investment income
+    assert _calc(2024, wages=160_000, interest=50_000).net_investment_income_tax_minor == 380 * D
+    assert _calc(2024, wages=500_000).net_investment_income_tax_minor == 0
+    assert _calc(2024, wages=100_000, interest=10_000).net_investment_income_tax_minor == 0
+    # a joint return has the higher 250,000 threshold; a net capital loss lowers the base
+    assert _calc(2024, "mfj", wages=240_000, interest=5_000).net_investment_income_tax_minor == 0
+    loss = _calc(2024, wages=300_000, interest=1_000, long_term_gain=-10_000)
+    assert loss.net_investment_income_tax_minor == 0  # 1,000 - 3,000 limited loss -> below zero
+
+
+def test_additional_medicare_tax_mfj_two_180k_earners() -> None:
+    # neither employer withholds the extra 0.9% (each is under 200,000), but together they are
+    # 110,000 over the 250,000 joint threshold: 0.9% x 110,000 = 990 owed
+    couple = tuple(
+        PersonInputs(i, 180_000 * D, 0, 180_000 * D, medicare_tax_withheld_minor=261_000)
+        for i in (1, 2)
+    )
+    r = _calc(2024, "mfj", persons=couple)
+    assert r.additional_medicare_tax_minor == 990 * D
+    assert r.additional_medicare_withheld_minor == 0
+    assert r.total_tax_minor == r.income_tax_minor + 990 * D
+    assert r.total_payments_minor == 0 and r.result_minor == -r.total_tax_minor
+
+
+def test_additional_medicare_withheld_is_a_payment_not_a_discount() -> None:
+    # single, 260,000 wages: owed 0.9% x 60,000 = 540; the employer withheld the same 540 on top of
+    # 1.45% x 260,000 = 3,770 (box 6 = 4,310)
+    with_box6 = _calc(2024, wages=260_000, federal_withheld=50_000, medicare_withheld=4_310)
+    assert with_box6.additional_medicare_tax_minor == 540 * D
+    assert with_box6.additional_medicare_withheld_minor == 540 * D
+    no_box6 = _calc(2024, wages=260_000, federal_withheld=50_000)
+    assert no_box6.additional_medicare_withheld_minor == 0
+    # the tax is the same; only the withheld part moves into payments
+    assert with_box6.total_tax_minor == no_box6.total_tax_minor
+    assert with_box6.result_minor == no_box6.result_minor + 540 * D
+    # a plain 1.45% box 6 contains none of it (and rounding noise under $1 is ignored)
+    plain = _calc(2024, wages=100_000, medicare_withheld=1_450)
+    assert plain.additional_medicare_withheld_minor == 0
+
+
+def test_additional_medicare_tax_on_self_employment_uses_what_the_wages_left_unused() -> None:
+    # wages 150,000 leave 50,000 of the 200,000 single threshold; SE net earnings
+    # 92.35% x 100,000 = 92,350 -> 42,350 above it: 0.9% x 42,350 = 381.15
+    r = _calc(2024, wages=150_000, se=100_000)
+    assert r.additional_medicare_tax_minor == 38_115
+    assert _calc(2024, se=100_000).additional_medicare_tax_minor == 0  # under the threshold
+
+
+def test_additional_medicare_tax_threshold_for_married_filing_separately() -> None:
+    r = _calc(2024, "mfs", wages=150_000)  # threshold 125,000: 0.9% x 25,000 = 225
+    assert r.additional_medicare_tax_minor == 225 * D
+
+
+def test_excess_social_security_two_employers_2025() -> None:
+    # two employers paying 120,000 each: 2 x 7,440 = 14,880 withheld; the 2025 maximum is
+    # 6.2% x 176,100 = 10,918.20, so 3,961.80 comes back as a credit (Schedule 3 line 11)
+    r = _calc(
+        2025,
+        wages=240_000,
+        federal_withheld=40_000,
+        ss_withheld=14_880,
+        ss_wages=240_000,
+        employers=2,
+    )
+    assert r.excess_social_security_credit_minor == 396_180
+    assert r.total_payments_minor == 40_000 * D + 396_180
+    assert any("above the annual maximum" in w for w in r.warnings)
+
+
+def test_no_excess_social_security_credit_for_one_employer_or_split_spouses() -> None:
+    # a single employer that over-withheld must refund it itself
+    one = _calc(2025, wages=200_000, ss_withheld=12_400, ss_wages=200_000, employers=1)
+    assert one.excess_social_security_credit_minor == 0
+    # spouses are each their own person: neither exceeds the maximum on their own
+    spouses = tuple(
+        PersonInputs(
+            i,
+            120_000 * D,
+            0,
+            120_000 * D,
+            social_security_tax_withheld_minor=744_000,
+            social_security_employers=1,
+        )
+        for i in (1, 2)
+    )
+    assert _calc(2025, "mfj", persons=spouses).excess_social_security_credit_minor == 0
+    # at or below the maximum with two employers: nothing
+    exact = _calc(2025, wages=170_000, ss_withheld=10_540, ss_wages=170_000, employers=2)
+    assert exact.excess_social_security_credit_minor == 0
+
+
+# --- senior deduction, age 65 / blind boxes ------------------------------------------------------------
+
+
+def test_senior_deduction_2025_for_one_person() -> None:
+    # single, 70 years old (one age box), 60,000 wages: standard 15,750 + 2,000, senior 6,000
+    r = _calc(2025, wages=60_000, aged_or_blind_count=1, senior_count=1)
+    assert r.deduction_minor == 17_750 * D and r.senior_deduction_minor == 6_000 * D
+    assert r.taxable_income_minor == 36_250 * D
+    twin = _calc(2025, wages=60_000, adjustments=6_000, aged_or_blind_count=1)
+    assert r.income_tax_minor == twin.income_tax_minor  # same taxable income
+
+
+def test_senior_deduction_phases_out_at_six_percent_over_75k() -> None:
+    # MAGI 95,000: 6% x 20,000 = 1,200 -> 4,800
+    r = _calc(2025, wages=95_000, senior_count=1)
+    assert r.senior_deduction_minor == 4_800 * D
+    # MFJ, both 65+, MAGI 170,000: 12,000 - 6% x 20,000 = 10,800
+    j = _calc(2025, "mfj", wages=170_000, senior_count=2)
+    assert j.senior_deduction_minor == 10_800 * D
+    assert (
+        _calc(2025, wages=175_000, senior_count=1).senior_deduction_minor == 0
+    )  # fully phased out
+
+
+def test_senior_deduction_applies_to_itemizers_too_and_only_2025_to_2028() -> None:
+    item = _calc(
+        2025, wages=60_000, deduction_mode="itemized", itemized_deductions=20_000, senior_count=1
+    )
+    assert item.deduction_minor == 20_000 * D and item.senior_deduction_minor == 6_000 * D
+    assert _calc(2024, wages=60_000, senior_count=1).senior_deduction_minor == 0  # not yet law
+    assert _calc(2026, wages=60_000, senior_count=1).senior_deduction_minor == 6_000 * D
+
+
+def test_senior_deduction_is_not_available_when_married_filing_separately() -> None:
+    r = _calc(2025, "mfs", wages=60_000, senior_count=1)
+    assert r.senior_deduction_minor == 0
+    assert any("married persons filing separately" in w for w in r.warnings)
+
+
+def test_aged_blind_boxes_are_capped_by_filing_status() -> None:
+    single = _calc(2025, wages=60_000, aged_or_blind_count=4)
+    assert single.deduction_minor == (15_750 + 2 * 2_000) * D
+    assert any("at most 2" in w for w in single.warnings)
+    joint = _calc(2025, "mfj", wages=60_000, aged_or_blind_count=4)
+    assert joint.deduction_minor == (31_500 + 4 * 1_600) * D
+    assert not any("at most" in w for w in joint.warnings)
+
+
+def test_tips_overtime_and_car_loan_interest_are_listed_as_not_modeled() -> None:
+    text = " ".join(NOT_MODELED)
+    assert "tips" in text and "overtime" in text and "car loan" in text and "Schedule 1-A" in text
 
 
 # --- from stored forms ---------------------------------------------------------------------------------

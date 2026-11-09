@@ -836,6 +836,7 @@ def _profile_out(row: TaxProfile) -> schemas.TaxProfile:
         deduction_mode=row.deduction_mode,
         itemized_deductions_minor=row.itemized_deductions_minor,
         age65_or_blind_count=row.age65_or_blind_count,
+        age65_count=row.age65_count,
         adjustments_minor=row.adjustments_minor,
         other_income_minor=row.other_income_minor,
         capital_loss_carryover_minor=row.capital_loss_carryover_minor,
@@ -945,6 +946,7 @@ def _estimate_out(e: tax_estimate.UserEstimate, profile: TaxProfile | None) -> s
             result_minor=e.user_result_minor,
             refund_minor=max(e.user_result_minor, 0),
             owed_minor=max(-e.user_result_minor, 0),
+            additional_medicare_withheld_minor=e.user_additional_medicare_withheld_minor,
         ),
         cross_check=(
             None
@@ -1012,6 +1014,9 @@ def _parameters(settings: Settings) -> schemas.TaxParameters:
                 elective_deferral_limit_minor=p.elective_deferral_limit_minor,
                 niit_threshold_minor=dict(p.niit_threshold_minor),
                 additional_medicare_threshold_minor=dict(p.additional_medicare_threshold_minor),
+                senior_deduction_minor=p.senior_deduction_minor,
+                senior_phaseout_rate_bp=p.senior_phaseout_rate_bp,
+                senior_phaseout_threshold_minor=dict(p.senior_phaseout_threshold_minor),
             )
             for _year, p in sorted(current.years.items())
             if tax_calc.params_for(p.tax_year) is not None

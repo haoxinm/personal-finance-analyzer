@@ -636,6 +636,7 @@ class TaxProfile(Base):
             "deduction_mode IN ('standard','itemized')", name="ck_taxprofile_deduction_mode"
         ),
         CheckConstraint("age65_or_blind_count BETWEEN 0 AND 4", name="ck_taxprofile_aged_blind"),
+        CheckConstraint("age65_count BETWEEN 0 AND 2", name="ck_taxprofile_age65"),
         CheckConstraint("tax_year BETWEEN 1990 AND 2100", name="ck_taxprofile_year"),
         CheckConstraint(
             " AND ".join(f"{c} >= 0" for c in _PROFILE_AMOUNTS), name="ck_taxprofile_nonneg"
@@ -655,7 +656,12 @@ class TaxProfile(Base):
         String, nullable=False, default="standard", server_default=text("'standard'")
     )
     itemized_deductions_minor: Mapped[int] = _amount_column()
+    #: Boxes checked for the additional standard deduction (age 65+ and blind, per person).
     age65_or_blind_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    #: Of those, how many are people aged 65 or over (the 2025-2028 senior deduction).
+    age65_count: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0, server_default=text("0")
     )
     adjustments_minor: Mapped[int] = _amount_column()

@@ -33,6 +33,7 @@ def add_form(
     account: str | None = None,
     corrected: bool = False,
     filing_status: str | None = None,
+    income_boxes: dict[str, str] | None = None,
 ) -> TaxForm:
     """One form with its items. Income categories that are memo categories are stored as such."""
     n = next(_seq)
@@ -69,6 +70,7 @@ def add_form(
                 category=category,
                 amount_minor=amount,
                 source_form=form_type.upper(),
+                box=(income_boxes or {}).get(category),
                 is_memo=category in ("retirement_deferral", "hsa_employer", "qualified_dividends"),
             )
         )

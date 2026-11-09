@@ -13,6 +13,7 @@ from spend_analyzer.api.services import tax_params_update as upd
 from spend_analyzer.cli import app
 from spend_analyzer.core import tax_params
 from tests.ingest.tax_support import generated_pdf
+from tests.tax_params_support import with_next_year
 
 runner = CliRunner()
 
@@ -68,12 +69,11 @@ def test_params_show(migrated: Path) -> None:
 def test_params_update_runs_one_check_and_reports(
     migrated: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    raw = yaml.safe_load(_bundled_text())
-    raw["params_version"] = tax_params.load_bundled().version + 1
+    raw = with_next_year(tax_params.load_bundled().version + 1)
     monkeypatch.setattr(upd, "fetch_text", lambda url: yaml.safe_dump(raw))
     result = runner.invoke(app, ["tax", "params", "update"])
     assert result.exit_code == 0, result.output
-    assert "updated: Updated to parameter version" in result.output
+    assert "updated: Added tax year(s) 2027." in result.output
     assert "(cached)" in result.output and "(updated)" in result.output
 
     def down(url: str) -> str:

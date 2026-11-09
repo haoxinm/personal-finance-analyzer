@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from spend_analyzer.api.services import tax_params_update as upd
 from spend_analyzer.core import tax_params
 from tests.analytics.tax_seed import add_form
+from tests.tax_params_support import with_next_year
 
 D = 100
 
@@ -71,6 +72,12 @@ def test_profile_validation(client: TestClient) -> None:
         {"filing_status": "single", "deduction_mode": "maybe"},
         {"filing_status": "single", "adjustments_minor": -1},
         {"filing_status": "single", "age65_or_blind_count": 5},
+        {"filing_status": "single", "age65_or_blind_count": 3},  # one person: at most 2 boxes
+        {"filing_status": "hoh", "age65_or_blind_count": 3},
+        {"filing_status": "mfj", "age65_or_blind_count": 5},
+        {"filing_status": "single", "age65_count": 2, "age65_or_blind_count": 2},
+        {"filing_status": "mfj", "age65_count": 3, "age65_or_blind_count": 4},
+        {"filing_status": "single", "age65_count": 1, "age65_or_blind_count": 0},
         {"filing_status": "single", "other_income_minor": 10**13},
         {"filing_status": "single", "other_income_minor": 1.5},
         {},
@@ -168,7 +175,18 @@ def test_estimate_response_shape_and_figures(client: TestClient, session: Sessio
         "result_minor": 553 * D,
         "refund_minor": 553 * D,
         "owed_minor": 0,
+        "additional_medicare_withheld_minor": 0,
     }
+    for field in (
+        "senior_deduction_minor",
+        "net_investment_income_tax_minor",
+        "additional_medicare_tax_minor",
+        "additional_medicare_withheld_minor",
+        "excess_social_security_credit_minor",
+        "nonrefundable_credits_entered_minor",
+        "refundable_credits_minor",
+    ):
+        assert calc[field] == 0, field
     assert body["cross_check"] is None and body["profile"] is None
     assert body["parameters"]["tax_year"] == 2024 and body["parameters"]["source"] == "bundled"
     assert body["parameters"]["sources"] == ["Rev. Proc. 2023-34 (sections 3.01, 3.03, 3.15)"]
@@ -311,16 +329,24 @@ def test_parameters_endpoint(client: TestClient) -> None:
     y2025 = next(y for y in body["years"] if y["tax_year"] == 2025)
     assert y2025["standard_deduction_minor"]["single"] == 15_750 * D
     assert y2025["standard_deduction_minor"]["hoh"] == 23_625 * D
-    assert y2025["sources"] and all("Rev. Proc." in s for s in y2025["sources"])
+    assert y2025["sources"] and any("Rev. Proc." in s for s in y2025["sources"])
     assert y2025["ss_wage_base_minor"] == 176_100 * D
+    assert y2025["senior_deduction_minor"] == 6_000 * D and y2025["senior_phaseout_rate_bp"] == 600
+    assert y2025["senior_phaseout_threshold_minor"] == {
+        "single": 75_000 * D,
+        "mfj": 150_000 * D,
+        "hoh": 75_000 * D,
+        "qss": 75_000 * D,
+    }
+    y2024 = next(y for y in body["years"] if y["tax_year"] == 2024)
+    assert y2024["senior_deduction_minor"] == 0 and y2024["senior_phaseout_threshold_minor"] == {}
 
 
 def test_refresh_endpoint_runs_one_check_with_the_opt_in_off(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    raw = yaml.safe_load(_bundled_text())
-    raw["params_version"] = tax_params.load_bundled().version + 1
-    raw["years"][2026]["ss_wage_base"] = 190_000
+    raw = with_next_year(tax_params.load_bundled().version + 1)
+    raw["years"][2027]["ss_wage_base"] = 190_000
     calls: list[str] = []
 
     def fake(url: str) -> str:
@@ -335,8 +361,10 @@ def test_refresh_endpoint_runs_one_check_with_the_opt_in_off(
     assert body["parameters"]["source"] == "cached"
     assert body["parameters"]["last_check_outcome"] == "updated"
     assert body["parameters"]["last_checked"] is not None
-    y2026 = next(y for y in body["parameters"]["years"] if y["tax_year"] == 2026)
-    assert y2026["ss_wage_base_minor"] == 190_000 * D
+    years = [y["tax_year"] for y in body["parameters"]["years"]]
+    assert years == [2022, 2023, 2024, 2025, 2026, 2027]  # a download only adds years
+    y2027 = next(y for y in body["parameters"]["years"] if y["tax_year"] == 2027)
+    assert y2027["ss_wage_base_minor"] == 190_000 * D
     # a second explicit check is allowed (and finds nothing newer)
     assert client.post("/api/tax/parameters/refresh").json()["outcome"] == "current"
     assert len(calls) == 2
@@ -400,3 +428,21 @@ def test_the_yearly_check_is_triggered_lazily_when_enabled(
     client.get("/api/tax/estimate", params={"user_id": uid, "tax_year": 2024})
     client.get("/api/tax/summary")
     assert len(started) == 2
+
+
+def test_profile_age_boxes_drive_the_senior_deduction(client: TestClient, session: Session) -> None:
+    uid = _user(client)
+    _seed_w2(session, uid, 60_000, 5_000, year=2025)
+    r = client.put(
+        f"/api/tax/profiles/{uid}/2025", json=_profile(age65_or_blind_count=1, age65_count=1)
+    )
+    assert r.status_code == 201 and r.json()["age65_count"] == 1
+    calc = client.get("/api/tax/estimate", params={"user_id": uid, "tax_year": 2025}).json()["calc"]
+    assert calc["senior_deduction_minor"] == 6_000 * D
+    assert calc["deduction_minor"] == (15_750 + 2_000) * D
+    assert calc["taxable_income_minor"] == (60_000 - 17_750 - 6_000) * D
+    ok_joint = client.put(
+        f"/api/tax/profiles/{uid}/2024",
+        json=_profile(filing_status="mfj", age65_or_blind_count=4, age65_count=2),
+    )
+    assert ok_joint.status_code == 201

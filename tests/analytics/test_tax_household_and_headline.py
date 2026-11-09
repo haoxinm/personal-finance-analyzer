@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from sqlalchemy.orm import Session
 
+from spend_analyzer.analytics.tax_estimate import run_tax_estimate
 from spend_analyzer.analytics.tax_query import (
     TaxQuery,
     run_income_by_payer,
@@ -182,7 +183,7 @@ def test_headline_from_the_return_counts_additional_medicare_once(session: Sessi
         income={"salary_wages": 300_000 * D},
         taxes={
             "federal_income_tax_withheld": 60_000 * D,
-            "medicare_tax": 5_000 * D,
+            "medicare_tax": 5_250 * D,  # 1.45% x 300,000 + the 0.9% on the 100,000 over 200,000
             "social_security_tax": 10_000 * D,
         },
         tin="0001",
@@ -199,19 +200,19 @@ def test_headline_from_the_return_counts_additional_medicare_once(session: Sessi
     assert h is not None
     assert h.federal_basis == "return"
     assert h.federal_minor == (70_000 - 900) * D  # 0.9% is already inside the W-2 Medicare tax
-    assert h.fica_minor == 15_000 * D
+    assert h.fica_minor == 15_250 * D
     assert h.total_minor == h.federal_minor + h.fica_minor + h.state_minor
 
 
-def test_headline_additional_medicare_is_capped_by_the_w2_medicare_tax(session: Session) -> None:
+def _wages_and_return(session: Session, medicare_tax: int) -> None:
     a = make_user(session, "a")
     add_form(
         session,
         a,
         Y,
         "w2",
-        income={"salary_wages": 1 * D},
-        taxes={"medicare_tax": 100 * D},
+        income={"salary_wages": 300_000 * D},
+        taxes={"medicare_tax": medicare_tax},
         tin="0001",
     )
     add_form(
@@ -219,11 +220,47 @@ def test_headline_additional_medicare_is_capped_by_the_w2_medicare_tax(session: 
         a,
         Y,
         "1040",
-        taxes={"total_federal_tax": 5_000 * D, "additional_medicare_tax": 900 * D},
+        taxes={"total_federal_tax": 70_000 * D, "additional_medicare_tax": 900 * D},
         filing_status="single",
     )
+
+
+def test_headline_subtracts_nothing_when_no_additional_medicare_was_withheld(
+    session: Session,
+) -> None:
+    # box 6 is exactly 1.45% of the wages: the employer withheld none of the 900 the return
+    # reports, so it is not inside FICA and must stay in the federal figure
+    _wages_and_return(session, 4_350 * D)
     h = _all(session).headline
-    assert h is not None and h.federal_minor == (5_000 - 100) * D
+    assert h is not None and h.federal_minor == 70_000 * D and h.fica_minor == 4_350 * D
+
+
+def test_headline_subtracts_only_the_part_that_was_withheld(session: Session) -> None:
+    _wages_and_return(session, (4_350 + 450) * D)  # 450 of the 900 was withheld
+    h = _all(session).headline
+    assert h is not None and h.federal_minor == (70_000 - 450) * D
+
+
+def test_headline_estimate_counts_additional_medicare_withheld_once(session: Session) -> None:
+    a = make_user(session, "a")
+    add_form(
+        session,
+        a,
+        Y,
+        "w2",
+        income={"salary_wages": 260_000 * D},
+        taxes={
+            "federal_income_tax_withheld": 50_000 * D,
+            "medicare_tax": 4_310 * D,  # 1.45% x 260,000 + 0.9% x 60,000
+        },
+        tin="0001",
+    )
+    est = run_tax_estimate(session, a, Y)
+    assert est.calc.additional_medicare_tax_minor == 540 * D
+    h = _all(session).headline
+    assert h is not None and h.federal_basis == "estimate"
+    assert h.federal_minor == est.calc.total_tax_minor - 540 * D  # the 540 is already in FICA
+    assert h.fica_minor == 4_310 * D
 
 
 def test_headline_prefers_the_estimate_over_withholding_without_a_return(session: Session) -> None:
@@ -411,3 +448,207 @@ def test_superseded_forms_leave_the_estimate_and_the_payer_list(session: Session
     assert len(figs.superseded) == 1
     rows = run_income_by_payer(session, TaxQuery())
     assert [r.amount_minor for r in rows] == [52_000 * D]
+
+
+def test_several_corrections_use_import_order_and_say_so(session: Session) -> None:
+    # No issue date is stored with a document, so the correction imported last wins, and the user
+    # is told that this rests on import order rather than on a date.
+    a = make_user(session, "a")
+    _w2(session, a, 50_000)
+    c1 = _w2(session, a, 52_000, corrected=True)
+    c2 = _w2(session, a, 53_000, corrected=True)
+    s = _all(session)
+    assert s.total_income_minor == 53_000 * D
+    flagged = {f.form_id: f.was_corrected for f in s.superseded}
+    assert flagged[c1.id] is True and sum(flagged.values()) == 1  # only c1 was itself a correction
+    chain = [w for w in s.warnings if "More than one corrected form" in w]
+    assert len(chain) == 1 and f"#{c2.id}" in chain[0] and "No issue date" in chain[0]
+    est = run_tax_estimate(session, a, Y)
+    assert any("More than one corrected form" in w for w in est.warnings)
+
+
+def test_a_single_correction_has_no_import_order_warning(session: Session) -> None:
+    a = make_user(session, "a")
+    _w2(session, a, 50_000)
+    _w2(session, a, 52_000, corrected=True)
+    s = _all(session)
+    assert not any("More than one corrected form" in w for w in s.warnings)
+    assert [f.was_corrected for f in s.superseded] == [False]
+
+
+# --- S4: figures the estimate needs from the stored W-2s ----------------------------------------------
+
+
+def _w2_full(session: Session, user: int, year: int, wages: int, *, tin: str, **taxes: int) -> None:
+    add_form(
+        session,
+        user,
+        year,
+        "w2",
+        income={"salary_wages": wages * D},
+        taxes={k: v * D for k, v in taxes.items()},
+        tin=tin,
+    )
+
+
+def test_two_employers_produce_the_excess_social_security_credit(session: Session) -> None:
+    a = make_user(session, "a")
+    _w2_full(
+        session,
+        a,
+        2025,
+        120_000,
+        tin="1111",
+        social_security_tax=7_440,
+        federal_income_tax_withheld=15_000,
+    )
+    _w2_full(
+        session,
+        a,
+        2025,
+        120_000,
+        tin="2222",
+        social_security_tax=7_440,
+        federal_income_tax_withheld=15_000,
+    )
+    figs = source_figures(session, a, 2025)
+    assert figs.social_security_employers == 2
+    est = run_tax_estimate(session, a, 2025)
+    assert est.calc.excess_social_security_credit_minor == 396_180  # 14,880 - 10,918.20
+    assert est.user_payments_minor == 30_000 * D + 396_180
+
+
+def test_one_employer_is_not_an_excess_credit_even_with_two_w2s(session: Session) -> None:
+    a = make_user(session, "a")
+    _w2_full(session, a, 2025, 190_000, tin="1111", social_security_tax=11_780)
+    assert source_figures(session, a, 2025).social_security_employers == 1
+    assert run_tax_estimate(session, a, 2025).calc.excess_social_security_credit_minor == 0
+    # a second W-2 with the same employer identifier is still one employer
+    _w2_full(session, a, 2025, 10_000, tin="1111", social_security_tax=620)
+    assert source_figures(session, a, 2025).social_security_employers == 1
+    assert run_tax_estimate(session, a, 2025).calc.excess_social_security_credit_minor == 0
+
+
+def test_spouses_each_with_one_employer_get_no_excess_credit(session: Session) -> None:
+    a, b = make_user(session, "a"), make_user(session, "b")
+    add_profile(session, a, 2025, "mfj", joint_with_user_id=b)
+    _w2_full(session, a, 2025, 120_000, tin="1111", social_security_tax=7_440)
+    _w2_full(session, b, 2025, 120_000, tin="2222", social_security_tax=7_440)
+    est = run_tax_estimate(session, a, 2025)
+    assert est.calc.excess_social_security_credit_minor == 0
+
+
+def test_additional_medicare_from_stored_w2s_in_a_joint_household(session: Session) -> None:
+    a, b = make_user(session, "a"), make_user(session, "b")
+    add_profile(session, a, 2024, "mfj", joint_with_user_id=b)
+    for user, tin in ((a, "1111"), (b, "2222")):
+        _w2_full(
+            session,
+            user,
+            2024,
+            180_000,
+            tin=tin,
+            medicare_tax=2_610,
+            federal_income_tax_withheld=30_000,
+        )
+    ea, eb = run_tax_estimate(session, a, 2024), run_tax_estimate(session, b, 2024)
+    assert ea.calc.additional_medicare_tax_minor == 990 * D
+    assert ea.calc.additional_medicare_withheld_minor == 0
+    assert ea.user_additional_medicare_withheld_minor == 0
+    assert ea.user_total_tax_minor + eb.user_total_tax_minor == ea.calc.total_tax_minor
+    assert ea.user_result_minor + eb.user_result_minor == ea.calc.result_minor
+
+
+def test_user_payments_include_refundable_credit_and_withheld_additional_medicare(
+    session: Session,
+) -> None:
+    a = make_user(session, "a")
+    add_profile(session, a, 2024, "single", refundable_credits_minor=1_000 * D)
+    _w2_full(
+        session,
+        a,
+        2024,
+        260_000,
+        tin="1111",
+        medicare_tax=4_310,
+        federal_income_tax_withheld=50_000,
+    )
+    est = run_tax_estimate(session, a, 2024)
+    assert est.user_additional_medicare_withheld_minor == 540 * D
+    assert est.user_payments_minor == (50_000 + 1_000 + 540) * D
+    assert est.user_payments_minor == est.calc.total_payments_minor
+    assert est.user_result_minor == est.calc.result_minor
+
+
+def test_457b_deferrals_are_read_from_box_12_code_g(session: Session) -> None:
+    a = make_user(session, "a")
+    add_form(
+        session,
+        a,
+        2024,
+        "w2",
+        income={"salary_wages": 100_000 * D, "retirement_deferral": 20_000 * D},
+        tin="1111",
+        income_boxes={"retirement_deferral": "12-G"},
+    )
+    figs = source_figures(session, a, 2024)
+    assert figs.deferral_457b_minor == 20_000 * D
+    assert figs.income["retirement_deferral"] == 20_000 * D
+    other = make_user(session, "b")
+    add_form(
+        session,
+        other,
+        2024,
+        "w2",
+        income={"salary_wages": 1 * D, "retirement_deferral": 5 * D},
+        tin="1111",
+        income_boxes={"retirement_deferral": "12-D"},
+    )
+    assert source_figures(session, other, 2024).deferral_457b_minor == 0
+
+
+def test_both_spouses_itemizing_is_summed_and_said_so(session: Session) -> None:
+    a, b = make_user(session, "a"), make_user(session, "b")
+    add_profile(
+        session,
+        a,
+        2024,
+        "mfj",
+        joint_with_user_id=b,
+        deduction_mode="itemized",
+        itemized_deductions_minor=20_000 * D,
+    )
+    pb = add_profile(
+        session,
+        b,
+        2024,
+        "mfj",
+        joint_with_user_id=a,
+        deduction_mode="itemized",
+        itemized_deductions_minor=15_000 * D,
+    )
+    _w2_full(session, a, 2024, 200_000, tin="1111")
+    est = run_tax_estimate(session, a, 2024)
+    assert est.calc.deduction_minor == 35_000 * D
+    assert any("Both spouses entered itemized deductions" in w for w in est.warnings)
+    # entering the household total once, on one profile, does not warn
+    pb.itemized_deductions_minor = 0
+    session.flush()
+    again = run_tax_estimate(session, a, 2024)
+    assert again.calc.deduction_minor == 20_000 * D
+    assert not any("Both spouses entered itemized" in w for w in again.warnings)
+
+
+def test_senior_deduction_for_a_household_sums_both_profiles(session: Session) -> None:
+    a, b = make_user(session, "a"), make_user(session, "b")
+    add_profile(
+        session, a, 2025, "mfj", joint_with_user_id=b, age65_or_blind_count=1, age65_count=1
+    )
+    add_profile(
+        session, b, 2025, "mfj", joint_with_user_id=a, age65_or_blind_count=1, age65_count=1
+    )
+    _w2_full(session, a, 2025, 100_000, tin="1111")
+    est = run_tax_estimate(session, a, 2025)
+    assert est.calc.senior_deduction_minor == 12_000 * D
+    assert est.calc.deduction_minor == (31_500 + 2 * 1_600) * D
+    assert est.calc.taxable_income_minor == (100_000 - 34_700 - 12_000) * D

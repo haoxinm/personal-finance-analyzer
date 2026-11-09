@@ -63,8 +63,9 @@ This is the reason to run this instead of a hosted budgeting app, so it comes fi
   estimate or summary you open in a calendar year makes **one plain HTTPS `GET`** of a single
   public file, `federal_params.yaml`, from this project's GitHub repository
   (`raw.githubusercontent.com/haoxinm/spending-analysis-from-bills/main/src/spend_analyzer/core/tax_data/federal_params.yaml`)
-  and keeps a validated copy in your data directory; the date is stored so it is not asked again
-  that year, whatever the outcome. The request has no query string, cookies, credentials or proxy
+  and keeps a validated copy in your data directory, but only to ADD a tax year the app does not
+  ship yet (each checked against the previous year); the figures of years the app ships are never
+  replaced. The date is stored so it is not asked again that year, whatever the outcome. The request has no query string, cookies, credentials or proxy
   settings and carries none of your data (not your tax figures, not the installed version); GitHub
   sees your IP address like for any download. It never blocks the page and a network error is
   ignored. `spend-analyzer tax params update` (or the Check for updates button) does the same on

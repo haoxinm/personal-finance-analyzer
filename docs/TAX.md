@@ -235,23 +235,29 @@ the federal tax withheld. "State tax" is the return's state liability when prese
 state tax withheld. Local tax is local withholding. The all-in rate therefore mixes final and
 withheld figures when you have only part of the paperwork, so read the warnings under the numbers.
 
-**Additional Medicare Tax is counted once.** Employers withhold the 0.9% Additional Medicare Tax
-inside W-2 box 6, so the Medicare figure from your W-2s already contains it, and the return's total
-tax contains it again (Schedule 2 line 11). With a return, the all-in rate therefore uses
+**Additional Medicare Tax is counted once.** An employer withholds the 0.9% Additional Medicare Tax
+inside W-2 box 6 only on wages over $200,000, so the Medicare figure from your W-2s contains it
+only when it was actually withheld, and the return's total tax contains it again (Schedule 2
+line 11). With a return, the all-in rate therefore uses
 
 ```text
-all-in = (total federal tax - min(additional Medicare Tax, W-2 Medicare tax)
-          + state tax + local withholding + Social Security + Medicare) / total income
+withheld = max(W-2 box 6 - 1.45% x Medicare wages, 0)
+all-in   = (total federal tax - min(additional Medicare Tax, withheld)
+            + state tax + local withholding + Social Security + Medicare) / total income
 ```
 
-If no W-2 Medicare figure was imported, nothing is subtracted (the Additional Medicare Tax would
-otherwise vanish from the rate).
+Medicare wages (W-2 box 5) are not stored; they are approximated as box 1 wages plus the box 12
+elective deferrals (which box 1 excludes and box 5 includes). If the employer withheld none (box 6
+is exactly 1.45% of wages), nothing is subtracted: the Additional Medicare Tax owed on the return
+is then not inside the Medicare figure and stays in the federal tax. If no W-2 Medicare figure was
+imported, nothing is subtracted either.
 
 **Headline tax.** `GET /api/tax/summary` also returns `headline`: `federal_minor`, `federal_basis`,
 `fica_minor`, `state_minor` and `total_minor`, so a UI does not have to repeat the logic above. The
 federal figure is the return's total tax less the Additional Medicare Tax already inside the W-2
-Medicare figure (`federal_basis` `return`); with no return, the [estimate](#per-user-estimate)
-(`estimate`) when parameters exist for the year, else the federal tax withheld (`withholding`);
+Medicare figure (`federal_basis` `return`); with no return, the [estimate](#per-user-estimate)'s
+total tax, likewise less the Additional Medicare Tax withheld (`estimate`) when parameters exist
+for the year, else the federal tax withheld (`withholding`);
 `mixed` in an all-users view whose users differ. FICA is the Social Security and Medicare tax on
 the source forms, and the state figure the state liability when printed, else state and local
 withholding.
@@ -338,7 +344,12 @@ same payer identifier last four and the same account last four (at least one of 
 present, so unrelated manual forms never match). The replaced original is left in the database
 (and in `tax list`) but is not counted in any total, summary, payer list or estimate; the year's
 warnings say how many forms were replaced and which documents, and `superseded_forms` in the summary
-API lists them. Import order does not matter, and a second correction replaces the first.
+API lists them. Import order does not matter between an original and its correction.
+
+**Several corrections of one original.** A second correction replaces the first, but documents carry
+no issue or statement date, so "second" can only mean *imported later*: the correction imported last
+(the highest form id) is used, and a warning says that more than one corrected form exists and that the
+choice rests on import order. If an earlier correction is the right one, delete the later one.
 
 When the match is not clear (no identifier was read, the identifiers differ, or two originals
 share them, as with two W-2s from one employer) nothing is replaced and the old warning stays: the
@@ -409,11 +420,15 @@ or `GET /api/tax/estimate?user_id=&tax_year=` (the web UI's Estimate screen come
   [Corrected forms](#corrected-forms)). W-2 box 12 is read as memo items: deferrals (codes D, E, F,
   G, S: `retirement_deferral`) and employer HSA contributions (code W: `hsa_employer`). They are
   *already excluded* from box 1, so they are **shown and checked against the year's elective deferral
-  limit, never subtracted again**. Roth deferrals (codes AA, BB) are inside box 1 and are not read.
+  limit, never subtracted again**. Roth deferrals (codes AA, BB) are inside box 1 and are not read (so an excess that
+  includes Roth contributions can go unnoticed). 457(b) deferrals (code G) are checked against the
+  limit on their own, and the over-limit warning mentions the age-50 catch-up, which the app cannot
+  apply because it does not know your age.
 - **A tax profile** per user and year (`tax_profiles`; `GET`/`PUT`/`DELETE
   /api/tax/profiles/{user_id}/{tax_year}`): filing status, spouse (`joint_with_user_id`, only with
-  `mfj`), standard or itemized deduction (and the itemized total), the number of age 65 / blind boxes,
-  adjustments to income, other income, capital loss carryover from the previous year, nonrefundable
+  `mfj`), standard or itemized deduction (and the itemized total), the number of age 65 / blind boxes
+  (`age65_or_blind_count`: at most 2 for one person, 4 for `mfj`) and how many of the people are 65
+  or older (`age65_count`, for the 2025-2028 senior deduction), adjustments to income, other income, capital loss carryover from the previous year, nonrefundable
   and refundable credits, other taxes, estimated payments and other payments. All amounts are
   non-negative cents. **Without a profile**: the filing status of the user's own 1040 if there is
   one, else single, and the standard deduction.
@@ -429,15 +444,39 @@ or `GET /api/tax/estimate?user_id=&tax_year=` (the web UI's Estimate screen come
    W-2 box 4 when present, else box 1 wages plus deferrals), plus 2.9%; nothing below $400 of net
    earnings. Half of it is deducted.
 4. AGI = gross income - adjustments - half the self-employment tax. Deduction = the standard
-   deduction (plus the age 65 / blind amount per box) or the itemized total you entered.
-   Taxable income = max(AGI - deduction, 0).
+   deduction (plus the age 65 / blind amount per box) or the itemized total you entered. For tax
+   years **2025 through 2028** the **senior deduction** comes on top, in either mode: $6,000 per
+   qualifying person aged 65 or over (two on a joint return, none for married filing separately),
+   reduced by 6% of the AGI above $75,000 ($150,000 on a joint return) (IRC 151(d)(5)(C), added by
+   P.L. 119-21). Taxable income = max(AGI - deduction - senior deduction, 0).
 5. Income tax = the IRS *Qualified Dividends and Capital Gain Tax Worksheet* on taxable income, with
    preferential income = qualified dividends + the long-term gain that survives the net capital
    result (the same code as the [1040 split](#the-federal-tax-split-is-an-estimate): Tax Table
    below $100,000, exact brackets above, whole dollars).
-6. Total tax = max(income tax - nonrefundable credits, 0) + self-employment tax + other taxes -
-   refundable credits. Payments = federal tax withheld + estimated payments + other payments.
+6. Other taxes on the return:
+   - **Net investment income tax** (Form 8960): 3.8% x min(net investment income, AGI - threshold),
+     with the threshold $200,000 ($250,000 joint, $125,000 separate). Net investment income =
+     interest + ordinary dividends + the capital result counted (a loss lowers it), not below zero.
+   - **Additional Medicare Tax** (Form 8959): 0.9% of Medicare wages above the filing-status threshold
+     plus 0.9% of the self-employment earnings above the part of the threshold the wages left unused.
+     A joint return adds both spouses' wages. The part an employer already withheld (W-2 box 6 beyond
+     1.45% of Medicare wages) is a *payment*, below.
+7. Total tax = max(income tax - nonrefundable credits, 0) + self-employment tax + net investment
+   income tax + Additional Medicare Tax + other taxes. It is **never negative**: the nonrefundable
+   credits used are capped at the income tax (the breakdown shows the capped amount, and a warning
+   says when part of what you entered is unused).
+   **Payments** = federal tax withheld + estimated payments + other payments + **refundable
+   credits** (they are payments, like lines 27-31 of the 1040, not negative tax) + the
+   Additional Medicare Tax already withheld + the **excess Social Security tax credit**: when two or
+   more employers withheld Social Security tax from one person, the part of that person's total above
+   6.2% of the wage base comes back as a credit (Schedule 3 line 11); one employer's over-withholding
+   is the employer's to refund and is not credited.
    **Result = payments - total tax**: positive is a refund, negative is an amount owed.
+
+**Medicare wages are approximated.** W-2 box 5 is not stored, so Medicare wages are box 1 wages plus
+the box 12 elective deferrals. An unusual box 5 (a taxable fringe benefit, dependent-care benefits
+above $5,000) skews the withheld Additional Medicare Tax slightly; the figures are listed in the
+warnings.
 
 The effective rate is total tax / gross income, the marginal rate is the ordinary bracket the next
 dollar falls in, and the preferential rate is the 0%, 15% or 20% that applies to the top of the
@@ -447,8 +486,12 @@ taxable income (when there is preferential income).
 
 When the profile is `mfj` with a spouse (the link may be on either spouse's profile) the
 household's items and **both profiles' inputs are summed and the tax is computed once**: income
-tax, the standard deduction for the joint status, the capital loss limit, the brackets. Self-employment tax
-and the deferral limit stay per person. Each spouse's view is an **allocation**: the household tax
+tax, the standard deduction for the joint status, the capital loss limit, the brackets. Self-employment tax,
+the Social Security credit and the deferral limit stay per person; the Additional Medicare Tax uses
+both spouses' wages together. Itemized deductions are **summed** across the two profiles: enter each
+spouse's own share, or the household total on one profile and nothing on the other (a warning
+appears when both profiles have an amount). The age 65 / blind boxes and the 65-or-older count are
+summed too (at most 4 and 2). Each spouse's view is an **allocation**: the household tax
 split by share of gross income (equal shares when there is no income; the parts always sum to the
 household tax), with that user's own payments and the result that follows. It is labelled
 `scope: household_allocation`; it is not a separate liability. If the two profiles disagree (the
@@ -477,17 +520,26 @@ Rev. Proc. 2025-32 section 3 restates) and 2025-32 (2026), plus the Social Secur
 contribution and benefit base and the IRS's 401(k) limit announcements. Every year in the file
 lists its sources (`GET /api/tax/parameters` returns them), the file is validated by a schema loader
 (thresholds strictly increasing, every filing status present, a citation per year) and a
-`params_version` says which copy is newer.
+`params_version` records revisions of the file (informational). The 2025-2028 senior deduction
+(IRC 151(d)(5)(C); IRS "One, Big, Beautiful Bill Act: tax deductions for working Americans and
+seniors") is part of the 2025 and 2026 entries.
 
-The app makes no network request for this. Three optional files can sit in `<data dir>/tax_params/`
-and the one in effect is chosen like this:
+The app makes no network request for this by default. Two optional files can sit in
+`<data dir>/tax_params/`, and the years in effect are merged **per tax year**, never wholesale:
 
-1. **your own file** (`spend-analyzer tax params import FILE`, removed by `tax params clear`) always
-   wins when it is valid;
-2. otherwise the valid file with the **higher `params_version`** of the bundled one and the copy
-   downloaded by the update check; the bundled one wins a tie, so an upgrade that ships newer data is
-   never hidden by an older download;
-3. an invalid or unreadable optional file is ignored (the bundled data always loads).
+1. every **bundled year always comes from the app**: a correction to a published year ships with an
+   app update, never with a download;
+2. the copy downloaded by the update check may only **add tax years the bundled file lacks**, and
+   only after each added year passes sanity checks against the year before it: plausible ranges,
+   the same bracket rates and count, indexed amounts (standard deductions, wage base, deferral limit,
+   bracket and capital-gain thresholds) within +/-15% of the previous year, statutory amounts
+   (loss limits, NIIT and Additional Medicare thresholds, the senior deduction) unchanged, no year
+   far ahead. One violation rejects the whole download; a cached file that fails the checks is
+   ignored when parameters are loaded;
+3. **your own file** (`spend-analyzer tax params import FILE`, removed by `tax params clear`) replaces
+   the years it lists (your deliberate correction, or a newer year before a release) and leaves the
+   other years alone, so no year can disappear;
+4. an invalid or unreadable optional file is ignored (the bundled data always loads).
 
 **The update check is opt-in and off by default** (`[tax] auto_update_params = false`, the Settings
 screen, or `SPEND_ANALYZER_TAX__AUTO_UPDATE_PARAMS=true`). When on, the first estimate or summary
@@ -495,8 +547,8 @@ request in a **calendar year** starts one check in a background thread (the page
 network error is ignored with an info log): a plain HTTPS `GET`, no query string, cookies,
 credentials, proxy or user data, of `federal_params.yaml` from this project's GitHub repository
 (`raw.githubusercontent.com/haoxinm/spending-analysis-from-bills/main/src/spend_analyzer/core/tax_data/federal_params.yaml`).
-It is accepted only if it passes the same schema validation **and** its `params_version` is higher
-than both the bundled and the already downloaded file; it is then stored with mode 0600. The date of
+It is accepted only if it passes the same schema validation and adds at least one tax year that is
+not already known, every added year passing the checks above; it is then stored with mode 0600. The date of
 the attempt is recorded *before* the request (in `tax_params/state.json`), whatever the outcome, so
 a machine that is offline is not retried on every page view until the next calendar year.
 `spend-analyzer tax params update` (or `POST /api/tax/parameters/refresh`, the "Check for updates"
@@ -506,15 +558,22 @@ version, the last check and the setting. Only `api/services/tax_params_update.py
 request (`tests/test_architecture_guards.py`).
 
 When adding a year by hand: copy the figures from the revenue procedure, add its citation, raise
-`params_version`, and run the tests.
+`params_version`, and run the tests. Releasing an app update is also how a published year is
+corrected.
 
 ### Not modeled
 
-The estimate lists these with every result instead of guessing: the alternative minimum tax; the net
-investment income tax and the Additional Medicare Tax (a warning appears when your income is over
-the threshold, and your refund may be overstated because employers withhold the latter);
-credits that depend on your situation (child tax credit, earned income credit, education credits:
-enter their total in the profile); the qualified business income deduction; 28% rate gains and
+The estimate lists these with every result instead of guessing: the alternative minimum tax; net
+investment income other than interest, dividends and capital gains (rental, royalty, passive
+business income, annuities) and the deductions allocable to investment income; credits that depend on
+your situation (child tax credit, earned income credit, education credits: enter their total in the
+profile, refundable ones as refundable credits so they count as payments); the 2025-2028
+deductions for **qualified tips** (up to $25,000), **qualified overtime** (up to $12,500, $25,000
+joint) and **car loan interest** (up to $10,000), phased out above $150,000 ($300,000 joint) of income
+($100,000 / $200,000 for the loan interest): take the amount from Schedule 1-A and enter it as an
+adjustment to income (the estimate then lowers AGI by it, which the real deduction does not, so the
+net investment income tax and the senior deduction's phase-out can be slightly understated); the
+qualified business income deduction; 28% rate gains and
 unrecaptured section 1250 gains; phase-outs of deductions and credits and the SALT cap (enter your
 itemized total after them); taxable Social Security benefits, IRA/pension, rental and partnership
 income (enter the taxable amount as other income); and state and local income tax.

@@ -16,7 +16,7 @@ from datetime import date, datetime
 from enum import StrEnum
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
 from spend_analyzer.core.forecast import (
     MAX_AMOUNT_MINOR,
@@ -760,10 +760,6 @@ class NetWorthAccountBalance(_Model):
     signed_minor: int
     as_of: str
     carried: bool
-    #: Carried forward from an entry more than `STALE_AFTER_MONTHS` (3) months old.
-    stale: bool = False
-    #: Whole months between `as_of` and the snapshot period.
-    months_old: int = 0
 
 
 class NetWorthPoint(_Model):
@@ -1179,13 +1175,18 @@ MAX_TAX_AMOUNT_MINOR = 10**12
 class TaxProfileIn(_Model):
     """`PUT /api/tax/profiles/{user_id}/{tax_year}` body: the manual inputs of the estimate.
     Amounts are non-negative cents. `joint_with_user_id` (the spouse, another existing user) is
-    only valid with `filing_status` `mfj`."""
+    only valid with `filing_status` `mfj`. `age65_or_blind_count` counts the boxes checked for the
+    additional standard deduction (age 65 or older, blind): at most 2 for one person (every status
+    but `mfj`), at most 4 for `mfj` (the household's, when spouses share one profile; each
+    spouse's profile is summed). `age65_count` is how many of the people are 65 or older, for the
+    2025-2028 senior deduction (at most 1, or 2 for `mfj`; not more than the boxes)."""
 
     filing_status: TaxFilingStatus
     joint_with_user_id: int | None = None
     deduction_mode: TaxDeductionMode = "standard"
     itemized_deductions_minor: int = Field(default=0, ge=0, le=MAX_TAX_AMOUNT_MINOR)
     age65_or_blind_count: int = Field(default=0, ge=0, le=4)
+    age65_count: int = Field(default=0, ge=0, le=2)
     adjustments_minor: int = Field(default=0, ge=0, le=MAX_TAX_AMOUNT_MINOR)
     other_income_minor: int = Field(default=0, ge=0, le=MAX_TAX_AMOUNT_MINOR)
     capital_loss_carryover_minor: int = Field(default=0, ge=0, le=MAX_TAX_AMOUNT_MINOR)
@@ -1194,6 +1195,18 @@ class TaxProfileIn(_Model):
     other_taxes_minor: int = Field(default=0, ge=0, le=MAX_TAX_AMOUNT_MINOR)
     estimated_payments_minor: int = Field(default=0, ge=0, le=MAX_TAX_AMOUNT_MINOR)
     other_payments_minor: int = Field(default=0, ge=0, le=MAX_TAX_AMOUNT_MINOR)
+
+    @model_validator(mode="after")
+    def _check_boxes(self) -> TaxProfileIn:
+        joint = self.filing_status == "mfj"
+        most = 4 if joint else 2
+        if self.age65_or_blind_count > most:
+            raise ValueError(f"age65_or_blind_count is at most {most} for {self.filing_status}")
+        if self.age65_count > (2 if joint else 1):
+            raise ValueError(f"age65_count is at most {2 if joint else 1} for {self.filing_status}")
+        if self.age65_count > self.age65_or_blind_count:
+            raise ValueError("age65_count cannot exceed age65_or_blind_count (it is a subset)")
+        return self
 
 
 class TaxProfile(TaxProfileIn):
@@ -1226,22 +1239,34 @@ class TaxEstimateCalc(_Model):
     se_tax_deduction_minor: int
     agi_minor: int
     deduction_mode: TaxDeductionMode
+    #: Standard or itemized deduction, before the senior deduction.
     deduction_minor: int
+    senior_deduction_minor: int
     taxable_income_minor: int
     preferential_income_minor: int
-    # tax
+    # tax: income_tax - nonrefundable_credits + se_tax + net_investment_income_tax +
+    # additional_medicare_tax + other_taxes = total_tax (never negative)
     income_tax_minor: int
     ordinary_tax_minor: int
     preferential_tax_minor: int
+    #: The nonrefundable credits actually used (capped at the income tax).
     nonrefundable_credits_minor: int
+    nonrefundable_credits_entered_minor: int
     se_tax_minor: int
+    net_investment_income_tax_minor: int
+    additional_medicare_tax_minor: int
     other_taxes_minor: int
-    refundable_credits_minor: int
     total_tax_minor: int
-    # payments and result (`result_minor` > 0 refund, < 0 owed)
+    # payments (federal withholding + estimated + other + refundable credits + Additional Medicare
+    # Tax withheld + excess Social Security credit) and result (`result_minor` > 0 refund,
+    # < 0 owed)
     federal_withheld_minor: int
     estimated_payments_minor: int
     other_payments_minor: int
+    #: Refundable credits are payments (1040 lines 27-31), not negative tax.
+    refundable_credits_minor: int
+    additional_medicare_withheld_minor: int
+    excess_social_security_credit_minor: int
     total_payments_minor: int
     result_minor: int
     refund_minor: int
@@ -1266,6 +1291,8 @@ class TaxEstimateUser(_Model):
     result_minor: int
     refund_minor: int
     owed_minor: int
+    #: This user's part of the W-2 Medicare tax that is Additional Medicare Tax (already in FICA).
+    additional_medicare_withheld_minor: int = 0
 
 
 class TaxEstimateCrossCheck(_Model):
@@ -1325,6 +1352,11 @@ class TaxParameterYear(_Model):
     elective_deferral_limit_minor: int
     niit_threshold_minor: dict[str, int]
     additional_medicare_threshold_minor: dict[str, int]
+    #: 2025-2028 senior deduction per person (0 in other years), its phase-out rate in basis
+    #: points and the income above which it phases out, per status that may claim it.
+    senior_deduction_minor: int = 0
+    senior_phaseout_rate_bp: int = 0
+    senior_phaseout_threshold_minor: dict[str, int] = Field(default_factory=dict)
 
 
 class TaxParametersStatus(_Model):

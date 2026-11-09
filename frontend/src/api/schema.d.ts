@@ -1392,6 +1392,95 @@ export interface paths {
         patch: operations["patch_tax_item_api_tax_tax_items__item_id__patch"];
         trace?: never;
     };
+    "/tax/profiles/{user_id}/{tax_year}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Profile */
+        get: operations["get_profile_api_tax_profiles__user_id___tax_year__get"];
+        /**
+         * Put Profile
+         * @description Create or replace the profile (201 when created). `joint_with_user_id` needs filing status
+         *     `mfj` and an existing other user (404 / 422); 409 when that spouse already has a profile for
+         *     the year that disagrees (not `mfj`, or naming someone else).
+         */
+        put: operations["put_profile_api_tax_profiles__user_id___tax_year__put"];
+        post?: never;
+        /** Delete Profile */
+        delete: operations["delete_profile_api_tax_profiles__user_id___tax_year__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tax/estimate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Tax Estimate Route
+         * @description The federal tax estimate of one user for one year (see `analytics/tax_estimate.py`). 404 for
+         *     an unknown user, 422 when there are no tax parameters for the year, 409 when the spouses'
+         *     profiles disagree.
+         */
+        get: operations["tax_estimate_route_api_tax_estimate_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tax/parameters": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Tax Parameters
+         * @description The tax years the estimate supports with their IRS sources, which parameter file is in
+         *     effect (bundled, downloaded or imported) and the state of the opt-in yearly update check.
+         */
+        get: operations["tax_parameters_api_tax_parameters_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tax/parameters/refresh": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Refresh Tax Parameters
+         * @description Check for updated parameters now (one plain GET of the project's public file, no user
+         *     data; blocks up to 10 seconds). An explicit action, so it works with the opt-in off; the date
+         *     is recorded like an automatic check.
+         */
+        post: operations["refresh_tax_parameters_api_tax_parameters_refresh_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/backup/export": {
         parameters: {
             query?: never;
@@ -2850,6 +2939,217 @@ export interface components {
             /** User Id */
             user_id: number;
         };
+        /**
+         * TaxEstimate
+         * @description `GET /api/tax/estimate`.
+         */
+        TaxEstimate: {
+            /** User Id */
+            user_id: number;
+            /** Tax Year */
+            tax_year: number;
+            /**
+             * Scope
+             * @enum {string}
+             */
+            scope: "individual" | "household_allocation";
+            /** Household User Ids */
+            household_user_ids: number[];
+            /**
+             * Filing Status
+             * @enum {string}
+             */
+            filing_status: "single" | "mfj" | "mfs" | "hoh" | "qss";
+            /**
+             * Filing Status Source
+             * @enum {string}
+             */
+            filing_status_source: "profile" | "return" | "default";
+            calc: components["schemas"]["TaxEstimateCalc"];
+            user: components["schemas"]["TaxEstimateUser"];
+            cross_check: components["schemas"]["TaxEstimateCrossCheck"] | null;
+            profile: components["schemas"]["TaxProfile"] | null;
+            parameters: components["schemas"]["TaxEstimateParameters"];
+            /** Warnings */
+            warnings: string[];
+            /** Not Modeled */
+            not_modeled: string[];
+        };
+        /**
+         * TaxEstimateCalc
+         * @description The computation (the whole household's for a joint return), all `_minor` fields in cents and
+         *     the rates as fractions (0.22 = 22%).
+         */
+        TaxEstimateCalc: {
+            /**
+             * Filing Status
+             * @enum {string}
+             */
+            filing_status: "single" | "mfj" | "mfs" | "hoh" | "qss";
+            /** Wages Minor */
+            wages_minor: number;
+            /** Interest Minor */
+            interest_minor: number;
+            /** Ordinary Dividends Minor */
+            ordinary_dividends_minor: number;
+            /** Qualified Dividends Minor */
+            qualified_dividends_minor: number;
+            /** Short Term Gain Minor */
+            short_term_gain_minor: number;
+            /** Long Term Gain Minor */
+            long_term_gain_minor: number;
+            /** Capital Loss Carryover In Minor */
+            capital_loss_carryover_in_minor: number;
+            /** Capital Result Counted Minor */
+            capital_result_counted_minor: number;
+            /** Capital Loss Carryover Out Minor */
+            capital_loss_carryover_out_minor: number;
+            /** Self Employment Minor */
+            self_employment_minor: number;
+            /** Other Income Minor */
+            other_income_minor: number;
+            /** Profile Other Income Minor */
+            profile_other_income_minor: number;
+            /** Gross Income Minor */
+            gross_income_minor: number;
+            /** Adjustments Minor */
+            adjustments_minor: number;
+            /** Se Tax Deduction Minor */
+            se_tax_deduction_minor: number;
+            /** Agi Minor */
+            agi_minor: number;
+            /**
+             * Deduction Mode
+             * @enum {string}
+             */
+            deduction_mode: "standard" | "itemized";
+            /** Deduction Minor */
+            deduction_minor: number;
+            /** Senior Deduction Minor */
+            senior_deduction_minor: number;
+            /** Taxable Income Minor */
+            taxable_income_minor: number;
+            /** Preferential Income Minor */
+            preferential_income_minor: number;
+            /** Income Tax Minor */
+            income_tax_minor: number;
+            /** Ordinary Tax Minor */
+            ordinary_tax_minor: number;
+            /** Preferential Tax Minor */
+            preferential_tax_minor: number;
+            /** Nonrefundable Credits Minor */
+            nonrefundable_credits_minor: number;
+            /** Nonrefundable Credits Entered Minor */
+            nonrefundable_credits_entered_minor: number;
+            /** Se Tax Minor */
+            se_tax_minor: number;
+            /** Net Investment Income Tax Minor */
+            net_investment_income_tax_minor: number;
+            /** Additional Medicare Tax Minor */
+            additional_medicare_tax_minor: number;
+            /** Other Taxes Minor */
+            other_taxes_minor: number;
+            /** Total Tax Minor */
+            total_tax_minor: number;
+            /** Federal Withheld Minor */
+            federal_withheld_minor: number;
+            /** Estimated Payments Minor */
+            estimated_payments_minor: number;
+            /** Other Payments Minor */
+            other_payments_minor: number;
+            /** Refundable Credits Minor */
+            refundable_credits_minor: number;
+            /** Additional Medicare Withheld Minor */
+            additional_medicare_withheld_minor: number;
+            /** Excess Social Security Credit Minor */
+            excess_social_security_credit_minor: number;
+            /** Total Payments Minor */
+            total_payments_minor: number;
+            /** Result Minor */
+            result_minor: number;
+            /** Refund Minor */
+            refund_minor: number;
+            /** Owed Minor */
+            owed_minor: number;
+            /** Effective Rate */
+            effective_rate: number | null;
+            /** Marginal Rate */
+            marginal_rate: number | null;
+            /** Preferential Rate */
+            preferential_rate: number | null;
+            /** Retirement Deferral Minor */
+            retirement_deferral_minor: number;
+            /** Hsa Employer Minor */
+            hsa_employer_minor: number;
+        };
+        /**
+         * TaxEstimateCrossCheck
+         * @description The latest Form 1040 for the year beside the estimate (never an input). Deltas are
+         *     estimate minus return; `null` when the return did not print the figure.
+         */
+        TaxEstimateCrossCheck: {
+            /** Return Filing Status */
+            return_filing_status: string | null;
+            /** Return Total Tax Minor */
+            return_total_tax_minor: number | null;
+            /** Return Withheld Minor */
+            return_withheld_minor: number | null;
+            /** Return Refund Minor */
+            return_refund_minor: number | null;
+            /** Return Owed Minor */
+            return_owed_minor: number | null;
+            /** Return Result Minor */
+            return_result_minor: number | null;
+            /** Delta Total Tax Minor */
+            delta_total_tax_minor: number | null;
+            /** Delta Withheld Minor */
+            delta_withheld_minor: number | null;
+            /** Delta Result Minor */
+            delta_result_minor: number | null;
+            /** Household */
+            household: boolean;
+        };
+        /** TaxEstimateParameters */
+        TaxEstimateParameters: {
+            /** Tax Year */
+            tax_year: number;
+            /**
+             * Source
+             * @enum {string}
+             */
+            source: "bundled" | "cached" | "override";
+            /** Params Version */
+            params_version: number;
+            /** Sources */
+            sources: string[];
+        };
+        /**
+         * TaxEstimateUser
+         * @description This user's part. For `scope` `individual` it equals the computation; for
+         *     `household_allocation` `total_tax_minor` is an allocation of the household tax by `share` of
+         *     gross income (an allocation, not a separate liability) and the payments are the user's own.
+         */
+        TaxEstimateUser: {
+            /** Gross Income Minor */
+            gross_income_minor: number;
+            /** Share */
+            share: number | null;
+            /** Total Tax Minor */
+            total_tax_minor: number;
+            /** Payments Minor */
+            payments_minor: number;
+            /** Result Minor */
+            result_minor: number;
+            /** Refund Minor */
+            refund_minor: number;
+            /** Owed Minor */
+            owed_minor: number;
+            /**
+             * Additional Medicare Withheld Minor
+             * @default 0
+             */
+            additional_medicare_withheld_minor: number;
+        };
         /** TaxFormCreate */
         TaxFormCreate: {
             form_type: components["schemas"]["TaxFormType"];
@@ -2943,6 +3243,28 @@ export interface components {
          * @enum {string}
          */
         TaxFormType: "w2" | "1099-int" | "1099-div" | "1099-b" | "1099-nec" | "1099-misc" | "1099-consolidated" | "1040" | "state-return";
+        /**
+         * TaxHeadline
+         * @description What to show as the tax paid for the year (minor units). `federal_basis` says where the
+         *     federal figure comes from: `return` (the 1040's total tax with the Additional Medicare Tax
+         *     counted once, in `fica_minor`), `estimate` (the per-user estimate, no return), `withholding`
+         *     (federal tax withheld), or `mixed` (an all-users view whose users differ).
+         */
+        TaxHeadline: {
+            /** Federal Minor */
+            federal_minor: number;
+            /**
+             * Federal Basis
+             * @enum {string}
+             */
+            federal_basis: "return" | "estimate" | "withholding" | "mixed";
+            /** Fica Minor */
+            fica_minor: number;
+            /** State Minor */
+            state_minor: number;
+            /** Total Minor */
+            total_minor: number;
+        };
         /** TaxImportResponse */
         TaxImportResponse: {
             document: components["schemas"]["TaxDocument"];
@@ -3117,6 +3439,250 @@ export interface components {
             excluded_reason: string | null;
         };
         /**
+         * TaxParameterYear
+         * @description One year of `GET /api/tax/parameters` (cents).
+         */
+        TaxParameterYear: {
+            /** Tax Year */
+            tax_year: number;
+            /** Sources */
+            sources: string[];
+            /** Standard Deduction Minor */
+            standard_deduction_minor: {
+                [key: string]: number;
+            };
+            /** Additional Standard Deduction Unmarried Minor */
+            additional_standard_deduction_unmarried_minor: number;
+            /** Additional Standard Deduction Married Minor */
+            additional_standard_deduction_married_minor: number;
+            /** Capital Loss Limit Minor */
+            capital_loss_limit_minor: number;
+            /** Capital Loss Limit Mfs Minor */
+            capital_loss_limit_mfs_minor: number;
+            /** Ss Wage Base Minor */
+            ss_wage_base_minor: number;
+            /** Elective Deferral Limit Minor */
+            elective_deferral_limit_minor: number;
+            /** Niit Threshold Minor */
+            niit_threshold_minor: {
+                [key: string]: number;
+            };
+            /** Additional Medicare Threshold Minor */
+            additional_medicare_threshold_minor: {
+                [key: string]: number;
+            };
+            /**
+             * Senior Deduction Minor
+             * @default 0
+             */
+            senior_deduction_minor: number;
+            /**
+             * Senior Phaseout Rate Bp
+             * @default 0
+             */
+            senior_phaseout_rate_bp: number;
+            /** Senior Phaseout Threshold Minor */
+            senior_phaseout_threshold_minor?: {
+                [key: string]: number;
+            };
+        };
+        /** TaxParameters */
+        TaxParameters: {
+            /**
+             * Source
+             * @enum {string}
+             */
+            source: "bundled" | "cached" | "override";
+            /** Params Version */
+            params_version: number;
+            /** Bundled Version */
+            bundled_version: number;
+            /** Cached Version */
+            cached_version: number | null;
+            /** Override Version */
+            override_version: number | null;
+            /** Last Checked */
+            last_checked: string | null;
+            /** Last Check Outcome */
+            last_check_outcome: string | null;
+            /** Auto Update */
+            auto_update: boolean;
+            /** Years */
+            years: components["schemas"]["TaxParameterYear"][];
+        };
+        /**
+         * TaxParametersRefreshResponse
+         * @description `POST /api/tax/parameters/refresh`: one update check, run now (an explicit action, so it
+         *     does not need the opt-in).
+         */
+        TaxParametersRefreshResponse: {
+            /**
+             * Outcome
+             * @enum {string}
+             */
+            outcome: "updated" | "current" | "rejected" | "unreachable";
+            /** Detail */
+            detail: string;
+            parameters: components["schemas"]["TaxParameters"];
+        };
+        /** TaxProfile */
+        TaxProfile: {
+            /**
+             * Filing Status
+             * @enum {string}
+             */
+            filing_status: "single" | "mfj" | "mfs" | "hoh" | "qss";
+            /** Joint With User Id */
+            joint_with_user_id?: number | null;
+            /**
+             * Deduction Mode
+             * @default standard
+             * @enum {string}
+             */
+            deduction_mode: "standard" | "itemized";
+            /**
+             * Itemized Deductions Minor
+             * @default 0
+             */
+            itemized_deductions_minor: number;
+            /**
+             * Age65 Or Blind Count
+             * @default 0
+             */
+            age65_or_blind_count: number;
+            /**
+             * Age65 Count
+             * @default 0
+             */
+            age65_count: number;
+            /**
+             * Adjustments Minor
+             * @default 0
+             */
+            adjustments_minor: number;
+            /**
+             * Other Income Minor
+             * @default 0
+             */
+            other_income_minor: number;
+            /**
+             * Capital Loss Carryover Minor
+             * @default 0
+             */
+            capital_loss_carryover_minor: number;
+            /**
+             * Nonrefundable Credits Minor
+             * @default 0
+             */
+            nonrefundable_credits_minor: number;
+            /**
+             * Refundable Credits Minor
+             * @default 0
+             */
+            refundable_credits_minor: number;
+            /**
+             * Other Taxes Minor
+             * @default 0
+             */
+            other_taxes_minor: number;
+            /**
+             * Estimated Payments Minor
+             * @default 0
+             */
+            estimated_payments_minor: number;
+            /**
+             * Other Payments Minor
+             * @default 0
+             */
+            other_payments_minor: number;
+            /** User Id */
+            user_id: number;
+            /** Tax Year */
+            tax_year: number;
+            /** Updated At */
+            updated_at: string;
+        };
+        /**
+         * TaxProfileIn
+         * @description `PUT /api/tax/profiles/{user_id}/{tax_year}` body: the manual inputs of the estimate.
+         *     Amounts are non-negative cents. `joint_with_user_id` (the spouse, another existing user) is
+         *     only valid with `filing_status` `mfj`. `age65_or_blind_count` counts the boxes checked for the
+         *     additional standard deduction (age 65 or older, blind): at most 2 for one person (every status
+         *     but `mfj`), at most 4 for `mfj` (the household's, when spouses share one profile; each
+         *     spouse's profile is summed). `age65_count` is how many of the people are 65 or older, for the
+         *     2025-2028 senior deduction (at most 1, or 2 for `mfj`; not more than the boxes).
+         */
+        TaxProfileIn: {
+            /**
+             * Filing Status
+             * @enum {string}
+             */
+            filing_status: "single" | "mfj" | "mfs" | "hoh" | "qss";
+            /** Joint With User Id */
+            joint_with_user_id?: number | null;
+            /**
+             * Deduction Mode
+             * @default standard
+             * @enum {string}
+             */
+            deduction_mode: "standard" | "itemized";
+            /**
+             * Itemized Deductions Minor
+             * @default 0
+             */
+            itemized_deductions_minor: number;
+            /**
+             * Age65 Or Blind Count
+             * @default 0
+             */
+            age65_or_blind_count: number;
+            /**
+             * Age65 Count
+             * @default 0
+             */
+            age65_count: number;
+            /**
+             * Adjustments Minor
+             * @default 0
+             */
+            adjustments_minor: number;
+            /**
+             * Other Income Minor
+             * @default 0
+             */
+            other_income_minor: number;
+            /**
+             * Capital Loss Carryover Minor
+             * @default 0
+             */
+            capital_loss_carryover_minor: number;
+            /**
+             * Nonrefundable Credits Minor
+             * @default 0
+             */
+            nonrefundable_credits_minor: number;
+            /**
+             * Refundable Credits Minor
+             * @default 0
+             */
+            refundable_credits_minor: number;
+            /**
+             * Other Taxes Minor
+             * @default 0
+             */
+            other_taxes_minor: number;
+            /**
+             * Estimated Payments Minor
+             * @default 0
+             */
+            estimated_payments_minor: number;
+            /**
+             * Other Payments Minor
+             * @default 0
+             */
+            other_payments_minor: number;
+        };
+        /**
          * TaxSettings
          * @description `[tax]`: `auto_update_params` is the opt-in once-a-year check for updated federal tax
          *     parameters (a plain GET of one public file, no user data; off by default).
@@ -3150,6 +3716,21 @@ export interface components {
             pages: components["schemas"]["TaxPageInfo"][];
             /** Expires At */
             expires_at: string;
+        };
+        /**
+         * TaxSupersededForm
+         * @description A source form replaced by a corrected form with the same payer and account (not counted).
+         */
+        TaxSupersededForm: {
+            /** Form Id */
+            form_id: number;
+            /** Document Id */
+            document_id: number;
+            /** User Id */
+            user_id: number;
+            form_type: components["schemas"]["TaxFormType"];
+            /** Superseded By Form Id */
+            superseded_by_form_id: number;
         };
         /** TaxYearSummary */
         TaxYearSummary: {
@@ -3194,6 +3775,9 @@ export interface components {
             form_count: number;
             /** Warnings */
             warnings: string[];
+            headline?: components["schemas"]["TaxHeadline"] | null;
+            /** Superseded Forms */
+            superseded_forms?: components["schemas"]["TaxSupersededForm"][];
         };
         /**
          * TestLlmRequest
@@ -6598,6 +7182,176 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_profile_api_tax_profiles__user_id___tax_year__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                user_id: number;
+                tax_year: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaxProfile"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    put_profile_api_tax_profiles__user_id___tax_year__put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                user_id: number;
+                tax_year: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TaxProfileIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaxProfile"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_profile_api_tax_profiles__user_id___tax_year__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                user_id: number;
+                tax_year: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    tax_estimate_route_api_tax_estimate_get: {
+        parameters: {
+            query: {
+                user_id: number;
+                tax_year: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaxEstimate"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    tax_parameters_api_tax_parameters_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaxParameters"];
+                };
+            };
+        };
+    };
+    refresh_tax_parameters_api_tax_parameters_refresh_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaxParametersRefreshResponse"];
                 };
             };
         };

@@ -68,6 +68,7 @@ from typing import Any, Literal, cast
 from sqlalchemy import ColumnElement, case, func, select
 from sqlalchemy.orm import Session, selectinload
 
+from spend_analyzer.core.tax_calc import additional_medicare_withheld
 from spend_analyzer.core.tax_types import (
     INCOME_CATEGORIES,
     MEMO_INCOME_CATEGORIES,
@@ -117,6 +118,28 @@ class SupersededForm:
     tax_year: int
     form_type: str
     superseded_by_form_id: int
+    #: The replaced form was itself a corrected form (a later correction replaced it), so the
+    #: choice of the replacing form rests on import order alone: see `correction_warning`.
+    was_corrected: bool = False
+
+
+def correction_warning(superseded: Collection[SupersededForm]) -> str | None:
+    """A warning when a corrected form was replaced by a *later* corrected form, else `None`.
+
+    No issue or statement date is stored with a document, so "later" can only mean "imported
+    later": say so rather than imply the latest correction was identified.
+    """
+    chained = [f for f in superseded if f.was_corrected]
+    if not chained:
+        return None
+    latest = sorted({f.superseded_by_form_id for f in chained})
+    return (
+        "More than one corrected form was imported for the same original. No issue date is "
+        "stored, so the one imported last (form "
+        + ", ".join(f"#{i}" for i in latest)
+        + ") is used and the earlier corrections are not counted; delete it if an earlier "
+        "correction is the right one."
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,8 +148,8 @@ class HeadlineTax:
 
     ``federal_minor``: the return's total tax less the Additional Medicare Tax already inside the
     W-2 Medicare figure (it is counted once, in ``fica_minor``); without a return the per-user
-    estimate (`analytics/tax_estimate.py`) when parameters exist for the year; else the federal tax
-    withheld. ``state_minor``: state liability when printed, else state and local withholding.
+    estimate (`analytics/tax_estimate.py`, its Additional Medicare Tax withheld likewise counted
+    once, in ``fica_minor``) when parameters exist for the year; else the federal tax withheld. ``state_minor``: state liability when printed, else state and local withholding.
     """
 
     federal_minor: int
@@ -213,6 +236,11 @@ class _Resolved:
     #: Per-user estimate of total federal tax (no return, source forms present), set by
     #: `run_tax_summary`; ``None`` when it could not be computed.
     estimate_total: int | None = None
+    #: The part of ``estimate_total`` that is Additional Medicare Tax already inside FICA.
+    estimate_addl_medicare_withheld: int = 0
+    #: Medicare wages approximated from the source forms (box 1 wages + box 12 deferrals), used to
+    #: tell how much of W-2 box 6 is the Additional Medicare Tax.
+    source_medicare_wages: int = 0
     #: Headline federal figure and basis for this one (user, year); see `HeadlineTax`.
     headline_federal: int = 0
     headline_basis: HeadlineBasis = "withholding"
@@ -327,8 +355,11 @@ def _supersede_plan(session: Session, query: TaxQuery) -> tuple[list[SupersededF
     present, otherwise unrelated manual forms would match). Per such group with a corrected form:
     one original is replaced by the latest corrected form, and earlier corrected forms are
     replaced by the latest one; two or more originals are ambiguous (two W-2s from one employer),
-    so nothing is replaced and the usual "corrected form" warning stays. Import order does not
-    matter. Returns (replaced forms, ids of the corrected forms that replaced something).
+    so nothing is replaced and the usual "corrected form" warning stays. "Latest" is the most
+    recently imported (highest form id): documents carry no issue or statement date, so when a
+    corrected form replaces another corrected form the replaced one is flagged
+    (`SupersededForm.was_corrected`) and `correction_warning` tells the user the choice rests on
+    import order. Returns (replaced forms, ids of the corrected forms that replaced something).
     """
     stmt = (
         select(
@@ -372,6 +403,7 @@ def _supersede_plan(session: Session, query: TaxQuery) -> tuple[list[SupersededF
                     tax_year=old.tax_year,
                     form_type=old.form_type,
                     superseded_by_form_id=latest.id,
+                    was_corrected=bool(old.is_corrected),
                 )
             )
     return sorted(replaced, key=lambda f: f.form_id), matched
@@ -556,6 +588,9 @@ def _resolve(
                 + ", ".join(f"#{d}" for d in sorted({f.document_id for f in r.superseded}))
                 + ")."
             )
+            chain = correction_warning(r.superseded)
+            if chain is not None:
+                r.warnings.append(chain)
         has_return = key in latest_return
         src_cat_tax = src_tax[key]
         ret = ret_tax[key]
@@ -592,6 +627,9 @@ def _resolve(
         for cat, amount in memo.items():
             r.memo[cat] += amount
 
+        r.source_medicare_wages = src_income[key].get("salary_wages", 0) + src_income[key].get(
+            "retirement_deferral", 0
+        )
         for cat in _WITHHELD:
             r.withheld[cat] = src_cat_tax.get(cat, 0)
         for cat in _FICA:
@@ -726,13 +764,17 @@ def _set_headline(r: _Resolved) -> None:
     fed_withheld = r.withheld.get("federal_income_tax_withheld", 0)
     if liability is not None:
         # W-2 box 6 already includes the 0.9% Additional Medicare Tax an employer withheld, and the
-        # return's total tax includes it again (Schedule 2 line 11): count it once, in FICA.
-        double_counted = min(
-            r.liability.get("additional_medicare_tax", 0), r.fica.get("medicare_tax", 0)
+        # return's total tax includes it again (Schedule 2 line 11): count it once, in FICA. Only
+        # what was actually withheld is inside box 6 (box 6 beyond 1.45% of Medicare wages): an
+        # Additional Medicare Tax that was owed but not withheld is not in FICA and stays here.
+        withheld_extra = additional_medicare_withheld(
+            r.fica.get("medicare_tax", 0), r.source_medicare_wages
         )
+        double_counted = min(r.liability.get("additional_medicare_tax", 0), withheld_extra)
         r.headline_federal, r.headline_basis = liability - double_counted, "return"
     elif r.estimate_total is not None:
-        r.headline_federal, r.headline_basis = r.estimate_total, "estimate"
+        r.headline_federal = max(r.estimate_total - r.estimate_addl_medicare_withheld, 0)
+        r.headline_basis = "estimate"
     else:
         r.headline_federal, r.headline_basis = fed_withheld, "withholding"
     state = r.liability.get("state_income_tax_liability")
@@ -812,11 +854,12 @@ def _attach_estimates(session: Session, resolved: dict[_Key, _Resolved]) -> None
         if r.basis != "source_documents":
             continue
         try:
-            r.estimate_total = tax_estimate.run_tax_estimate(
-                session, user_id, year
-            ).user_total_tax_minor
+            est = tax_estimate.run_tax_estimate(session, user_id, year)
         except tax_estimate.EstimateError:
             r.estimate_total = None
+            continue
+        r.estimate_total = est.user_total_tax_minor
+        r.estimate_addl_medicare_withheld = est.user_additional_medicare_withheld_minor
 
 
 def run_tax_summary(session: Session, query: TaxQuery) -> list[TaxYearSummary]:
@@ -945,6 +988,11 @@ class SourceFigures:
     has_source: bool
     return_figures: ReturnFigures | None
     superseded: list[SupersededForm]
+    #: Of the ``retirement_deferral`` memo total, the 457(b) part (W-2 box 12 code G), which has
+    #: its own annual limit.
+    deferral_457b_minor: int = 0
+    #: Distinct employers (payer EIN last four, else the form) that withheld Social Security tax.
+    social_security_employers: int = 0
 
 
 def source_figures(session: Session, user_id: int, tax_year: int) -> SourceFigures:
@@ -992,6 +1040,41 @@ def source_figures(session: Session, user_id: int, tax_year: int) -> SourceFigur
         has_source=has_source,
         return_figures=figures,
         superseded=superseded,
+        deferral_457b_minor=_deferral_457b(session, query, excluded),
+        social_security_employers=_social_security_employers(session, query, excluded),
+    )
+
+
+def _deferral_457b(session: Session, query: TaxQuery, excluded: Collection[int]) -> int:
+    stmt = (
+        select(func.coalesce(func.sum(IncomeItem.amount_minor), 0))
+        .join(TaxForm, TaxForm.id == IncomeItem.form_id)
+        .where(*_filters(IncomeItem, query), TaxForm.role == "source", IncomeItem.box == "12-G")
+    )
+    if excluded:
+        stmt = stmt.where(IncomeItem.form_id.not_in(excluded))
+    return int(session.scalar(stmt) or 0)
+
+
+def _social_security_employers(session: Session, query: TaxQuery, excluded: Collection[int]) -> int:
+    stmt = (
+        select(TaxForm.id, TaxForm.payer_tin_last4, func.sum(TaxItem.amount_minor))
+        .join(TaxForm, TaxForm.id == TaxItem.form_id)
+        .where(
+            *_filters(TaxItem, query),
+            TaxForm.role == "source",
+            TaxItem.category == "social_security_tax",
+        )
+        .group_by(TaxForm.id, TaxForm.payer_tin_last4)
+    )
+    if excluded:
+        stmt = stmt.where(TaxItem.form_id.not_in(excluded))
+    return len(
+        {
+            tin if tin else f"form{form_id}"
+            for form_id, tin, total in session.execute(stmt)
+            if int(total or 0) > 0
+        }
     )
 
 
