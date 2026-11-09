@@ -37,7 +37,7 @@ from __future__ import annotations
 import contextlib
 import json
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import cast
@@ -130,6 +130,10 @@ class ImportResult:
     reconciliation_delta_minor: int | None  # None when no check was possible
     layout_drift: bool
     warnings: tuple[str, ...]
+    #: `reparse` only: hand edits (a category/kind, or a note) put back on the rebuilt rows, and
+    #: those that could not be attached to exactly one rebuilt row and were therefore dropped.
+    restored_edits: int = 0
+    unmatched_edits: int = 0
 
 
 # ------------------------------------------------------------------------------------------------
@@ -536,7 +540,11 @@ def _persist_parsed_statement(
     parser: StatementParser,
     layout_spec_id: int | None,
     remember: bool,
+    commit: bool = True,
 ) -> ImportResult:
+    """Insert `parsed`'s rows and mark `statement` parsed. Commits (twice: the rows, then the
+    transfer pairing) unless `commit=False`, which `reparse` uses so the rebuild and the restore of
+    hand edits are one transaction the caller commits or rolls back."""
     settings = load_settings()
     account_type = parsed.account_hint.account_type or parser.account_type
     mask = parsed.account_hint.mask or ""
@@ -641,11 +649,17 @@ def _persist_parsed_statement(
             issuer.default_spec_id = layout_spec_id
         issuer.last_used_at = _utcnow_iso()
 
-    session.commit()
+    if commit:
+        session.commit()
+    else:
+        session.flush()
 
     if account_type in ("checking", "savings"):
         _pair_transfers(session, account=account, user_id=user_id, inserted_ids=inserted_ids)
-        session.commit()
+        if commit:
+            session.commit()
+        else:
+            session.flush()
 
     return ImportResult(
         statement_id=statement.id,
@@ -918,6 +932,10 @@ def reparse(
     Does not commit (per §3.12a: this function is not documented as committing); the caller
     controls the transaction.
 
+    Hand edits survive the rebuild where they can be matched to exactly one rebuilt row (see
+    `_restore_user_edits`); `ImportResult.restored_edits` / `unmatched_edits` report how many were
+    kept and how many had to be dropped because the match was missing or ambiguous.
+
     Raises:
         SpendAnalyzerError: the statement was not found, has no account yet (never confirmed), or
             has no PDF copy on disk to re-parse from.
@@ -973,15 +991,24 @@ def reparse(
         parser=parser,
         layout_spec_id=layout_spec_id,
         remember=False,  # reparse is an explicit override; it never rewrites the remembered spec
+        commit=False,  # rebuild + edit restore are one transaction, committed by the caller
     )
-    _restore_user_edits(session, account.id, kept_edits)
-    return result
+    restored, unmatched = _restore_user_edits(session, statement.id, account.id, kept_edits)
+    if unmatched:
+        logger.warning(
+            "reparse of statement %s dropped %d hand edit(s) it could not match to a rebuilt row",
+            statement.id,
+            unmatched,
+        )
+    return replace(result, restored_edits=restored, unmatched_edits=unmatched)
 
 
 @dataclass(frozen=True, slots=True)
 class _UserEdit:
-    """A one-time user edit of a transaction (`classified_by='user'`), as it must survive the
-    transaction being rebuilt or merged into a duplicate."""
+    """A hand edit of a transaction as it must survive the transaction being rebuilt or merged
+    into a duplicate: a one-time category/kind edit (`locked`, `classified_by='user'`) or a
+    free-text note on a row that is otherwise automatic. The identity fields let a rebuilt row be
+    found again even if its `dedupe_hash` changed."""
 
     category_id: int | None
     subcategory_id: int | None
@@ -991,6 +1018,17 @@ class _UserEdit:
     is_spend: bool
     merchant_canonical: str | None
     notes: str | None
+    locked: bool = True
+    # Identity (used by `reparse` only).
+    dedupe_hash: str = ""
+    posted_date: str = ""
+    amount_minor: int = 0
+    description_raw: str = ""
+    description_clean: str = ""
+    merchant_key: str = ""
+    #: How many of the statement's rows shared this row's (date, amount, raw description) before
+    #: the rebuild: twins are told apart only by their position, which a rebuild can shift.
+    twin_count: int = 1
 
 
 def _user_edit_of(txn: Transaction) -> _UserEdit:
@@ -1003,51 +1041,148 @@ def _user_edit_of(txn: Transaction) -> _UserEdit:
         is_spend=txn.is_spend,
         merchant_canonical=txn.merchant_canonical,
         notes=txn.notes,
+        locked=txn.classified_by == USER_CLASSIFIED,
+        dedupe_hash=txn.dedupe_hash,
+        posted_date=txn.posted_date,
+        amount_minor=txn.amount_minor,
+        description_raw=txn.description_raw,
+        description_clean=txn.description_clean,
+        merchant_key=txn.merchant_key,
     )
 
 
 def _apply_user_edit(txn: Transaction, edit: _UserEdit) -> None:
-    txn.category_id = edit.category_id
-    txn.subcategory_id = edit.subcategory_id
-    txn.confidence = edit.confidence
-    txn.needs_review = edit.needs_review
-    txn.kind = edit.kind
-    txn.is_spend = edit.is_spend
-    txn.merchant_canonical = edit.merchant_canonical
+    if edit.locked:
+        txn.category_id = edit.category_id
+        txn.subcategory_id = edit.subcategory_id
+        txn.confidence = edit.confidence
+        txn.needs_review = edit.needs_review
+        txn.kind = edit.kind
+        txn.is_spend = edit.is_spend
+        txn.merchant_canonical = edit.merchant_canonical
+        txn.classified_by = USER_CLASSIFIED
     if edit.notes is not None:
         txn.notes = edit.notes
-    txn.classified_by = USER_CLASSIFIED
     txn.updated_at = _utcnow_iso()
 
 
-def _user_edits_of_statement(session: Session, statement_id: int) -> dict[str, _UserEdit]:
-    """The statement's hand-edited rows, keyed by `dedupe_hash` (a rebuilt row of the same
-    transaction on the same account hashes the same)."""
-    return {
-        txn.dedupe_hash: _user_edit_of(txn)
+#: Machine-written `notes` (transfer pairing, see `_pair_transfers`) are rebuilt with the rows;
+#: only text the user typed is a hand edit worth carrying over.
+_MACHINE_NOTES_PREFIX = '{"transfer_pair_id"'
+
+
+def _user_edits_of_statement(session: Session, statement_id: int) -> list[_UserEdit]:
+    """The statement's hand-edited rows: those marked `classified_by='user'`, plus rows that only
+    carry a note the user typed. Each remembers how many twins (same date, amount and raw
+    description) it had, for `_restore_user_edits`' ambiguity check."""
+    rows = list(
+        session.execute(
+            select(Transaction).where(Transaction.statement_id == statement_id)
+        ).scalars()
+    )
+    twins: dict[tuple[str, int, str], int] = {}
+    for txn in rows:
+        key = (txn.posted_date, txn.amount_minor, txn.description_raw)
+        twins[key] = twins.get(key, 0) + 1
+    edits: list[_UserEdit] = []
+    for txn in sorted(rows, key=lambda t: t.id):
+        is_locked = txn.classified_by == USER_CLASSIFIED
+        has_user_note = txn.notes is not None and not txn.notes.startswith(_MACHINE_NOTES_PREFIX)
+        if not is_locked and not has_user_note:
+            continue
+        edit = _user_edit_of(txn)
+        if not has_user_note:
+            edit = replace(edit, notes=None)
+        edits.append(
+            replace(
+                edit, twin_count=twins[(txn.posted_date, txn.amount_minor, txn.description_raw)]
+            )
+        )
+    return edits
+
+
+def _restore_user_edits(
+    session: Session, statement_id: int, account_id: int, edits: list[_UserEdit]
+) -> tuple[int, int]:
+    """Put each remembered hand edit back on a rebuilt row, never guessing between candidates.
+    Returns ``(restored, unmatched)``; an unmatched edit is dropped (its old row is gone).
+
+    Matching, per edit:
+
+    1. **Same `dedupe_hash`** on the account (a rebuilt row of the same transaction hashes the
+       same). Twins (same date, amount and raw description) are told apart only by their
+       position, so if the rebuild produced a different number of twins than there were before,
+       the match is ambiguous and the edit is left unmatched rather than attached to the wrong one.
+    2. Otherwise (the parser changed its description text, so the hash differs) the **same
+       account, posted date, amount and merchant** (`merchant_key`, or the cleaned description
+       when the key is empty) among the rebuilt rows of this statement, but only if exactly one
+       edit and exactly one still-unclaimed rebuilt row share that identity.
+
+    Runs right after the rebuild, before anything can classify the new rows (which are then
+    skipped as hand-edited). Flushes, does not commit: the caller owns the transaction, as
+    `reparse` documents.
+    """
+    if not edits:
+        return 0, 0
+    rebuilt = list(
+        session.execute(
+            select(Transaction).where(Transaction.statement_id == statement_id)
+        ).scalars()
+    )
+    new_twins: dict[tuple[str, int, str], int] = {}
+    for txn in rebuilt:
+        key = (txn.posted_date, txn.amount_minor, txn.description_raw)
+        new_twins[key] = new_twins.get(key, 0) + 1
+
+    by_hash = {
+        txn.dedupe_hash: txn
         for txn in session.execute(
             select(Transaction).where(
-                Transaction.statement_id == statement_id,
-                Transaction.classified_by == USER_CLASSIFIED,
+                Transaction.account_id == account_id,
+                Transaction.dedupe_hash.in_([e.dedupe_hash for e in edits]),
             )
         ).scalars()
     }
+    claimed: set[int] = set()
+    pending: list[_UserEdit] = []
+    restored = 0
+    for edit in edits:
+        match = by_hash.get(edit.dedupe_hash)
+        if match is None:
+            pending.append(edit)
+            continue
+        twin_key = (edit.posted_date, edit.amount_minor, edit.description_raw)
+        in_statement = match.statement_id == statement_id
+        if (in_statement and new_twins.get(twin_key, 0) != edit.twin_count) or (
+            match.id in claimed
+        ):
+            continue  # ambiguous twin: unmatched
+        if match.classified_by == USER_CLASSIFIED and edit.locked:
+            continue  # the row already carries an edit of its own (another statement's twin)
+        claimed.add(match.id)
+        _apply_user_edit(match, edit)
+        restored += 1
 
+    def identity(txn: Transaction | _UserEdit) -> tuple[str, int, str]:
+        who = txn.merchant_key or txn.description_clean
+        return (txn.posted_date, txn.amount_minor, who)
 
-def _restore_user_edits(session: Session, account_id: int, edits: dict[str, _UserEdit]) -> None:
-    """Put each remembered one-time edit back on the rebuilt row with the same `dedupe_hash`.
-    Runs right after the rebuild, before anything can classify the new rows, which are then
-    skipped as hand-edited. Does not commit."""
-    if not edits:
-        return
-    for txn in session.execute(
-        select(Transaction).where(
-            Transaction.account_id == account_id, Transaction.dedupe_hash.in_(list(edits))
-        )
-    ).scalars():
-        if txn.classified_by != USER_CLASSIFIED:
-            _apply_user_edit(txn, edits[txn.dedupe_hash])
-    session.commit()
+    edits_by_identity: dict[tuple[str, int, str], list[_UserEdit]] = {}
+    for edit in pending:
+        edits_by_identity.setdefault(identity(edit), []).append(edit)
+    rows_by_identity: dict[tuple[str, int, str], list[Transaction]] = {}
+    for txn in rebuilt:
+        if txn.id not in claimed and txn.classified_by != USER_CLASSIFIED:
+            rows_by_identity.setdefault(identity(txn), []).append(txn)
+    for key, group in edits_by_identity.items():
+        candidates = rows_by_identity.get(key, [])
+        if len(group) == 1 and len(candidates) == 1:
+            claimed.add(candidates[0].id)
+            _apply_user_edit(candidates[0], group[0])
+            restored += 1
+
+    session.flush()
+    return restored, len(edits) - restored
 
 
 def reassign(

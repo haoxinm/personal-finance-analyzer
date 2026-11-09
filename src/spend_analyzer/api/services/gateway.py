@@ -58,6 +58,8 @@ class ImportResult:
     reconciliation_delta_minor: int | None
     layout_drift: bool
     warnings: tuple[str, ...]
+    restored_edits: int = 0
+    unmatched_edits: int = 0
 
 
 @dataclass(frozen=True)

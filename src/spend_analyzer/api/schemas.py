@@ -208,6 +208,10 @@ class Job(_Model):
     #: transaction was already present (e.g. from an overlapping statement). `None` otherwise.
     inserted: int | None = None
     skipped_duplicates: int | None = None
+    #: On a finished re-parse job: hand edits (category/kind or notes) kept on the rebuilt rows,
+    #: and edits dropped because no single rebuilt row could be matched to them. `None` otherwise.
+    restored_edits: int | None = None
+    unmatched_edits: int | None = None
 
 
 # --- Transactions ----------------------------------------------------------------------------------

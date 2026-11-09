@@ -182,6 +182,32 @@ def test_extract_and_reparse_pass_pages_through(
     assert seen["reparse"]["pages"] == [2]  # type: ignore[index]
 
 
+def test_reparse_job_reports_restored_and_unmatched_edits(
+    client: TestClient, session: Session, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import time
+
+    sid = _staged_statement(session, tmp_path)
+
+    def fake_reparse(db: Session, statement_id: int, **kw: object) -> gateway.ImportResult:
+        return gateway.ImportResult(
+            statement_id, 3, 0, (), None, False, (), restored_edits=2, unmatched_edits=1
+        )
+
+    monkeypatch.setattr(gateway, "reparse", fake_reparse)
+    r = client.post(f"/api/statements/{sid}/reparse", json={"issuer_id": 1, "parser_id": "llm"})
+    assert r.status_code == 202
+    job_id = r.json()["job_id"]
+    job: dict[str, object] = {}
+    for _ in range(100):
+        job = client.get(f"/api/jobs/{job_id}").json()
+        if job["status"] == "done":
+            break
+        time.sleep(0.05)
+    assert job["status"] == "done"
+    assert job["restored_edits"] == 2 and job["unmatched_edits"] == 1
+
+
 def test_concurrent_page_renders_do_not_crash(tmp_path: Path) -> None:
     """pdfium is not thread-safe; the Import screen fires every thumbnail request at once and
     unserialised renders segfaulted the server (the e2e job's flaky 'Import is disabled')."""
