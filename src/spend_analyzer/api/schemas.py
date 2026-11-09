@@ -257,33 +257,53 @@ class TransactionPatch(_Model):
     create_rule: bool = False
 
 
-class TransactionSnapshot(_Model):
-    """One transaction's classification state, as `POST /review/accept` captured it before the
-    change; sent back unchanged to `POST /review/undo`."""
+ClassifiedBy = Literal["cache", "user_rule", "builtin_rule", "issuer", "llm", "user", "kind"]
 
-    transaction_id: int
+
+class TransactionState(_Model):
+    """The classification fields one accept (or "apply to existing") can change on a
+    transaction. Values are validated: a token naming an unknown kind or `classified_by` is
+    rejected."""
+
     category_id: int | None
     subcategory_id: int | None
-    confidence: float | None
-    classified_by: str | None
+    confidence: float | None = Field(default=None, ge=0, le=1)
+    classified_by: ClassifiedBy | None
     needs_review: bool
-    kind: str
+    kind: Kind
     is_spend: bool
     merchant_canonical: str | None
 
 
-class RuleSnapshot(_Model):
-    rule_id: int
-    existed: bool
-    category_id: int | None = None
-    subcategory_id: int | None = None
-    kind_override: str | None = None
+class TransactionSnapshot(_Model):
+    """One transaction as the operation found it (`before`) and left it (`after`); sent back
+    unchanged to `POST /review/undo`, which restores `before` only if the row still equals
+    `after`."""
+
+    transaction_id: int
+    before: TransactionState
+    after: TransactionState
+
+
+class RuleState(_Model):
+    category_id: int
+    subcategory_id: int
+    kind_override: Kind | None = None
     enabled: bool = True
 
 
+class RuleSnapshot(_Model):
+    """The merchant's exact rule around an accept: `before=None` means the accept created it."""
+
+    rule_id: int
+    before: RuleState | None = None
+    after: RuleState
+
+
 class AcceptUndo(_Model):
-    """Opaque undo token for one Review accept (everything the accept changed): each patched
-    transaction as it was and, for an "always categorize" accept, the merchant's rule."""
+    """Opaque undo token for one Review accept or one "apply rule to existing" (everything it
+    changed): each patched transaction before and after and, for an "always categorize" accept,
+    the merchant's rule. Held by the client and validated on use."""
 
     transactions: list[TransactionSnapshot]
     rule: RuleSnapshot | None = None
@@ -309,6 +329,11 @@ class ReviewAcceptResponse(_Model):
 
 class ReviewUndoResponse(_Model):
     restored: int
+    #: Transactions left as they are because they changed (or were deleted) after the operation
+    #: being undone: a later edit is never reverted.
+    skipped: list[int] = Field(default_factory=list)
+    #: The accept's rule was left alone because it was edited, deleted or replaced since.
+    rule_skipped: bool = False
 
 
 class BulkUpdateRequest(_Model):
@@ -537,6 +562,21 @@ class Rule(_Model):
 
 class RuleApplyResponse(_Model):
     updated: int
+    #: Hand to `POST /review/undo` to reverse this application (rows edited since are skipped).
+    undo: AcceptUndo
+
+
+class RuleApplyPreview(_Model):
+    """What `POST /rules/{id}/apply` would do right now, for the confirmation step."""
+
+    #: Existing transactions that would change.
+    matches: int
+    #: How many distinct users own them.
+    user_count: int
+    #: How many of them would get a different `kind` from the rule's kind override.
+    kind_changes: int
+    #: The rule has no owner, so it applies to every user's transactions.
+    all_users: bool
 
 
 class RuleCreate(_Model):

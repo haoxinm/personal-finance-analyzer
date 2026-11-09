@@ -539,24 +539,54 @@ def rule_target_ids(session: Session, rule: Rule) -> list[int]:
     return targets
 
 
-def apply_rule_to_existing(session: Session, rule: Rule) -> int:
+@dataclass(frozen=True, slots=True)
+class RuleApplyPreview:
+    """What `apply_rule_to_existing` would do right now, for the confirmation step: how many
+    transactions change, how many distinct users own them (a rule with no owner spans all of
+    them), and how many would get a different `kind`."""
+
+    matches: int
+    user_count: int
+    kind_changes: int
+    all_users: bool
+
+
+def preview_rule_application(session: Session, rule: Rule) -> RuleApplyPreview:
+    """Count what `apply_rule_to_existing(session, rule)` would change, without changing it."""
+    targets = [session.get(Transaction, txn_id) for txn_id in rule_target_ids(session, rule)]
+    rows = [t for t in targets if t is not None]
+    kind_changes = sum(
+        1 for t in rows if rule.kind_override is not None and rule.kind_override != t.kind
+    )
+    return RuleApplyPreview(
+        matches=len(rows),
+        user_count=len({t.user_id for t in rows}),
+        kind_changes=kind_changes,
+        all_users=rule.user_id is None,
+    )
+
+
+def apply_rule_to_existing(session: Session, rule: Rule) -> tuple[int, AcceptUndo]:
     """Apply `rule` to every transaction `rule_target_ids` selects (the rule's category, its kind
     override if any, `classified_by='user_rule'`, no longer flagged for review). Returns how many
-    were changed. Never touches a user-corrected row. Does not commit."""
-    updated = 0
+    were changed and an `AcceptUndo` (the same token Review's accept returns, so
+    `undo_accept` / `POST /review/undo` reverses it; it carries no rule). Never touches a
+    user-corrected row. Does not commit."""
+    snapshots: list[TransactionSnapshot] = []
     for txn_id in rule_target_ids(session, rule):
         txn = session.get(Transaction, txn_id)
         if txn is None:  # pragma: no cover - defensive
             continue
+        before = _state_of(txn)
         _write_outcome(
             session,
             txn,
             _outcome_from_rule(session, rule, classified_by="user_rule"),
             needs_review=False,
         )
-        updated += 1
+        snapshots.append(TransactionSnapshot(txn.id, before, _state_of(txn)))
     session.flush()
-    return updated
+    return len(snapshots), AcceptUndo(transactions=tuple(snapshots), rule=None)
 
 
 def _safe_rule_matches(rule: Rule, merchant_key: str) -> bool:
@@ -573,10 +603,9 @@ def _safe_rule_matches(rule: Rule, merchant_key: str) -> bool:
 
 
 @dataclass(frozen=True, slots=True)
-class TransactionSnapshot:
-    """What `undo_accept` needs to put one transaction back exactly as it was."""
+class TransactionState:
+    """The fields one accept (or one "apply to existing") can change on a transaction."""
 
-    transaction_id: int
     category_id: int | None
     subcategory_id: int | None
     confidence: float | None
@@ -588,24 +617,52 @@ class TransactionSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class TransactionSnapshot:
+    """One transaction as an operation found it (`before`) and left it (`after`). Undo restores
+    `before` only if the row still equals `after`: a later edit by the user is never reverted."""
+
+    transaction_id: int
+    before: TransactionState
+    after: TransactionState
+
+
+@dataclass(frozen=True, slots=True)
+class RuleState:
+    category_id: int
+    subcategory_id: int
+    kind_override: str | None
+    enabled: bool
+
+
+@dataclass(frozen=True, slots=True)
 class RuleSnapshot:
-    """The merchant's exact rule before an accept: `existed=False` means undo deletes it."""
+    """The merchant's exact rule around an accept. `before=None` means the accept created it, so
+    undo deletes it; otherwise undo puts `before` back. Either way only if the rule still equals
+    `after` and is the user's exact rule for the accepted transaction's merchant."""
 
     rule_id: int
-    existed: bool
-    category_id: int | None = None
-    subcategory_id: int | None = None
-    kind_override: str | None = None
-    enabled: bool = True
+    before: RuleState | None
+    after: RuleState
 
 
 @dataclass(frozen=True, slots=True)
 class AcceptUndo:
-    """Everything one `accept_review` changed, to hand back to `undo_accept`: every patched
-    transaction as it was and, when the accept was an "always categorize" one, the rule."""
+    """Everything one `accept_review` (or `apply_rule_to_existing`) changed, to hand back to
+    `undo_accept`: every patched transaction before and after and, when the accept was an "always
+    categorize" one, the rule."""
 
     transactions: tuple[TransactionSnapshot, ...]
     rule: RuleSnapshot | None
+
+
+@dataclass(frozen=True, slots=True)
+class UndoResult:
+    """What `undo_accept` did: the transactions put back, the ones skipped because they changed
+    (or vanished) since, and whether the rule was left alone for the same reason."""
+
+    restored: tuple[int, ...]
+    skipped: tuple[int, ...]
+    rule_skipped: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -617,9 +674,18 @@ class AcceptResult:
     undo: AcceptUndo
 
 
-def _snapshot_transaction(txn: Transaction) -> TransactionSnapshot:
-    return TransactionSnapshot(
-        transaction_id=txn.id,
+#: The values `Transaction.classified_by` can hold (see `_Outcome.classified_by`); an undo token
+#: naming anything else is forged or corrupt.
+CLASSIFIED_BY_VALUES: frozenset[str] = frozenset(
+    {"cache", "user_rule", "builtin_rule", "issuer", "llm", "user", "kind"}
+)
+_KIND_VALUES: frozenset[str] = frozenset(
+    {"purchase", "refund", "payment", "transfer", "fee", "interest", "adjustment"}
+)
+
+
+def _state_of(txn: Transaction) -> TransactionState:
+    return TransactionState(
         category_id=txn.category_id,
         subcategory_id=txn.subcategory_id,
         confidence=txn.confidence,
@@ -628,6 +694,15 @@ def _snapshot_transaction(txn: Transaction) -> TransactionSnapshot:
         kind=txn.kind,
         is_spend=txn.is_spend,
         merchant_canonical=txn.merchant_canonical,
+    )
+
+
+def _rule_state_of(rule: Rule) -> RuleState:
+    return RuleState(
+        category_id=rule.category_id,
+        subcategory_id=rule.subcategory_id,
+        kind_override=rule.kind_override,
+        enabled=rule.enabled,
     )
 
 
@@ -660,7 +735,7 @@ def accept_review(
     if txn is None:
         raise ConfigError(f"no transaction with id {transaction_id}")
 
-    snapshots = [_snapshot_transaction(txn)]
+    before_main = _state_of(txn)
     rule_before = (
         session.execute(
             select(Rule)
@@ -677,18 +752,7 @@ def accept_review(
         if create_rule and txn.merchant_key
         else None
     )
-    rule_prior = (
-        None
-        if rule_before is None
-        else RuleSnapshot(
-            rule_id=rule_before.id,
-            existed=True,
-            category_id=rule_before.category_id,
-            subcategory_id=rule_before.subcategory_id,
-            kind_override=rule_before.kind_override,
-            enabled=rule_before.enabled,
-        )
-    )
+    rule_state_before = None if rule_before is None else _rule_state_of(rule_before)
 
     rule = apply_user_correction(
         session,
@@ -698,8 +762,11 @@ def accept_review(
         kind=None,
         create_rule=create_rule,
     )
-    rule_snapshot = rule_prior or (
-        RuleSnapshot(rule_id=rule.id, existed=False) if rule is not None else None
+    snapshots = [TransactionSnapshot(txn.id, before_main, _state_of(txn))]
+    rule_snapshot = (
+        RuleSnapshot(rule_id=rule.id, before=rule_state_before, after=_rule_state_of(rule))
+        if rule is not None
+        else None
     )
 
     applied: list[int] = []
@@ -714,7 +781,7 @@ def accept_review(
             or other.classified_by == USER_CLASSIFIED
         ):
             continue
-        snapshots.append(_snapshot_transaction(other))
+        before_other = _state_of(other)
         apply_user_correction(
             session,
             other.id,
@@ -723,6 +790,7 @@ def accept_review(
             kind=None,
             create_rule=False,
         )
+        snapshots.append(TransactionSnapshot(other.id, before_other, _state_of(other)))
         applied.append(other.id)
     session.flush()
     return AcceptResult(
@@ -732,41 +800,106 @@ def accept_review(
     )
 
 
-def undo_accept(session: Session, undo: AcceptUndo) -> int:
-    """Reverse one `accept_review`: restore every snapshotted transaction (category, provenance,
-    `needs_review`, kind) and, if the accept was an "always categorize" one, put the exact rule
-    back as it was or delete the one the accept created. Returns how many transactions were
-    restored. The `classifications` audit rows the accept wrote stay (history, never read back).
-    Does not commit."""
-    restored = 0
-    for snap in undo.transactions:
-        txn = session.get(Transaction, snap.transaction_id)
-        if txn is None:
-            continue
-        txn.category_id = snap.category_id
-        txn.subcategory_id = snap.subcategory_id
-        txn.confidence = snap.confidence
-        txn.classified_by = snap.classified_by
-        txn.needs_review = snap.needs_review
-        txn.kind = snap.kind
-        txn.is_spend = snap.is_spend
-        txn.merchant_canonical = snap.merchant_canonical
-        txn.updated_at = utcnow_iso()
-        restored += 1
+def validate_undo(session: Session, undo: AcceptUndo) -> None:
+    """Reject an undo token that could not have come from this server: an unknown kind or
+    `classified_by`, a confidence outside 0..1, or a category/subcategory id that does not exist
+    or does not belong together. The token is held by the client, so nothing in it is trusted.
 
+    Raises:
+        ConfigError: the token is invalid. Nothing has been changed.
+    """
+    pairs: set[tuple[int | None, int | None]] = set()
+    states: list[TransactionState] = []
+    for snap in undo.transactions:
+        states.extend((snap.before, snap.after))
+    for state in states:
+        if state.kind not in _KIND_VALUES:
+            raise ConfigError(f"invalid undo token: unknown kind {state.kind!r}")
+        if state.classified_by is not None and state.classified_by not in CLASSIFIED_BY_VALUES:
+            raise ConfigError(f"invalid undo token: unknown classified_by {state.classified_by!r}")
+        if state.confidence is not None and not 0.0 <= state.confidence <= 1.0:
+            raise ConfigError("invalid undo token: confidence out of range")
+        pairs.add((state.category_id, state.subcategory_id))
+    if undo.rule is not None:
+        rule_states = [undo.rule.after] + ([undo.rule.before] if undo.rule.before else [])
+        for rule_state in rule_states:
+            if (
+                rule_state.kind_override is not None
+                and rule_state.kind_override not in _KIND_VALUES
+            ):
+                raise ConfigError("invalid undo token: unknown kind override")
+            pairs.add((rule_state.category_id, rule_state.subcategory_id))
+    for category_id, subcategory_id in pairs:
+        if category_id is None and subcategory_id is None:
+            continue
+        if category_id is None or subcategory_id is None:
+            raise ConfigError("invalid undo token: category without subcategory")
+        sub = session.get(Subcategory, subcategory_id)
+        if sub is None or sub.category_id != category_id:
+            raise ConfigError("invalid undo token: unknown category/subcategory pair")
+
+
+def undo_accept(session: Session, undo: AcceptUndo) -> UndoResult:
+    """Reverse one `accept_review` (or `apply_rule_to_existing`) without clobbering anything the
+    user did afterwards.
+
+    Each snapshotted transaction goes back to its `before` state only if it still equals its
+    `after` state; one edited since (re-categorized, relabelled, re-accepted, deleted) is skipped
+    and reported. The rule is touched only if it is the user's exact rule for the accepted
+    transaction's merchant and still equals what the accept left: then it is put back, or deleted
+    if the accept created it; a rule edited since is left alone and reported. The
+    `classifications` audit rows the accept wrote stay (history, never read back). Does not
+    commit.
+
+    Raises:
+        ConfigError: `undo` fails `validate_undo` (nothing is changed).
+    """
+    validate_undo(session, undo)
+    restored: list[int] = []
+    skipped: list[int] = []
+    first_txn: Transaction | None = None
+    for index, snap in enumerate(undo.transactions):
+        txn = session.get(Transaction, snap.transaction_id)
+        if index == 0:
+            first_txn = txn
+        if txn is None or _state_of(txn) != snap.after:
+            skipped.append(snap.transaction_id)
+            continue
+        before = snap.before
+        txn.category_id = before.category_id
+        txn.subcategory_id = before.subcategory_id
+        txn.confidence = before.confidence
+        txn.classified_by = before.classified_by
+        txn.needs_review = before.needs_review
+        txn.kind = before.kind
+        txn.is_spend = before.is_spend
+        txn.merchant_canonical = before.merchant_canonical
+        txn.updated_at = utcnow_iso()
+        restored.append(txn.id)
+
+    rule_skipped = False
     rule_snap = undo.rule
     if rule_snap is not None:
         rule_row = session.get(Rule, rule_snap.rule_id)
-        if rule_row is not None:
-            if not rule_snap.existed:
-                session.delete(rule_row)
-            elif rule_snap.category_id is not None and rule_snap.subcategory_id is not None:
-                rule_row.category_id = rule_snap.category_id
-                rule_row.subcategory_id = rule_snap.subcategory_id
-                rule_row.kind_override = rule_snap.kind_override
-                rule_row.enabled = rule_snap.enabled
+        if (
+            rule_row is None
+            or first_txn is None
+            or rule_row.source != "user"
+            or rule_row.match_type != "exact"
+            or rule_row.user_id != first_txn.user_id
+            or rule_row.pattern != first_txn.merchant_key
+            or _rule_state_of(rule_row) != rule_snap.after
+        ):
+            rule_skipped = True
+        elif rule_snap.before is None:
+            session.delete(rule_row)
+        else:
+            rule_row.category_id = rule_snap.before.category_id
+            rule_row.subcategory_id = rule_snap.before.subcategory_id
+            rule_row.kind_override = rule_snap.before.kind_override
+            rule_row.enabled = rule_snap.before.enabled
     session.flush()
-    return restored
+    return UndoResult(restored=tuple(restored), skipped=tuple(skipped), rule_skipped=rule_skipped)
 
 
 def approve_subcategory(session: Session, subcategory_id: int) -> None:

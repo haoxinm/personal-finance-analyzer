@@ -102,7 +102,7 @@ def test_undo_restores_rows_needs_review_and_removes_the_rule_it_created(
 
     undone = client.post("/api/review/undo", json=body["undo"])
     assert undone.status_code == 200
-    assert undone.json() == {"restored": 2}
+    assert undone.json()["restored"] == 2
 
     session.expire_all()
     for txn_id in (first.id, second.id):
@@ -123,7 +123,7 @@ def test_undo_restores_a_transaction_that_had_no_category(
     assert bare.category_id is None
 
     body = _accept(client, bare.id)
-    assert client.post("/api/review/undo", json=body["undo"]).json() == {"restored": 1}
+    assert client.post("/api/review/undo", json=body["undo"]).json()["restored"] == 1
 
     session.expire_all()
     txn = session.get(Transaction, bare.id)
@@ -221,7 +221,7 @@ def test_new_rule_reports_and_applies_to_existing_matches_but_never_user_correct
 
     applied = client.post(f"/api/rules/{rule['id']}/apply")
     assert applied.status_code == 200
-    assert applied.json() == {"updated": 2}
+    assert applied.json()["updated"] == 2
 
     session.expire_all()
     grocery = category_ids(session, *GROCERY)
@@ -240,7 +240,7 @@ def test_new_rule_reports_and_applies_to_existing_matches_but_never_user_correct
     assert skipped is not None and skipped.category_id is None
 
     # Idempotent: nothing left to change.
-    assert client.post(f"/api/rules/{rule['id']}/apply").json() == {"updated": 0}
+    assert client.post(f"/api/rules/{rule['id']}/apply").json()["updated"] == 0
 
 
 def test_applying_a_rule_respects_a_higher_priority_rule(
@@ -261,8 +261,8 @@ def test_applying_a_rule_respects_a_higher_priority_rule(
     second = _create_rule(client, "trader")
     assert second["existing_matches"] == 0
 
-    assert client.post(f"/api/rules/{second['id']}/apply").json() == {"updated": 0}
-    assert client.post(f"/api/rules/{first['id']}/apply").json() == {"updated": 1}
+    assert client.post(f"/api/rules/{second['id']}/apply").json()["updated"] == 0
+    assert client.post(f"/api/rules/{first['id']}/apply").json()["updated"] == 1
     session.expire_all()
     fuel = category_ids(session, "fuel", "gasoline")
     row = session.get(Transaction, txn.id)
@@ -339,3 +339,258 @@ def test_classify_run_covers_uncategorized_and_needs_review_but_not_user_correct
     assert set(seen[-1]) == {null_row.id, fallback.id, flagged.id, settled.id}
     assert everything["transaction_count"] == 4
     assert corrected_fallback.id not in seen[-1]  # a hand correction is never reconsidered
+
+
+# --- Undo never overwrites later edits, and does not trust its token ------------------------
+
+
+def _undo(client: TestClient, token: object) -> dict[str, object]:
+    response = client.post("/api/review/undo", json=token)
+    assert response.status_code == 200, response.text
+    body: dict[str, object] = response.json()
+    return body
+
+
+def test_undo_after_a_later_edit_leaves_that_edit_alone(
+    client: TestClient, session: Session
+) -> None:
+    seed = base(session)
+    first = _pending(session, 1, seed, merchant_key="trader joes")
+    second = _pending(session, 2, seed, merchant_key="trader joes")
+    third = _pending(session, 3, seed, merchant_key="trader joes")
+    session.commit()
+    uncategorized = category_ids(session, *UNCATEGORIZED)
+    fuel = category_ids(session, "fuel", "gasoline")
+
+    body = _accept(client, first.id, similar_ids=[second.id, third.id])
+    # The user then re-categorizes the first row by hand, and deletes nothing else.
+    assert (
+        client.patch(
+            f"/api/transactions/{first.id}",
+            json={"category_key": "fuel", "subcategory_key": "gasoline"},
+        ).status_code
+        == 200
+    )
+
+    undone = _undo(client, body["undo"])
+    assert undone["restored"] == 2
+    assert undone["skipped"] == [first.id]
+
+    session.expire_all()
+    kept = session.get(Transaction, first.id)
+    assert kept is not None
+    assert (kept.category_id, kept.subcategory_id) == fuel  # the later edit survived
+    assert kept.classified_by == "user" and kept.needs_review is False
+    for txn_id in (second.id, third.id):
+        txn = session.get(Transaction, txn_id)
+        assert txn is not None
+        assert (txn.category_id, txn.subcategory_id) == uncategorized
+        assert txn.needs_review is True
+
+
+def test_undo_twice_is_a_no_op_the_second_time(client: TestClient, session: Session) -> None:
+    seed = base(session)
+    first = _pending(session, 1, seed, merchant_key="trader joes")
+    session.commit()
+    body = _accept(client, first.id)
+    assert _undo(client, body["undo"])["restored"] == 1
+    # The row now equals its pre-accept state, not the accept's: nothing to revert.
+    again = _undo(client, body["undo"])
+    assert again["restored"] == 0 and again["skipped"] == [first.id]
+
+
+def test_undo_leaves_a_rule_edited_after_the_accept(client: TestClient, session: Session) -> None:
+    seed = base(session)
+    first = _pending(session, 1, seed, merchant_key="trader joes")
+    session.commit()
+    fuel = category_ids(session, "fuel", "gasoline")
+
+    body = _accept(client, first.id, create_rule=True)
+    rule = session.execute(select(Rule).where(Rule.pattern == "trader joes")).scalar_one()
+    edited = client.patch(
+        f"/api/rules/{rule.id}", json={"category_key": "fuel", "subcategory_key": "gasoline"}
+    )
+    assert edited.status_code == 200
+
+    undone = _undo(client, body["undo"])
+    assert undone["restored"] == 1 and undone["rule_skipped"] is True
+    session.expire_all()
+    kept = session.execute(select(Rule).where(Rule.pattern == "trader joes")).scalar_one()
+    assert (kept.category_id, kept.subcategory_id) == fuel  # not deleted, not reverted
+
+
+def test_undo_leaves_a_rule_that_was_deleted_and_recreated(
+    client: TestClient, session: Session
+) -> None:
+    seed = base(session)
+    first = _pending(session, 1, seed, merchant_key="trader joes")
+    session.commit()
+    body = _accept(client, first.id, create_rule=True)
+    rule = session.execute(select(Rule).where(Rule.pattern == "trader joes")).scalar_one()
+    assert client.delete(f"/api/rules/{rule.id}").status_code == 204
+    assert _undo(client, body["undo"])["rule_skipped"] is True
+
+
+def test_undo_deletes_the_rule_it_created_when_nothing_changed_it(
+    client: TestClient, session: Session
+) -> None:
+    seed = base(session)
+    first = _pending(session, 1, seed, merchant_key="trader joes")
+    session.commit()
+    body = _accept(client, first.id, create_rule=True)
+    undone = _undo(client, body["undo"])
+    assert undone["rule_skipped"] is False and undone["skipped"] == []
+    session.expire_all()
+    assert session.execute(select(Rule).where(Rule.pattern == "trader joes")).scalars().all() == []
+
+
+def _forged(txn_id: int, **after: object) -> dict[str, object]:
+    state: dict[str, object] = {
+        "category_id": None,
+        "subcategory_id": None,
+        "confidence": None,
+        "classified_by": None,
+        "needs_review": True,
+        "kind": "purchase",
+        "is_spend": True,
+        "merchant_canonical": None,
+    }
+    return {
+        "transactions": [
+            {"transaction_id": txn_id, "before": {**state, **after}, "after": state},
+        ],
+        "rule": None,
+    }
+
+
+def test_undo_rejects_a_token_with_unknown_enums_or_taxonomy_ids(
+    client: TestClient, session: Session
+) -> None:
+    seed = base(session)
+    txn = _pending(session, 1, seed)
+    session.commit()
+
+    assert client.post("/api/review/undo", json=_forged(txn.id, kind="bogus")).status_code == 422
+    assert (
+        client.post("/api/review/undo", json=_forged(txn.id, classified_by="hacked")).status_code
+        == 422
+    )
+    assert client.post("/api/review/undo", json=_forged(txn.id, confidence=7)).status_code == 422
+    unknown = client.post(
+        "/api/review/undo", json=_forged(txn.id, category_id=99999, subcategory_id=99999)
+    )
+    assert unknown.status_code == 400
+    mismatched = client.post(
+        "/api/review/undo",
+        json=_forged(
+            txn.id,
+            category_id=category_ids(session, *GROCERY)[0],
+            subcategory_id=category_ids(session, "fuel", "gasoline")[1],
+        ),
+    )
+    assert mismatched.status_code == 400
+    half = client.post("/api/review/undo", json=_forged(txn.id, category_id=1))
+    assert half.status_code == 400
+
+
+def test_undo_only_touches_the_users_exact_rule_for_the_accepted_merchant(
+    client: TestClient, session: Session
+) -> None:
+    seed = base(session)
+    first = _pending(session, 1, seed, merchant_key="trader joes")
+    grocery = category_ids(session, *GROCERY)
+    builtin = Rule(
+        match_type="contains",
+        pattern="shell",
+        category_id=grocery[0],
+        subcategory_id=grocery[1],
+        source="builtin",
+    )
+    unrelated = Rule(
+        match_type="exact",
+        pattern="some other merchant",
+        category_id=grocery[0],
+        subcategory_id=grocery[1],
+        user_id=seed[0].id,
+        source="user",
+    )
+    session.add_all([builtin, unrelated])
+    session.commit()
+
+    body = _accept(client, first.id)  # a plain accept, no rule
+    state = {
+        "category_id": grocery[0],
+        "subcategory_id": grocery[1],
+        "kind_override": None,
+        "enabled": True,
+    }
+    for rule in (builtin, unrelated):
+        token = {**body["undo"], "rule": {"rule_id": rule.id, "before": None, "after": state}}  # type: ignore[dict-item]
+        undone = _undo(client, token)
+        assert undone["rule_skipped"] is True, rule.pattern
+    session.expire_all()
+    assert session.get(Rule, builtin.id) is not None
+    assert session.get(Rule, unrelated.id) is not None
+
+
+# --- Apply to existing: preview and undo -----------------------------------------------------
+
+
+def test_apply_preview_reports_matches_users_and_kind_changes_without_changing_anything(
+    client: TestClient, session: Session
+) -> None:
+    seed = base(session)
+    a = _pending(session, 1, seed, merchant_key="trader joes 1")
+    _pending(session, 2, seed, merchant_key="trader joes 2")
+    session.commit()
+
+    rule = _create_rule(client, "trader joes", kind="fee")
+    preview = client.get(f"/api/rules/{rule['id']}/apply-preview")
+    assert preview.status_code == 200
+    assert preview.json() == {
+        "matches": 2,
+        "user_count": 1,
+        "kind_changes": 2,  # both purchases would become fees
+        "all_users": True,  # rules made on the Rules screen have no owner
+    }
+    session.expire_all()
+    row = session.get(Transaction, a.id)
+    assert row is not None and row.kind == "purchase" and row.needs_review is True
+
+    assert client.get("/api/rules/999999/apply-preview").status_code == 404
+
+
+def test_apply_returns_an_undo_token_that_reverses_it(client: TestClient, session: Session) -> None:
+    seed = base(session)
+    a = _pending(session, 1, seed, merchant_key="trader joes 1")
+    b = _pending(session, 2, seed, merchant_key="trader joes 2")
+    session.commit()
+    uncategorized = category_ids(session, *UNCATEGORIZED)
+
+    rule = _create_rule(client, "trader joes", kind="fee")
+    applied = client.post(f"/api/rules/{rule['id']}/apply").json()
+    assert applied["updated"] == 2
+    session.expire_all()
+    changed = session.get(Transaction, a.id)
+    assert changed is not None and changed.kind == "fee" and changed.is_spend is True
+
+    # One row is hand-edited afterwards: undo must not touch it.
+    assert (
+        client.patch(
+            f"/api/transactions/{b.id}",
+            json={"category_key": "fuel", "subcategory_key": "gasoline"},
+        ).status_code
+        == 200
+    )
+    undone = _undo(client, applied["undo"])
+    assert undone["restored"] == 1 and undone["skipped"] == [b.id]
+
+    session.expire_all()
+    back = session.get(Transaction, a.id)
+    assert back is not None
+    assert (back.category_id, back.subcategory_id) == uncategorized
+    assert back.kind == "purchase" and back.needs_review is True and back.classified_by == "llm"
+    kept = session.get(Transaction, b.id)
+    assert kept is not None and kept.classified_by == "user"
+    # The rule itself is not part of the token: it survives, ready to be applied again.
+    assert session.get(Rule, rule["id"]) is not None

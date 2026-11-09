@@ -59,19 +59,41 @@ def create_rule(body: schemas.RuleCreate, session: SessionDep) -> schemas.Rule:
     return _rule_schema(session, rule, existing_matches=existing_matches)
 
 
-@router.post("/rules/{rule_id}/apply", response_model=schemas.RuleApplyResponse)
-def apply_rule(rule_id: int, session: SessionDep) -> schemas.RuleApplyResponse:
-    """Apply a user rule to the transactions that already exist (rules otherwise only affect
-    future classification). Never overwrites a hand-corrected transaction or one a
-    higher-priority rule claims; `updated` is how many rows changed."""
+def _user_rule_or_error(session: Session, rule_id: int) -> RuleModel:
     rule = crud.get_rule(session, rule_id)
     if rule is None:
         raise HTTPException(status_code=404, detail="rule not found")
     if rule.source != "user":
         raise HTTPException(status_code=400, detail="only your own rules can be applied")
-    updated = cascade.apply_rule_to_existing(session, rule)
+    return rule
+
+
+@router.get("/rules/{rule_id}/apply-preview", response_model=schemas.RuleApplyPreview)
+def preview_apply_rule(rule_id: int, session: SessionDep) -> schemas.RuleApplyPreview:
+    """What applying a user rule to existing transactions would change right now (nothing is
+    changed): how many rows, how many users own them, how many would get a different kind. A rule
+    with no owner applies across every user's transactions."""
+    preview = cascade.preview_rule_application(session, _user_rule_or_error(session, rule_id))
+    return schemas.RuleApplyPreview(
+        matches=preview.matches,
+        user_count=preview.user_count,
+        kind_changes=preview.kind_changes,
+        all_users=preview.all_users,
+    )
+
+
+@router.post("/rules/{rule_id}/apply", response_model=schemas.RuleApplyResponse)
+def apply_rule(rule_id: int, session: SessionDep) -> schemas.RuleApplyResponse:
+    """Apply a user rule to the transactions that already exist (rules otherwise only affect
+    future classification). Never overwrites a hand-corrected transaction or one a
+    higher-priority rule claims; `updated` is how many rows changed. `undo` is a token for
+    `POST /review/undo` that puts those rows back (rows edited since are skipped)."""
+    rule = _user_rule_or_error(session, rule_id)
+    updated, undo = cascade.apply_rule_to_existing(session, rule)
     session.commit()
-    return schemas.RuleApplyResponse(updated=updated)
+    return schemas.RuleApplyResponse(
+        updated=updated, undo=schemas.AcceptUndo.model_validate(undo, from_attributes=True)
+    )
 
 
 @router.patch("/rules/{rule_id}", response_model=schemas.Rule)
