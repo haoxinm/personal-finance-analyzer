@@ -4,22 +4,32 @@
 wires a fresh engine/session factory, starts the job runner, generates a per-launch token, and
 mounts every router before the static frontend, with an SPA fallback for unknown non-API paths.
 
-Binding: `uvicorn.run(app, host="127.0.0.1", port=...)` in `cli.py`'s `serve` command. This module
-does not itself decide the bind address; it only enforces, via `LocalhostGuardMiddleware`, that
-every `/api` request's `Host` header is consistent with `127.0.0.1`/`localhost`.
+Binding: `uvicorn.run(app, host=..., port=...)` in `cli.py`'s `serve` command (`127.0.0.1` unless
+`--host`/`PFA_HOST` says otherwise). This module does not itself decide the bind address; it only
+enforces, via `LocalhostGuardMiddleware`, that every `/api` request's `Host` header is acceptable
+(`127.0.0.1`/`localhost`, plus any `allowed_hosts`), and, when given an `AuthConfig`, that a
+visitor has signed in (`api/auth.py`).
 """
 
 from __future__ import annotations
 
 import contextlib
+from collections.abc import Sequence
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import Engine
+from sqlalchemy import Engine, text
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
+from personal_finance_analyzer.api.auth import (
+    AuthConfig,
+    AuthMiddleware,
+    AuthState,
+    register_auth_routes,
+)
 from personal_finance_analyzer.api.restore_gate import RestoreGate, RestoreGateMiddleware
 from personal_finance_analyzer.api.routers import (
     accounts,
@@ -45,7 +55,12 @@ from personal_finance_analyzer.api.routers import (
 from personal_finance_analyzer.api.routers import (
     settings as settings_router,
 )
-from personal_finance_analyzer.api.security import LocalhostGuardMiddleware, generate_token
+from personal_finance_analyzer.api.security import (
+    HEALTH_PATH,
+    HostPolicy,
+    LocalhostGuardMiddleware,
+    generate_token,
+)
 from personal_finance_analyzer.backup import archive as backup_archive
 from personal_finance_analyzer.config import Settings
 from personal_finance_analyzer.core.paths import get_home, prepare_home
@@ -64,9 +79,16 @@ def create_app(
     settings: Settings | None = None,
     token: str | None = None,
     web_dir: Path | None = None,
+    auth: AuthConfig | None = None,
+    allowed_hosts: Sequence[str] = (),
 ) -> FastAPI:
     """Build a fresh FastAPI app. `engine` defaults to the configured data directory's database;
-    tests pass a temp-file engine. `token` defaults to a fresh random per-launch token (A31)."""
+    tests pass a temp-file engine. `token` defaults to a fresh random per-launch token (A31).
+
+    `allowed_hosts` adds `Host` names to the allowlist (`api/security.py`'s `HostPolicy`), and
+    `auth` puts the single-password login (`api/auth.py`) in front of everything; `pfa serve`
+    passes both from its environment when it listens beyond loopback. Without them the app is the
+    plain localhost one."""
     resolved_settings = settings if settings is not None else Settings()
     if engine is None:
         prepare_home()  # app startup is an explicit step: carries a pre-rename data dir/db over
@@ -93,8 +115,31 @@ def create_app(
     # before a restore in progress can count (or turn away) them.
     app.add_middleware(RestoreGateMiddleware, gate=app.state.restore_gate)
     app.add_middleware(
-        LocalhostGuardMiddleware, token=resolved_token, port=resolved_settings.server.port
+        LocalhostGuardMiddleware,
+        token=resolved_token,
+        port=resolved_settings.server.port,
+        allowed_hosts=allowed_hosts,
     )
+    if auth is not None:
+        # Added last, so it is the outermost: an anonymous request never reaches the token check.
+        auth_state = AuthState(auth)
+        app.state.auth = auth_state
+        app.add_middleware(
+            AuthMiddleware,
+            state=auth_state,
+            policy=HostPolicy(resolved_settings.server.port, allowed_hosts),
+        )
+        register_auth_routes(app, auth_state)
+
+    @app.get(HEALTH_PATH, include_in_schema=False)
+    def health() -> JSONResponse:
+        """Liveness for a container healthcheck or a proxy: 200 when the database answers."""
+        try:
+            with resolved_engine.connect() as connection:
+                connection.execute(text("SELECT 1"))
+        except SQLAlchemyError:
+            return JSONResponse({"status": "unavailable"}, status_code=503)
+        return JSONResponse({"status": "ok"})
 
     for router in (
         users.router,
@@ -118,11 +163,18 @@ def create_app(
     ):
         app.include_router(router, prefix="/api")
 
-    _mount_frontend(app, web_dir if web_dir is not None else _WEB_DIR, resolved_token)
+    _mount_frontend(
+        app,
+        web_dir if web_dir is not None else _WEB_DIR,
+        resolved_token,
+        signed_in_only=auth is not None,
+    )
     return app
 
 
-def _mount_frontend(app: FastAPI, web_dir: Path, token: str) -> None:
+def _mount_frontend(
+    app: FastAPI, web_dir: Path, token: str, *, signed_in_only: bool = False
+) -> None:
     """Serve the built frontend from `web_dir`, injecting the per-launch token into
     `index.html` as a `<meta name="pfa-token">` tag (A31; `frontend/src/api/client.ts` reads
     it from there) and falling back to `index.html` for any unknown non-API path (SPA routing)."""
@@ -145,7 +197,9 @@ def _mount_frontend(app: FastAPI, web_dir: Path, token: str) -> None:
     if assets_dir.is_dir():
         app.mount("/assets", StaticFiles(directory=assets_dir), name="web-assets")
 
-    index_html = _inject_token(index_path.read_text(encoding="utf-8"), token)
+    index_html = _inject_token(
+        index_path.read_text(encoding="utf-8"), token, signed_in_only=signed_in_only
+    )
 
     @app.get("/", include_in_schema=False)
     def serve_index() -> HTMLResponse:
@@ -161,8 +215,12 @@ def _mount_frontend(app: FastAPI, web_dir: Path, token: str) -> None:
         return HTMLResponse(index_html)
 
 
-def _inject_token(html: str, token: str) -> str:
+def _inject_token(html: str, token: str, *, signed_in_only: bool = False) -> str:
+    """Add the token meta tag (and, behind the login, a ``pfa-auth`` tag that tells the UI to
+    show a sign-out button)."""
     meta_tag = f'<meta name="pfa-token" content="{token}">'
+    if signed_in_only:
+        meta_tag += '<meta name="pfa-auth" content="1">'
     if "</head>" in html:
         return html.replace("</head>", f"{meta_tag}</head>", 1)
     return meta_tag + html
