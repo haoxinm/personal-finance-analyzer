@@ -280,6 +280,41 @@ describe("TransactionsScreen", () => {
     expect(body.transaction_ids).toHaveLength(1234);
   });
 
+  it("drops the selection, including select-all-matching, when a filter changes", async () => {
+    const user = userEvent.setup();
+    const allIds = Array.from({ length: 1234 }, (_, i) => i + 1);
+    await mountWithFetch((request) => {
+      if (request.url.includes("/api/taxonomy")) return jsonResponse(CATEGORIES);
+      if (request.method === "GET" && request.url.includes("/api/transactions/ids")) {
+        return jsonResponse({ ids: allIds, total: allIds.length });
+      }
+      if (request.method === "GET" && request.url.includes("/api/transactions")) {
+        return jsonResponse({ items: TRANSACTIONS, total: allIds.length });
+      }
+      throw new Error(`unexpected fetch: ${request.method} ${request.url}`);
+    });
+
+    await screen.findByText("Corner Store");
+    await user.click(screen.getByRole("checkbox", { name: "Select transaction 1" }));
+    await user.click(screen.getByRole("button", { name: "Select all 1234 matching filters" }));
+    expect(await screen.findByText("All 1,234 matching selected")).toBeInTheDocument();
+
+    // Sorting keeps the same matched set, so the selection survives it.
+    await user.click(screen.getByRole("columnheader", { name: /Amount/ }));
+    expect(screen.getByText("All 1,234 matching selected")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Needs review" }));
+    await waitFor(() => expect(screen.queryByText("All 1,234 matching selected")).not.toBeInTheDocument());
+    expect(screen.queryByText(/selected/)).not.toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: "Select transaction 1" })).not.toBeChecked();
+
+    // A hand-ticked row is dropped the same way when the filters change again.
+    await user.click(screen.getByRole("checkbox", { name: "Select transaction 1" }));
+    expect(screen.getByText("1 selected")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Needs review" }));
+    await waitFor(() => expect(screen.queryByText("1 selected")).not.toBeInTheDocument());
+  });
+
   it("does not report a partial bulk update as a success", async () => {
     const user = userEvent.setup();
     await mountWithFetch((request) => {

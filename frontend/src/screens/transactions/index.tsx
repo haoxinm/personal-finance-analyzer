@@ -71,6 +71,15 @@ export default function TransactionsScreen() {
     setAllMatchingSelected(false);
   }, [sel.selectedUserId]);
 
+  // A selection (ticked rows, or "all matching") describes the rows one particular filter set
+  // matched; once the filters change it would silently target rows the user can no longer see.
+  // Sort does not change the matched set, so it is left out of the key.
+  const filterKey = JSON.stringify({ filters, grid: { ...gridParams, sort: undefined } });
+  React.useEffect(() => {
+    setSelectedIds(new Set());
+    setAllMatchingSelected(false);
+  }, [filterKey]);
+
   const rows = React.useMemo(
     () => grid.data?.pages.flatMap((page) => page.items) ?? [],
     [grid.data],
