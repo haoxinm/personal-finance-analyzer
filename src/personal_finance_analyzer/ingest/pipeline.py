@@ -177,6 +177,7 @@ def _adopt_in_place(statement: Statement, rel: str) -> None:
     current = docs.resolve(statement.stored_path) if statement.stored_path else None
     if current is None or not current.is_file():
         statement.stored_path = rel
+        statement.pdf_in_place = True
 
 
 def _finish_pdf(
@@ -299,6 +300,7 @@ def propose_import(
             file_sha256=file_sha256,
             original_name=original_name,
             stored_path=in_place,
+            pdf_in_place=in_place is not None,
             page_count=doc.page_count,
             status=STATUS_NO_TEXT_LAYER,
             error_detail=NO_TEXT_LAYER_MESSAGE,
@@ -346,6 +348,7 @@ def propose_import(
         file_sha256=file_sha256,
         original_name=original_name,
         stored_path=in_place,
+        pdf_in_place=in_place is not None,
         page_count=doc.page_count,
         issuer_id=issuer_id,
         layout_spec_id=layout_spec_id,

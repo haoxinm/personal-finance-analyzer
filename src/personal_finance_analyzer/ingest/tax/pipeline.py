@@ -139,6 +139,7 @@ def _finalize_copy(
         current = docs.resolve(doc.stored_path) if doc.stored_path else None
         if current is None or not current.is_file():
             doc.stored_path = in_place
+            doc.pdf_in_place = True
             session.commit()
         return
     if keep and doc_files.file_tax_document(session, doc, pdf_path) is None:
@@ -853,9 +854,11 @@ def _record_failure(
     return result
 
 
-def delete_tax_document(session: Session, document_id: int) -> bool:
+def delete_tax_document(session: Session, document_id: int, *, delete_pdf: bool = False) -> bool:
     """Delete a tax document and (by cascade) its forms and items; remove its kept PDF copy
-    unless another row still uses the same file.
+    unless another row still uses the same file. A PDF the user put in the documents folder
+    themselves (a folder import) is kept unless ``delete_pdf``; the folder scan then leaves it
+    alone until it changes.
 
     Returns:
         True if a document was deleted, False if ``document_id`` does not exist.
@@ -863,12 +866,12 @@ def delete_tax_document(session: Session, document_id: int) -> bool:
     doc = session.get(TaxDocument, document_id)
     if doc is None:
         return False
-    sha, stored_path = doc.file_sha256, doc.stored_path
+    sha, stored_path, in_place = doc.file_sha256, doc.stored_path, doc.pdf_in_place
     session.delete(doc)
     session.commit()
     staging.discard(document_id)
     # Another document imported from the same PDF (another user's copy) shares the file; it is
     # removed only when no row refers to it any more.
-    doc_files.discard_copy(session, stored_path, sha)
+    doc_files.remove_row_file(session, stored_path, sha, in_place=in_place, delete_file=delete_pdf)
     logger.info("tax document deleted: document_id=%s", document_id)
     return True

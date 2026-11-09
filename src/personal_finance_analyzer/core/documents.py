@@ -71,6 +71,11 @@ where you put it; one the app cannot import (unknown person, a PDF with a passwo
 layout it does not know yet) is listed on its Import page with the reason, never silently skipped.
 Files that sit anywhere else, such as directly in this folder, are not imported.
 
+Deleting a statement or tax form in the app keeps a file you put here yourself (the app made a
+note not to import it again unless you change the file or press "Import again"); the delete
+confirmation lets you also delete the PDF file. A copy the app made itself is deleted with its
+statement. The app never renames or moves a file you put here, not even with `reorganize`.
+
 The database, settings and everything else the app needs live in its data folder, not here (in
 Docker: ./pfa/data next to ./pfa/documents). The app does not need this README; it recreates it
 only if it is missing, and never overwrites your edits.

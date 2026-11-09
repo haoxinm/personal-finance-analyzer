@@ -1077,6 +1077,9 @@ class TaxDocument(_Model):
     #: A copy was kept but is no longer in the documents folder (moved out or deleted by hand and
     #: not found by content either): the UI says "PDF not found". Only true when `has_pdf` is false.
     pdf_missing: bool = False
+    #: The PDF is a file you put in the documents folder yourself (a folder import): deleting the
+    #: document keeps it unless you ask for it to go too (`DELETE ...?delete_pdf=true`).
+    pdf_in_place: bool = False
     #: When the PDF the user re-selected for this document stops being available (ISO-8601 UTC);
     #: `None` = none staged. Only meaningful when `has_pdf` is false.
     staged_until: str | None = None

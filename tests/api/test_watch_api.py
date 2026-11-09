@@ -111,6 +111,52 @@ def test_retry_of_something_that_is_not_a_problem_is_404(
     assert client.post("/api/watch/files/9999/retry").status_code == 404
 
 
+def test_deleting_a_folder_imported_statement_keeps_the_pdf_unless_asked(
+    client: TestClient, app_instance: FastAPI, alex: User, session: Session
+) -> None:
+    _no_wait(app_instance)
+    pdf = put_statement(STATEMENT)
+    _scan(client, app_instance)
+    (statement,) = client.get("/api/statements").json()
+
+    assert client.delete(f"/api/statements/{statement['id']}").status_code == 204
+    assert pdf.is_file()  # the user's file stays by default
+    (ignored,) = client.get("/api/watch/files", params={"view": "problems"}).json()["items"]
+    assert ignored["outcome"] == "ignored" and ignored["code"] == "deleted_in_app"
+    _scan(client, app_instance)
+    assert client.get("/api/statements").json() == []  # and is not imported again at once
+
+    # "Import again" (the Retry call) brings it back; this time the PDF goes with the row.
+    assert client.post(f"/api/watch/files/{ignored['id']}/retry").status_code == 204
+    _scan(client, app_instance)
+    (again,) = client.get("/api/statements").json()
+    response = client.delete(f"/api/statements/{again['id']}", params={"delete_pdf": True})
+    assert response.status_code == 204
+    assert not pdf.exists()
+
+
+def test_deleting_a_folder_imported_tax_document_keeps_the_pdf_unless_asked(
+    client: TestClient, app_instance: FastAPI, alex: User
+) -> None:
+    _no_wait(app_instance)
+    pdf = put_tax("Alex/Tax/2024/W-2.pdf")
+    _scan(client, app_instance)
+    (doc,) = client.get("/api/tax/documents").json()
+    assert doc["pdf_in_place"] is True and doc["has_pdf"] is True
+
+    assert client.delete(f"/api/tax/documents/{doc['id']}").status_code == 204
+    assert pdf.is_file()
+    _scan(client, app_instance)
+    assert client.get("/api/tax/documents").json() == []
+
+    (ignored,) = client.get("/api/watch/files", params={"view": "problems"}).json()["items"]
+    client.post(f"/api/watch/files/{ignored['id']}/retry")
+    _scan(client, app_instance)
+    (again,) = client.get("/api/tax/documents").json()
+    response = client.delete(f"/api/tax/documents/{again['id']}", params={"delete_pdf": True})
+    assert response.status_code == 204 and not pdf.exists()
+
+
 def test_the_file_list_is_limited_and_validated(client: TestClient) -> None:
     assert client.get("/api/watch/files", params={"limit": 0}).status_code == 422
     assert client.get("/api/watch/files", params={"view": "nope"}).status_code == 422

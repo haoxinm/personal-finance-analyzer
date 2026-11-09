@@ -404,6 +404,33 @@ def test_restore_refused_while_a_job_is_running(
     assert client.get("/api/users").status_code == 200
 
 
+def test_restore_waits_for_a_folder_scan_to_yield_and_says_so_when_it_does_not(
+    client: TestClient,
+    app_instance: FastAPI,
+    home: Path,
+    other_machine_backup: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from personal_finance_analyzer.api.routers import backup as backup_router
+
+    waited: list[float] = []
+
+    def never_idle(timeout: float = 30.0) -> bool:
+        waited.append(timeout)
+        return False
+
+    monkeypatch.setattr(app_instance.state.watch, "wait_idle", never_idle)
+    siblings = _siblings(home)
+
+    response = client.post(RESTORE, **_upload(other_machine_backup))
+
+    assert response.status_code == 409
+    assert "folder import is still finishing" in response.json()["detail"]
+    assert waited == [backup_router.SCAN_YIELD_WAIT_S] and waited[0] >= 60  # not a 15 s blink
+    assert _siblings(home) == siblings  # nothing was swapped
+    assert client.get("/api/users").status_code == 200  # the gate is released again
+
+
 def test_restore_refused_when_server_uses_a_different_database(
     other_machine_backup: Path, tmp_path: Path, home: Path
 ) -> None:

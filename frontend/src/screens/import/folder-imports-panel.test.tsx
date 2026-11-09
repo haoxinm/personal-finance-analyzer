@@ -188,6 +188,28 @@ describe("FolderImportsPanel", () => {
     expect(screen.getByText("Nothing needs attention.")).toBeInTheDocument();
   });
 
+  it("offers Import again for a file whose document was deleted in the app", async () => {
+    const deleted = {
+      ...PROBLEM,
+      id: 5,
+      path: "Alex/Statements/Chase/jan.pdf",
+      outcome: "ignored" as const,
+      code: "deleted_in_app",
+      message: "You deleted this document in the app; the PDF file was left where it is.",
+      hint: "It is not imported again unless the file changes.",
+    };
+    const { fn, calls } = makeFetch({ status: BASE_STATUS, recent: [], problems: [deleted] });
+    await renderPanel(fn);
+    const row = await screen.findByTestId("folder-import-problem");
+    expect(within(row).queryByRole("button", { name: /^Retry / })).not.toBeInTheDocument();
+    await userEvent.click(
+      within(row).getByRole("button", { name: "Import again Alex/Statements/Chase/jan.pdf" }),
+    );
+    await waitFor(() =>
+      expect(calls.some((c) => c.method === "POST" && c.url.includes("/api/watch/files/5/retry"))).toBe(true),
+    );
+  });
+
   it("Scan now starts a scan and shows it running", async () => {
     const { fn, calls } = makeFetch({ status: BASE_STATUS, recent: [], problems: [] });
     await renderPanel(fn);

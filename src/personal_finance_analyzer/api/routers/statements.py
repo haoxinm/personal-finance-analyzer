@@ -11,8 +11,9 @@ imports `ingest.pipeline` directly (see that module's docstring).
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Annotated
 
-from fastapi import APIRouter, Form, HTTPException, Response, UploadFile
+from fastapi import APIRouter, Form, HTTPException, Query, Response, UploadFile
 from sqlalchemy.orm import Session
 
 from personal_finance_analyzer.api import schemas
@@ -128,13 +129,24 @@ def patch_statement(
 
 
 @router.delete("/statements/{statement_id}", status_code=204)
-def delete_statement(statement_id: int, session: SessionDep) -> None:
+def delete_statement(
+    statement_id: int,
+    session: SessionDep,
+    delete_pdf: Annotated[
+        bool,
+        Query(
+            description="Also delete the PDF file when it is one you put in the documents "
+            "folder yourself (kept by default). The app's own copy is always deleted."
+        ),
+    ] = False,
+) -> None:
     statement = crud.get_statement(session, statement_id)
     if statement is None:
         raise HTTPException(status_code=404, detail="statement not found")
+    in_place = statement.pdf_in_place
     stored_path, sha256 = crud.delete_statement(session, statement)
     session.commit()
-    crud.discard_pdf_copy(session, stored_path, sha256)
+    crud.discard_pdf_copy(session, stored_path, sha256, in_place=in_place, delete_file=delete_pdf)
 
 
 @router.get("/statements/{statement_id}/preview", response_model=schemas.StatementPreviewPage)

@@ -158,6 +158,7 @@ def _document(doc: TaxDocument) -> schemas.TaxDocument:
         created_at=doc.ingested_at,
         has_pdf=stored is not None,
         pdf_missing=bool(doc.stored_path) and stored is None,
+        pdf_in_place=doc.pdf_in_place,
         staged_until=staging.expires_at(doc.id),
     )
 
@@ -481,8 +482,18 @@ def read_pages_with_llm(
 
 
 @router.delete("/tax/documents/{document_id}", status_code=204, dependencies=_DOC_OWNER)
-def delete_document(document_id: int, session: SessionDep) -> Response:
-    if not delete_tax_document(session, document_id):
+def delete_document(
+    document_id: int,
+    session: SessionDep,
+    delete_pdf: Annotated[
+        bool,
+        Query(
+            description="Also delete the PDF file when it is one you put in the documents "
+            "folder yourself (kept by default). The app's own copy is always deleted."
+        ),
+    ] = False,
+) -> Response:
+    if not delete_tax_document(session, document_id, delete_pdf=delete_pdf):
         raise HTTPException(status_code=404, detail="tax document not found")
     return Response(status_code=204)
 

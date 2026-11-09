@@ -130,7 +130,9 @@ The folder name must be the name of a person in the app (capitals and spacing do
 an unknown name is reported, never created. Files stay exactly where you put them, a PDF still
 being copied waits until it is complete, and anything the app cannot import (unknown person, a
 password-protected PDF, a layout it does not recognise yet) is listed on the Import page with the
-reason and a Retry button. It is **off by default**: turn on *Folder imports* in Settings (or run
+reason and a Retry button. Deleting a statement or tax document in the app **keeps** your PDF
+(tick "Also delete the PDF file" to remove it too); it is not imported again unless the file
+changes or you press Import again. It is **off by default**: turn on *Folder imports* in Settings (or run
 `pfa documents scan` once). If an LLM is enabled, new statements' descriptions are sent to it for
 categorization without a click, exactly as after an upload. See
 [docs/CLI.md](docs/CLI.md#folder-imports) and, for a NAS, [docs/DOCKER.md](docs/DOCKER.md#dropping-pdfs-into-the-folder-folder-imports).

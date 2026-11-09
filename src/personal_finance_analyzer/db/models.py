@@ -133,6 +133,12 @@ class Statement(Base):
     file_sha256: Mapped[str] = mapped_column(String, nullable=False, unique=True)
     original_name: Mapped[str] = mapped_column(String, nullable=False)
     stored_path: Mapped[str | None] = mapped_column(String, nullable=True)
+    #: The PDF at ``stored_path`` is a file the user put in the documents folder themselves (a
+    #: folder import, `watch/`): it is theirs, so the app never renames, moves or deletes it by
+    #: itself (deleting the row keeps it unless the user also asks for the file to go).
+    pdf_in_place: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("0")
+    )
     period_start: Mapped[str | None] = mapped_column(Text, nullable=True)
     period_end: Mapped[str | None] = mapped_column(Text, nullable=True)
     page_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -381,6 +387,12 @@ class TaxDocument(Base):
     file_sha256: Mapped[str] = mapped_column(String, nullable=False)
     original_name: Mapped[str] = mapped_column(String, nullable=False)
     stored_path: Mapped[str | None] = mapped_column(String, nullable=True)
+    #: The PDF at ``stored_path`` is a file the user put in the documents folder themselves (a
+    #: folder import, `watch/`): it is theirs, so the app never renames, moves or deletes it by
+    #: itself (deleting the row keeps it unless the user also asks for the file to go).
+    pdf_in_place: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("0")
+    )
     page_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     tax_year: Mapped[int | None] = mapped_column(Integer, nullable=True)
     status: Mapped[str] = mapped_column(String, nullable=False)  # parsed | error | unsupported

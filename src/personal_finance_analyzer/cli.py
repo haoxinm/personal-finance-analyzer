@@ -1197,12 +1197,18 @@ def _print_tax_text(summaries: Sequence[TaxYearSummary]) -> None:
 @tax_app.command(name="delete")
 def tax_delete_cmd(
     document_id: int = typer.Argument(..., help="Tax document id (see `tax list`)."),
+    delete_pdf: bool = typer.Option(
+        False,
+        "--delete-pdf",
+        help="Also delete the PDF file if it is one you put in the documents folder yourself "
+        "(kept by default; the app's own copy is always deleted).",
+    ),
 ) -> None:
     """Delete an imported tax document and everything parsed from it."""
     from personal_finance_analyzer.ingest.tax.pipeline import delete_tax_document
 
     with _open_engine() as engine, _open_session(engine) as session:
-        if not delete_tax_document(session, document_id):
+        if not delete_tax_document(session, document_id, delete_pdf=delete_pdf):
             typer.echo(f"no tax document with id {document_id}", err=True)
             raise typer.Exit(code=1)
     typer.echo(f"Deleted tax document #{document_id}.")

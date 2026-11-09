@@ -5,9 +5,11 @@ The steps of `FolderScanner.scan`:
 1. List every visible PDF under the documents folder (`core.documents.iter_files`; hidden entries,
    symlinks, ``~$`` lock files, the staging folder and the README are skipped).
 2. Skip, without reading them, the files the app already knows: those named by a statement's or tax
-   document's ``stored_path`` (which includes everything the app filed itself) and those whose
-   ``watch_files`` record has the same size and modification time (a failure is not retried until
-   the file changes or the user presses Retry).
+   document's ``stored_path`` (everything the app filed itself, whatever the outcome, and the files
+   an earlier folder import parsed) and those whose ``watch_files`` record has the same size and
+   modification time (a failure is not retried until the file changes or the user presses Retry;
+   a file whose statement or tax document the user deleted in the app is recorded the same way, as
+   ignored, so it is not imported again at once).
 3. A new file waits until it is *stable*: the same size and mtime on two consecutive scans (or, for
    a manual scan, across a short settle pause), and it looks like a complete PDF (``%PDF-`` first,
    ``%%EOF`` near the end). A file still unfinished after `INCOMPLETE_AFTER_S` is reported as
@@ -21,7 +23,9 @@ The steps of `FolderScanner.scan`:
 
 A scan holds a cross-process file lock for its duration (`core.filelock`): two servers on one data
 directory, or a server and `pfa documents scan`, never import the same files at the same time.
-Everything here is synchronous; the server runs it on a worker thread with its own sessions.
+Everything here is synchronous; the server runs it on a worker thread with its own sessions. A scan
+yields between files when asked to (`should_stop`, used while a backup restore needs the data
+directory), so it never holds a restore up for longer than one file takes.
 """
 
 from __future__ import annotations
@@ -33,9 +37,10 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
+from personal_finance_analyzer.api.services.uploads import MAX_UPLOAD_BYTES
 from personal_finance_analyzer.core import documents as docs
 from personal_finance_analyzer.core.filelock import FileLock
 from personal_finance_analyzer.core.paths import documents_dir, get_home, staging_dir
@@ -90,6 +95,9 @@ class ScanReport:
     dry_run: bool = False
     #: Another scan holds the lock: nothing was done.
     busy: bool = False
+    #: The scan stopped early because it was asked to yield (a restore is starting); what it had
+    #: not reached is looked at by the next scan.
+    interrupted: bool = False
     error: str | None = None
     #: PDFs seen in the folder (including those already known).
     scanned: int = 0
@@ -208,10 +216,17 @@ class FolderScanner:
 
     # ------------------------------------------------------------------ the scan
 
-    def scan(self, *, dry_run: bool = False, settle_seconds: float = 0.0) -> ScanReport:
+    def scan(
+        self,
+        *,
+        dry_run: bool = False,
+        settle_seconds: float = 0.0,
+        should_stop: Callable[[], bool] | None = None,
+    ) -> ScanReport:
         """Run one scan. ``settle_seconds`` > 0 (manual scans): files seen for the first time are
         re-checked after that pause and count as stable if they did not change. ``dry_run`` reports
-        what would happen and writes nothing (no import, no record)."""
+        what would happen and writes nothing (no import, no record). ``should_stop`` is asked
+        between files: when it says yes the scan ends at once (``report.interrupted``)."""
         report = ScanReport(dry_run=dry_run)
         lock = FileLock(lock_path())
         try:
@@ -222,7 +237,12 @@ class FolderScanner:
             report.error = f"cannot take the scan lock: {exc.strerror or exc}"
             return report
         try:
-            self._scan_locked(report, dry_run=dry_run, settle_seconds=settle_seconds)
+            self._scan_locked(
+                report,
+                dry_run=dry_run,
+                settle_seconds=settle_seconds,
+                should_stop=should_stop or _never,
+            )
         except Exception as exc:  # a scan must never take the server down
             logger.warning("folder scan failed: %s", type(exc).__name__, exc_info=True)
             report.error = f"The scan failed ({type(exc).__name__}); see the log."
@@ -231,7 +251,14 @@ class FolderScanner:
             report.finished_at = utcnow_iso()
         return report
 
-    def _scan_locked(self, report: ScanReport, *, dry_run: bool, settle_seconds: float) -> None:
+    def _scan_locked(
+        self,
+        report: ScanReport,
+        *,
+        dry_run: bool,
+        settle_seconds: float,
+        should_stop: Callable[[], bool],
+    ) -> None:
         root = self.root
         if not root.is_dir():
             report.error = f"The documents folder {root} does not exist."
@@ -247,6 +274,9 @@ class FolderScanner:
             seen: set[str] = set()
             candidates: list[_Candidate] = []
             for rel, path in docs.iter_files(root):
+                if should_stop():
+                    report.interrupted = True
+                    return  # nothing was changed yet apart from settled records
                 if _skip_name(rel, staging, root):
                     continue
                 try:
@@ -270,7 +300,14 @@ class FolderScanner:
                 candidates.append(_Candidate(rel, path, stat.st_size, stat.st_mtime_ns))
 
             ready = self._stable(candidates, report, settle_seconds)
-            for candidate in ready:
+            for position, candidate in enumerate(ready):
+                if should_stop():
+                    report.interrupted = True
+                    # Not handled yet: they stay "unchanged since the last scan", so the next scan
+                    # imports them at once instead of waiting for them to settle again.
+                    for left in ready[position:]:
+                        self._pending[left.rel] = (left.size, left.mtime_ns)
+                    break
                 item = self._handle(session, candidate, people, report, dry_run=dry_run)
                 if item is not None:
                     report.items.append(item)
@@ -349,7 +386,20 @@ class FolderScanner:
         cls = classify_path(parts, people)
         self._pending.pop(candidate.rel, None)
         try:
-            if _unreadable(candidate.path):
+            if candidate.size > MAX_UPLOAD_BYTES:
+                outcome = _Outcome(
+                    "failed",
+                    code="too_large",
+                    message=(
+                        f"This file is too large ({_mb(candidate.size)}, limit "
+                        f"{_mb(MAX_UPLOAD_BYTES)}): a statement or tax form is far smaller."
+                    ),
+                    hint=(
+                        "If it really is one document, make it smaller (print to a new PDF, or "
+                        "split it), put it back, then press Retry."
+                    ),
+                )
+            elif _unreadable(candidate.path):
                 outcome = _Outcome(
                     "failed",
                     code="unreadable",
@@ -455,7 +505,8 @@ class FolderScanner:
         if record is None:
             record = WatchedFile(path=candidate.rel, first_seen=now)
             session.add(record)
-        record.sha256 = docs.file_sha256(candidate.path)
+        # (An oversized file is never read, not even to hash it.)
+        record.sha256 = None if outcome.code == "too_large" else docs.file_sha256(candidate.path)
         record.size_bytes = candidate.size
         record.mtime_ns = candidate.mtime_ns
         record.outcome = outcome.outcome
@@ -522,14 +573,17 @@ class FolderScanner:
 
 
 def _stored_paths(session: Session) -> set[str]:
-    """Casefolded relative ``stored_path`` of every imported (``parsed``) statement and tax
-    document: the files the app already has (the ones it filed itself and those recorded by
-    earlier folder imports). A row that failed is not "known": its file is looked at again once
-    its failure record is gone (Retry)."""
+    """Casefolded relative ``stored_path`` of the files the app already has: every row's file
+    whatever its status when the app filed it itself (an Import-page upload that failed, for
+    example, sits in ``<Person>/Statements/Unsorted``: it must not be imported a second time), and
+    the files an earlier folder import parsed. A row of a *folder* import that failed (its file is
+    where the user put it, ``pdf_in_place``) is not "known": its ``watch_files`` record decides,
+    so Retry, or a changed file, looks at it again."""
     paths: set[str] = set()
     for model in (Statement, TaxDocument):
         query = select(model.stored_path).where(
-            model.stored_path.is_not(None), model.status == "parsed"
+            model.stored_path.is_not(None),
+            or_(model.pdf_in_place.is_(False), model.status == "parsed"),
         )
         for (stored,) in session.execute(query):
             if stored and not Path(stored).is_absolute():
@@ -547,6 +601,18 @@ def _stale(record: WatchedFile, people: list[tuple[int, str]]) -> bool:
     if record.outcome in SUCCESS_OUTCOMES and record.kind is not None:
         return record.statement_id is None and record.tax_document_id is None
     return False
+
+
+def _never() -> bool:
+    return False
+
+
+def _mb(size: int) -> str:
+    return (
+        f"{size / (1024 * 1024):.0f} MB"
+        if size >= 10 * 1024 * 1024
+        else (f"{size / (1024 * 1024):.1f} MB")
+    )
 
 
 def _resolved(path: Path) -> Path | None:

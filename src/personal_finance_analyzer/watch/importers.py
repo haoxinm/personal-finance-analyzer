@@ -105,6 +105,7 @@ def import_statement(ctx: Context) -> Result:
         if ctx.dry_run:
             return Result("known", message="Already imported; this file would be recorded.")
         row.stored_path = ctx.rel  # imported before without keeping a PDF, or the file was moved
+        row.pdf_in_place = True
         session.commit()
         return Result(
             "known",
@@ -261,6 +262,7 @@ def import_tax(ctx: Context) -> Result:
         if ctx.dry_run:
             return Result("known", message="Already imported; this file would be recorded.")
         mine.stored_path = ctx.rel
+        mine.pdf_in_place = True
         session.commit()
         return Result(
             "known",

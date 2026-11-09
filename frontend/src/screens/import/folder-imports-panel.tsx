@@ -92,9 +92,9 @@ function ProblemRow({ file, onRetry, retrying }: { file: WatchFile; onRetry: () 
           variant="outline"
           onClick={onRetry}
           disabled={retrying}
-          aria-label={`Retry ${file.path}`}
+          aria-label={`${file.code === "deleted_in_app" ? "Import again" : "Retry"} ${file.path}`}
         >
-          Retry
+          {file.code === "deleted_in_app" ? "Import again" : "Retry"}
         </Button>
       </div>
       {file.message ? <p>{file.message}</p> : null}

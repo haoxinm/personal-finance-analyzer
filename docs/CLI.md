@@ -469,7 +469,9 @@ no tax document with id 99
 ```
 
 Deletes one document, every form and figure parsed from it, and a kept PDF copy if there is one.
-Exits 1 when the id doesn't exist. Use it to remove a superseded original after importing a
+A PDF you put in the documents folder yourself ([folder import](#folder-imports)) is **kept** (the
+folder scan then leaves it alone until the file changes); add `--delete-pdf` to delete it too. The
+app's own copy of an upload always goes. Exits 1 when the id doesn't exist. Use it to remove a superseded original after importing a
 corrected form.
 
 ## `export`
@@ -623,17 +625,25 @@ enough to import it:
 - Statements can sit in any depth of subfolders under `Statements/`. For tax forms the `<year>`
   folder is a hint: **the form's own tax year wins** (a mismatch is a warning on the file, not a
   failure), and the folder year is used only when the form does not print one.
-- **Files stay where you put them.** Their location is recorded as the row's PDF; nothing is
-  renamed, moved or copied. A tax PDF is recorded regardless of `[privacy] store_tax_pdf_copies`
-  (that setting decides whether the app *copies an upload*; this file is already where you want it).
-  Deleting a statement or tax document in the app deletes the file it recorded, as for any imported
-  PDF. `pfa documents reorganize` still renames files on request.
+- **Files stay where you put them.** Their location is recorded as the row's PDF (the row is marked
+  as using *your* file); nothing is renamed, moved or copied, and neither `pfa documents reorganize`
+  nor finishing the import on the Import page renames it. A tax PDF is recorded regardless of
+  `[privacy] store_tax_pdf_copies` (that setting decides whether the app *copies an upload*; this
+  file is already where you want it).
+- **Deleting the row does not delete your file.** Deleting a statement or tax document that came
+  from a folder import keeps the PDF by default (the app's own copies of uploads are still deleted
+  with their row). The delete confirmation on the Tax page has an "Also delete the PDF file" box,
+  `DELETE /api/statements/{id}` and `DELETE /api/tax/documents/{id}` take `?delete_pdf=true`, and
+  `pfa tax delete` takes `--delete-pdf`. A kept file is recorded as *ignored (deleted in the app)* so
+  the next scan does not import it again at once; it is imported again if the file changes, or when
+  you press **Import again** on the Import page.
 - A file is imported only once it is **stable**: the same size and modification time on two
   consecutive scans (a manual scan checks across a two-second pause instead) and it looks like a
   whole PDF (`%PDF-` at the start, `%%EOF` near the end). Hidden files, `.part` files, Office lock
   files (`~$...`), non-PDFs, the `README.txt` and the app's staging folder are ignored.
-- Files the app already has (the ones it filed itself and earlier folder imports) are skipped
-  without being read. The same content in a second place for the same person is noted as already
+- Files the app already has (the ones it filed itself, whatever became of them, and earlier folder
+  imports) are skipped without being read. A file over the 25 MB upload limit is reported as too
+  large and never read. The same content in a second place for the same person is noted as already
   imported; in **another person's folder it is reported** (upload it from the Import page to import
   it for both).
 - Everything goes through the same pipelines as an upload: statements are recognised, parsed,
@@ -646,7 +656,8 @@ enough to import it:
 - What failed (unknown person, a password-protected PDF, an unrecognised layout, a scan with no
   text layer, a duplicate of another person's file, ...) is recorded per file and **not retried
   until the file's size or modification time changes**; the Import page lists these with a Retry
-  button. A problem caused only by the path (an unknown person) resolves by itself once the person
+  button. A scan stops between files when a backup restore starts, so a restore waits at most for
+  the file being imported. A problem caused only by the path (an unknown person) resolves by itself once the person
   exists or the folder is renamed.
 - A scan holds a lock in the data directory, so `pfa documents scan` and the server (or two servers
   on one data directory) never import the same file twice.

@@ -469,6 +469,18 @@
               "type": "integer",
               "title": "Statement Id"
             }
+          },
+          {
+            "name": "delete_pdf",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "Also delete the PDF file when it is one you put in the documents folder yourself (kept by default). The app's own copy is always deleted.",
+              "default": false,
+              "title": "Delete Pdf"
+            },
+            "description": "Also delete the PDF file when it is one you put in the documents folder yourself (kept by default). The app's own copy is always deleted."
           }
         ],
         "responses": {
@@ -5195,6 +5207,18 @@
               "type": "integer",
               "title": "Document Id"
             }
+          },
+          {
+            "name": "delete_pdf",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "Also delete the PDF file when it is one you put in the documents folder yourself (kept by default). The app's own copy is always deleted.",
+              "default": false,
+              "title": "Delete Pdf"
+            },
+            "description": "Also delete the PDF file when it is one you put in the documents folder yourself (kept by default). The app's own copy is always deleted."
           },
           {
             "name": "user_id",
@@ -11359,6 +11383,11 @@
             "title": "Pdf Missing",
             "default": false
           },
+          "pdf_in_place": {
+            "type": "boolean",
+            "title": "Pdf In Place",
+            "default": false
+          },
           "staged_until": {
             "anyOf": [
               {
@@ -11468,6 +11497,11 @@
           "pdf_missing": {
             "type": "boolean",
             "title": "Pdf Missing",
+            "default": false
+          },
+          "pdf_in_place": {
+            "type": "boolean",
+            "title": "Pdf In Place",
             "default": false
           },
           "staged_until": {

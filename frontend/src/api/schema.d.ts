@@ -3238,6 +3238,11 @@ export interface components {
              * @default false
              */
             pdf_missing: boolean;
+            /**
+             * Pdf In Place
+             * @default false
+             */
+            pdf_in_place: boolean;
             /** Staged Until */
             staged_until?: string | null;
         };
@@ -3273,6 +3278,11 @@ export interface components {
              * @default false
              */
             pdf_missing: boolean;
+            /**
+             * Pdf In Place
+             * @default false
+             */
+            pdf_in_place: boolean;
             /** Staged Until */
             staged_until?: string | null;
             /** Forms */
@@ -4780,7 +4790,10 @@ export interface operations {
     };
     delete_statement_api_statements__statement_id__delete: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Also delete the PDF file when it is one you put in the documents folder yourself (kept by default). The app's own copy is always deleted. */
+                delete_pdf?: boolean;
+            };
             header?: never;
             path: {
                 statement_id: number;
@@ -7135,6 +7148,8 @@ export interface operations {
     delete_document_api_tax_documents__document_id__delete: {
         parameters: {
             query?: {
+                /** @description Also delete the PDF file when it is one you put in the documents folder yourself (kept by default). The app's own copy is always deleted. */
+                delete_pdf?: boolean;
                 user_id?: number | null;
             };
             header?: never;

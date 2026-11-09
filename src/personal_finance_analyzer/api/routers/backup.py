@@ -47,6 +47,10 @@ from personal_finance_analyzer.backup.errors import BackupBusyError, BackupError
 from personal_finance_analyzer.core.paths import db_path, get_home
 from personal_finance_analyzer.db.models import Job
 
+#: How long a restore waits for a running folder import to yield (seconds): the scan stops between
+#: files, so this is the time the file it is on takes, not a whole scan.
+SCAN_YIELD_WAIT_S = 120.0
+
 router = APIRouter(tags=["backup"])
 
 #: Header carrying the restore passphrase: base64 of its UTF-8 bytes.
@@ -150,8 +154,13 @@ def _restore(request: Request, upload: Path, passphrase: str | None) -> archive.
         gate.begin_exclusive()
         quiesced = True
         # The gate also keeps the folder scan from starting; one already running must finish.
-        if not request.app.state.watch.wait_idle(15.0):
-            raise BackupBusyError("a folder scan is still running; try again in a moment")
+        # The scan yields between files (it is told a restore is starting), so this is at most the
+        # time one file takes to import (a big scanned PDF with the LLM fallback can take a while).
+        if not request.app.state.watch.wait_idle(SCAN_YIELD_WAIT_S):
+            raise BackupBusyError(
+                "a folder import is still finishing its current file (a large PDF can take a "
+                "minute or two); nothing was changed, wait a moment and restore again"
+            )
         with Session(engine) as session:
             active = session.scalar(
                 select(func.count()).select_from(Job).where(Job.status.in_(("queued", "running")))

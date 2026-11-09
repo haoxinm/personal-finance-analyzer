@@ -187,7 +187,9 @@ class WatchService:
             with self._scan_mutex:
                 if self._paused() or not self._ready():
                     return None
-                report = self._scanner.scan(settle_seconds=MANUAL_SETTLE_S if manual else 0.0)
+                report = self._scanner.scan(
+                    settle_seconds=MANUAL_SETTLE_S if manual else 0.0, should_stop=self._paused
+                )
                 summary = ScanSummary.of(report)
                 # The result is published before `running` clears, so whoever sees the scan
                 # finished also sees what it did.

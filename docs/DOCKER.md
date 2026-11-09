@@ -130,9 +130,11 @@ and SMB.
 **The app reads your folder, it does not own it.** If you move or rename a file inside
 `documents/`, the app still finds it again by its content; if you delete one, the screens that
 would show it say "PDF not found". The app never renames files behind your back (not even when you
-rename a person or an account), and never deletes a file it did not put there: an import's file is
-removed only when you delete that statement or document in the app (and only if no other
-statement or document uses the same PDF). To apply the current names after a rename:
+rename a person or an account), and never deletes a file it did not put there: a copy the app made
+of an import is removed when you delete that statement or document in the app (and only if no other
+statement or document uses the same PDF, and the file still is that PDF). A file *you* dropped in
+([folder imports](#dropping-pdfs-into-the-folder-folder-imports)) is kept when you delete its
+statement or document, unless you tick "Also delete the PDF file" in the confirmation. To apply the current names after a rename:
 
 ```console
 $ docker compose exec pfa pfa documents reorganize --dry-run    # show what would be renamed
@@ -168,7 +170,11 @@ pfa/documents/
 - Files stay where you put them (not renamed, moved or copied); the database just records where
   they are. For tax forms this happens even though `store_tax_pdf_copies` is off: that setting only
   decides whether the app copies an *upload*. Deleting a statement or tax document in the app
-  deletes that file, like any imported PDF.
+  **keeps** that file unless you ask for it to go too ("Also delete the PDF file" in the
+  confirmation; `?delete_pdf=true` in the API; `pfa tax delete --delete-pdf`); the Import page then
+  lists it as ignored ("deleted in the app") with an **Import again** button, and it is imported
+  again only if the file changes. The app never renames or moves it either (not even
+  `pfa documents reorganize`).
 - **Permissions: the app only needs to read a dropped file** (it never rewrites it). Files created
   over SMB are often owned by another user; make sure `PUID:PGID` can read them (a group the share
   gives read access to, or a share-wide ACL), and that folders you create can be entered
