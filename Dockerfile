@@ -62,7 +62,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # --- final -------------------------------------------------------------------------------------
 FROM ${PYTHON_IMAGE} AS final
 
-ARG SOURCE_URL=https://github.com/haoxinm/spending-analysis-from-bills
+ARG SOURCE_URL=https://github.com/haoxinm/personal-finance-analyzer
 LABEL org.opencontainers.image.title="Personal Finance Analyzer" \
       org.opencontainers.image.description="Local-first spending, income and tax, and net-worth analysis from your own statements and tax forms. Self-hosted; no telemetry." \
       org.opencontainers.image.source="${SOURCE_URL}" \

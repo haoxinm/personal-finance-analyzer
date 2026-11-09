@@ -10,11 +10,13 @@
 #   3. Edit PUID, PGID, TZ and PFA_ALLOWED_HOSTS below, then:   docker compose up -d
 #   4. Open http://<nas-name-or-ip>:8756 and sign in.
 #
-# THIS IS A HOME-NETWORK APP. It only answers computers on your local network (private addresses),
-# and it must never be reachable from the internet: do NOT port-forward 8756 on your router, and
-# switch off UPnP / automatic port forwarding for it. For access away from home use a VPN
-# (Tailscale, WireGuard, your NAS's VPN server), not an open port. See "Keeping it off the
-# internet" in docs/DOCKER.md.
+# THIS IS A HOME-NETWORK APP and it must never be reachable from the internet. The app also
+# refuses clients whose address is not private, but that check is only a safety net: Docker's port
+# publishing can hide the real client address (see "Keeping it off the internet" in docs/DOCKER.md).
+# What keeps it private is not exposing the port: do NOT port-forward 8756 on your router, switch
+# off UPnP / automatic port forwarding for it, and publish it on your NAS's LAN address (see
+# `ports:` below). For access away from home use a VPN (Tailscale, WireGuard, your NAS's VPN
+# server), not an open port.
 #
 # YOUR DATA LIVES IN ./pfa ON THE HOST (a bind mount, not a Docker volume), so `docker volume prune`,
 # `docker compose down -v` and deleting the container or image never touch it:
@@ -33,13 +35,15 @@ services:
     restart: unless-stopped
 
     ports:
-      # Publishes the port on every network interface of the NAS (fine on a home LAN; the app
-      # itself also refuses any client that is not on a private address). Better still, bind it
-      # to the NAS's own LAN address, so no other interface (and no IPv6 address) listens at all:
-      #   - "192.168.1.10:8756:8756"      <- your NAS's LAN IP (`ip addr`, or the NAS network page)
+      # Every IPv4 interface of the NAS, and IPv4 only. (A bare "8756:8756" would also listen on
+      # IPv6 [::], where Docker proxies connections and the app sees the Docker gateway's address
+      # instead of the real one, so its local-network check could not tell a stranger from you.)
+      # Recommended: bind it to the NAS's own LAN address instead, so no other interface listens
+      # at all. Replace the line below with your NAS's LAN IP (`ip addr`, or the NAS network page):
+      #   - "192.168.1.10:8756:8756"
       # Behind a reverse proxy on this machine, publish to the machine only instead:
       #   - "127.0.0.1:8756:8756"
-      - "8756:8756"
+      - "0.0.0.0:8756:8756"
 
     environment:
       # Files in ./pfa will be owned by this user and group: use your NAS user's ids (`id <user>`).
@@ -55,8 +59,10 @@ services:
       # instead, so even the file never holds the password; see docs/DOCKER.md.)
       PFA_PASSWORD_FILE: /run/secrets/pfa_password
 
-      # Who may connect. The default is "private networks only" (192.168/16, 10/8, 172.16/12,
-      # link-local, IPv6 unique-local, loopback); anyone else gets 403 before the login page.
+      # Who may connect (a safety net on top of not exposing the port, not a replacement for it).
+      # The default is "private networks only" (192.168/16, 10/8, 172.16/12, link-local, IPv6
+      # unique-local, loopback); anyone else gets 403 before the login page, when the app can see
+      # the real client address. If the log says requests arrive from the Docker gateway, it cannot.
       # Add networks with CIDRs; `private` stands for the default set. For example Tailscale
       # (its addresses are 100.64.0.0/10) or one subnet only:
       # PFA_ALLOWED_CLIENTS: "private,100.64.0.0/10"

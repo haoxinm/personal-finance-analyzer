@@ -33,7 +33,7 @@ You need Docker with Compose v2 (`docker compose`). On the NAS, over SSH or in i
 
 ```console
 $ mkdir pfa-app && cd pfa-app
-$ curl -O https://raw.githubusercontent.com/haoxinm/spending-analysis-from-bills/main/docker-compose.yml
+$ curl -O https://raw.githubusercontent.com/haoxinm/personal-finance-analyzer/main/docker-compose.yml
 $ id                                   # note the uid and gid of the user who should own the files
 $ mkdir -p pfa secrets
 $ openssl rand -base64 24 > secrets/pfa_password.txt   # the login password; more ways in "Creating the password"
@@ -56,7 +56,7 @@ inside `./pfa`.
 Without Compose:
 
 ```console
-$ docker run -d --name pfa --init --restart unless-stopped -p 8756:8756 \
+$ docker run -d --name pfa --init --restart unless-stopped -p 0.0.0.0:8756:8756 \
     -e PUID=1000 -e PGID=1000 -e TZ=America/Chicago \
     -e PFA_ALLOWED_HOSTS=nas.local,192.168.1.10 \
     -e PFA_PASSWORD_FILE=/run/secrets/pfa_password \
@@ -214,8 +214,16 @@ How the login behaves:
   8 hours without use (`PFA_SESSION_IDLE_MINUTES`), after 7 days regardless, on **Sign out** (top
   right), and when the container restarts (sign in again; a browser tab opened before a restart
   shows a 403 until you reload it, because the per-launch API token changed too).
-- **Brute force**: 5 wrong passwords from one address, or 40 from all addresses together, within 5
-  minutes locks logins (`429`, even for the right password) until the window passes.
+- **Brute force**: a login attempt is counted as a failure *before* its password is checked (and
+  taken back if it was right), so sending many attempts at once does not get extra guesses. 5 wrong
+  passwords from one address within 5 minutes lock that address (`429`, even for the right
+  password) until the window passes. Once 40 have failed from all addresses together, each address
+  gets a single try per window instead: the right password still gets in (a stranger cannot lock
+  you out of your own server), while a guesser gets one guess per address. At most two password
+  checks run at once (each takes about 32 MiB of memory), so a flood cannot exhaust a small NAS;
+  surplus requests wait a few seconds and then get `429`. If Docker hides client addresses (below),
+  all clients share one address and five wrong passwords from anyone lock everyone out for the
+  window: the limit still protects the password, but cannot tell you from a stranger.
 - **The older protections still apply underneath**: the `Host` allowlist, the per-launch token every
   `/api` request must carry (the CSRF defence), and same-origin checks on the login and sign-out
   requests. The token is never written to the container log in this mode.
@@ -345,9 +353,10 @@ try and move to Option 1 later. (A `$` in a password must be written `$$` here.)
 
 - **The login page**: a plain page titled "Personal Finance Analyzer" with one **Password** field
   and a **Sign in** button. After signing in the app opens, with **Sign out** at the top right.
-- **Lockout**: five wrong passwords from one address, or forty from all addresses together, within
-  five minutes lock the login (`429`, "Too many failed attempts. Try again in N seconds.", even for
-  the right password) until the window passes.
+- **Lockout**: five wrong passwords from one address within five minutes lock the login for that
+  address (`429`, "Too many failed attempts. Try again in N seconds.", even for the right password)
+  until the window passes. After forty from all addresses together, each address gets one try per
+  window, so the right password still works for you.
 - **One password, no accounts.** To give someone access, give them the password; to cut someone
   off, change it (above). The per-person views (each household member's spending, tax and net worth)
   are chosen inside the app after signing in; they are not separate logins.
@@ -419,21 +428,36 @@ internet.
 - **Plain Docker on Linux (the usual NAS: bridge network, IPv4):** Docker forwards the port with
   iptables NAT and keeps the sender's address, so the app sees your phone as `192.168.1.x` and a
   stranger as a public address. The check works.
-- **Docker's userland proxy and some other paths replace the sender with the bridge gateway**
-  (typically `172.17.0.1` or `172.18.0.1`, a private address). Every client then looks local,
-  public ones included, and no IP check can tell them apart. This can happen with ports published
-  through `docker-proxy` (for example IPv6 on some Docker versions, or with `"userland-proxy": true`
-  where hairpin NAT is unavailable), **rootless Docker** (its port forwarder, by default),
-  **Docker Desktop** (macOS and Windows), and connections the NAS makes to its own published port.
-  `network_mode: host` and `macvlan`/`ipvlan` networks keep the true address.
+- **IPv6 connections to a published port** (the common trap). A mapping written `"8756:8756"` makes
+  Docker listen on IPv6 `[::]` as well as IPv4. The container network is IPv4-only, so Docker's
+  `docker-proxy` accepts the IPv6 connection and opens a new IPv4 one to the container, which the
+  app sees coming from the bridge gateway (`172.17.0.1`, `172.18.0.1`, a private address), whoever
+  the real client was. If the NAS has a public IPv6 address and the router's firewall lets inbound
+  IPv6 connections in (many routers do by default, or have a rule left from another service), a
+  stranger on the internet reaches the login page and the check calls them local. The compose file
+  therefore publishes `"0.0.0.0:8756:8756"` (IPv4 only); the better form is your LAN address.
+- **Other paths that replace the sender with the bridge gateway:** ports published through
+  `docker-proxy` for any reason (for example `"userland-proxy": true` where hairpin NAT is
+  unavailable), **rootless Docker** (its port forwarder, by default), **Docker Desktop** (macOS and
+  Windows), and connections the NAS makes to its own published port. Every client then looks like
+  one private address, public ones included, and no IP check can tell them apart, nor can the
+  per-client login limits. `network_mode: host` and `macvlan`/`ipvlan` networks keep the true
+  address.
+- **The app tells you when it happens.** At startup it reads the container's default gateway from
+  `/proc/net/route`; the first time a request arrives from exactly that address it logs one warning
+  (`Requests are arriving from 172.18.0.1, this container's default gateway ...`, see
+  `docker compose logs pfa`). Seeing it means the check is not protecting you in your setup: fix the
+  `ports:` line as below and do not rely on the check. (Not seeing it is not proof the check works:
+  the warning only covers the gateway address, so use the test below.)
 - **A NAS reverse proxy** (Synology Login Portal, QNAP, Nginx Proxy Manager on Unraid) connects from
   its own address (the NAS itself, or a Docker gateway). Unless you list that address in
   `PFA_TRUSTED_PROXIES` and the proxy sends `X-Forwarded-For`, every visitor looks like the proxy,
   and a stranger who reaches a proxy you exposed passes the check. The app logs a one-time hint when
   an address that is not a trusted proxy sends that header.
-- **IPv6** has no NAT: if the NAS has a public IPv6 address and the router's firewall allows
-  inbound connections, a published port is directly reachable. Publishing on the IPv4 LAN address
-  (below) leaves IPv6 out.
+- **IPv6 without Docker's help:** with `network_mode: host`, or any setup where the app is
+  directly reachable on an IPv6 address, there is no NAT: a public IPv6 address with an inbound
+  firewall pinhole exposes the port itself. The check then sees the real (public) address and
+  refuses it, but do not count on that alone.
 
 **Test yours (two minutes).** In `docker-compose.yml` set `PFA_ALLOWED_CLIENTS` to your LAN subnet
 (`"192.168.1.0/24"`, matching your router) and run `docker compose up -d`. Browse to the app from a
@@ -452,7 +476,9 @@ steps below (or use `network_mode: host`). Then remove the setting, or keep it.
    automatic router configuration; Unraid and TrueNAS do not map ports themselves, but check the
    router's UPnP list). Some apps ask the router to open ports without telling you.
 3. **Publish the port on the LAN address only**, so no other interface listens (and no IPv6
-   address). Give the NAS a fixed address in your router first:
+   address; never leave the bare `"8756:8756"`, which listens on `[::]` too). Give the NAS a fixed
+   address in your router first. The compose file's default, `"0.0.0.0:8756:8756"`, is IPv4-only
+   on every interface; this is the better setting:
 
    ```yaml
        ports:
@@ -748,8 +774,10 @@ the entrypoint cannot fix ownership for you.
 address is in `PFA_TRUSTED_PROXIES`, or set `PFA_COOKIE_SECURE=1`. Also check that the proxy
 forwards the original `Host`.
 
-**`429` on the login page.** Too many wrong passwords; wait the time shown. Behind a proxy without
-`PFA_TRUSTED_PROXIES`, every visitor looks like the proxy's address and shares one limit.
+**`429` on the login page.** Too many wrong passwords (or many people signing in at the same
+moment: wait a few seconds); wait the time shown. Behind a proxy without `PFA_TRUSTED_PROXIES`, or
+when Docker hides client addresses (a warning in the log says so), every visitor looks like one
+address and shares one limit.
 
 **The container exits with `PFA_PASSWORD must be at least 8 characters` or `... is not a valid hash`.**
 The password in your file is shorter than 8 characters, or the hash file holds more than the
