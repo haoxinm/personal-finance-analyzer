@@ -10332,6 +10332,11 @@
             "title": "Moved Keys",
             "default": 0
           },
+          "kept_keys": {
+            "type": "integer",
+            "title": "Kept Keys",
+            "default": 0
+          },
           "guidance": {
             "type": "string",
             "title": "Guidance"

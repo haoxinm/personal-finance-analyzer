@@ -28,6 +28,7 @@ const keychainStatus: SecretStorageStatus = {
   legacy_checked: true,
   file_key_outcome: "none",
   moved_keys: 0,
+  kept_keys: 0,
   guidance: "",
   warning: "",
 };

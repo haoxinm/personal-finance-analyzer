@@ -737,9 +737,13 @@ class SecretStorageStatus(_Model):
     legacy_checked: bool = False
     #: What the `PUT` that just ran did with the plaintext key file: `moved` (into the keychain),
     #: `deleted` (overwritten and removed), `kept` (left on disk, unused) or `none`. `moved_keys`
-    #: counts the keys moved. Always `none` / 0 on a `GET`.
+    #: counts the keys moved; `kept_keys` those whose keychain key already existed and was kept.
+    #: Always `none` / 0 on a `GET`.
     file_key_outcome: Literal["none", "moved", "deleted", "kept"] = "none"
     moved_keys: int = 0
+    #: Keys dropped from the file because the keychain already held a key for that account (the
+    #: keychain's value was kept, not overwritten).
+    kept_keys: int = 0
     #: Platform-specific setup advice, filled in when no usable keychain exists.
     guidance: str
     #: The plaintext-at-rest warning, filled in while the file store is enabled.

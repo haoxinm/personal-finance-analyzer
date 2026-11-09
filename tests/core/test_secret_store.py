@@ -805,10 +805,29 @@ def test_file_store_file_exists_even_when_unreadable() -> None:
 def test_move_file_keys_to_keychain_moves_verifies_and_removes(backend: _Backend) -> None:
     secret_store.write_file_key("llm:a.example", "ka")
     secret_store.write_file_key("llm:b.example", "kb")
-    assert config_module.move_file_keys_to_keychain() == 2
+    assert config_module.move_file_keys_to_keychain() == (2, 0)
     assert backend.store[(_SERVICE, "llm:a.example")] == "ka"
     assert backend.store[(_SERVICE, "llm:b.example")] == "kb"
     assert not file_store_path().exists()
+
+
+def test_move_keeps_an_existing_keychain_key_and_drops_the_file_entry(backend: _Backend) -> None:
+    backend.store[(_SERVICE, "llm:a.example")] = "newer-keychain"
+    secret_store.write_file_key("llm:a.example", "older-file")
+    secret_store.write_file_key("llm:b.example", "kb")
+    result = config_module.move_file_keys_to_keychain()
+    assert (result.moved, result.kept_existing) == (1, 1)
+    assert backend.store[(_SERVICE, "llm:a.example")] == "newer-keychain"  # not overwritten
+    assert backend.store[(_SERVICE, "llm:b.example")] == "kb"
+    assert not file_store_path().exists()
+
+
+def test_move_removes_a_file_that_holds_no_string_keys(backend: _Backend) -> None:
+    file_store_path().parent.mkdir(parents=True)
+    file_store_path().write_text("[keys]\nn = 3\n", encoding="utf-8")
+    assert config_module.move_file_keys_to_keychain() == (0, 0)
+    assert not file_store_path().exists()
+    assert backend.store == {}
 
 
 def test_move_keeps_the_plaintext_when_the_keychain_refuses(backend: _Backend) -> None:

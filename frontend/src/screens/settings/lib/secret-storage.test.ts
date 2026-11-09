@@ -16,6 +16,7 @@ const base: SecretStorageStatus = {
   legacy_checked: true,
   file_key_outcome: "none",
   moved_keys: 0,
+  kept_keys: 0,
   guidance: "",
   warning: "",
 };
@@ -46,6 +47,15 @@ describe("describeFileKeyOutcome", () => {
     expect(moved.title).toBe("Moved 1 saved key into macOS Keychain");
     expect(moved.description).toContain("removed");
     expect(describeFileKeyOutcome({ ...base, file_key_outcome: "moved", moved_keys: 2 }).title).toContain("2 saved keys");
+    const keptOnly = describeFileKeyOutcome({ ...base, file_key_outcome: "moved", kept_keys: 1 });
+    expect(keptOnly.title).toBe("Kept the key already in macOS Keychain");
+    expect(keptOnly.description).toContain("not replaced");
+    const mixed = describeFileKeyOutcome({ ...base, file_key_outcome: "moved", moved_keys: 1, kept_keys: 1 });
+    expect(mixed.title).toBe("Moved 1 saved key into macOS Keychain");
+    expect(mixed.description).toContain("kept, not replaced");
+    const empty = describeFileKeyOutcome({ ...base, file_key_outcome: "moved" });
+    expect(empty.title).toBe("Plaintext key file removed");
+    expect(empty.description).toContain("no saved keys");
     const deleted = describeFileKeyOutcome({ ...base, file_key_outcome: "deleted" });
     expect(deleted.title).toContain("deleted");
     expect(deleted.description).toContain("no longer stored");

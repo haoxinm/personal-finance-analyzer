@@ -204,6 +204,7 @@ def _secret_storage_schema(
     probe_legacy: bool = False,
     outcome: Literal["none", "moved", "deleted", "kept"] = "none",
     moved_keys: int = 0,
+    kept_keys: int = 0,
 ) -> schemas.SecretStorageStatus:
     status = secret_storage_status(llm, probe_legacy=probe_legacy)
     return schemas.SecretStorageStatus(
@@ -220,6 +221,7 @@ def _secret_storage_schema(
         legacy_checked=status.legacy_checked,
         file_key_outcome=outcome,
         moved_keys=moved_keys,
+        kept_keys=kept_keys,
         guidance=status.guidance,
         warning=status.warning,
         file_store_env_var=status.file_store_env_var,
@@ -244,11 +246,11 @@ def get_secret_storage(
 
 def _settle_file_keys(
     action: Literal["move", "delete", "keep"] | None,
-) -> tuple[Literal["none", "moved", "deleted", "kept"], int]:
+) -> tuple[Literal["none", "moved", "deleted", "kept"], int, int]:
     """Decide what happens to the plaintext key file before the opt-in is switched off. Runs
     first, so a refusal or a failure leaves the settings exactly as they were."""
     if not file_store_file_exists():
-        return "none", 0
+        return "none", 0, 0
     keychain = inspect_keychain()
     if action is None:
         if not keychain.usable:
@@ -260,12 +262,13 @@ def _settle_file_keys(
             )
         action = "move"
     if action == "keep":
-        return "kept", 0
+        return "kept", 0, 0
     try:
         if action == "delete":
             remove_file_store()
-            return "deleted", 0
-        return "moved", move_file_keys_to_keychain()
+            return "deleted", 0, 0
+        result = move_file_keys_to_keychain()
+        return "moved", result.moved, result.kept_existing
     except SecretStorageError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from None
 
@@ -290,19 +293,19 @@ def put_secret_storage(
             "unset it to change this setting here.",
         )
     outcome: Literal["none", "moved", "deleted", "kept"] = "none"
-    moved = 0
+    moved = kept = 0
     if body.allow_file_store:
         if body.file_key_action is not None:
             raise HTTPException(
                 status_code=400, detail="file_key_action only applies when turning the file off"
             )
     else:
-        outcome, moved = _settle_file_keys(body.file_key_action)
+        outcome, moved, kept = _settle_file_keys(body.file_key_action)
     saved = load_file_settings()  # never persist other env-overridden values
     save_settings(
         saved.model_copy(update={"secrets": SecretsConfig(allow_file_store=body.allow_file_store)})
     )
-    return _secret_storage_schema(settings.llm, outcome=outcome, moved_keys=moved)
+    return _secret_storage_schema(settings.llm, outcome=outcome, moved_keys=moved, kept_keys=kept)
 
 
 @router.post("/settings/pii-test", response_model=schemas.PiiTestResponse)

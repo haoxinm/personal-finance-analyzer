@@ -234,6 +234,31 @@ def test_turning_off_moves_the_key_into_a_working_keychain(client: TestClient) -
     assert client.get("/api/settings/secret-storage").json()["key_source"] == "keychain"
 
 
+def test_turning_off_keeps_a_newer_keychain_key_and_removes_the_file(client: TestClient) -> None:
+    keyring.set_keyring(keyring.backends.fail.Keyring())
+    _enable_file_store_and_save_a_key(client)
+    working = _Backend()
+    working.store[("personal-finance-analyzer", "llm:api.example.com")] = "sk-newer"
+    keyring.set_keyring(working)
+
+    body = _off(client).json()
+
+    assert (body["file_key_outcome"], body["moved_keys"], body["kept_keys"]) == ("moved", 0, 1)
+    assert working.store[("personal-finance-analyzer", "llm:api.example.com")] == "sk-newer"
+    assert not file_store_path().exists()
+
+
+def test_turning_off_removes_a_file_with_no_string_keys(client: TestClient) -> None:
+    keyring.set_keyring(_Backend())
+    file_store_path().parent.mkdir(parents=True, exist_ok=True)
+    file_store_path().write_text("[keys]\nn = 3\n", encoding="utf-8")
+
+    body = _off(client).json()
+
+    assert (body["file_key_outcome"], body["moved_keys"], body["kept_keys"]) == ("moved", 0, 0)
+    assert not file_store_path().exists()
+
+
 def test_turning_off_without_a_keychain_demands_a_choice_and_changes_nothing(
     client: TestClient, no_keychain: object
 ) -> None:

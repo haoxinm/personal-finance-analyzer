@@ -24,11 +24,28 @@ export function describeKeySource(status: SecretStorageStatus): string {
 /** The toast that says where the key now lives after turning the plaintext key file off. */
 export function describeFileKeyOutcome(status: SecretStorageStatus): { title: string; description: string } {
   switch (status.file_key_outcome) {
-    case "moved":
+    case "moved": {
+      const moved = status.moved_keys;
+      const kept = status.kept_keys;
+      const removed = "The plaintext key file was overwritten and removed.";
+      if (moved === 0 && kept === 0) {
+        return { title: "Plaintext key file removed", description: `It held no saved keys. ${removed}` };
+      }
+      if (moved === 0) {
+        return {
+          title: `Kept the key already in ${status.keychain_name}`,
+          description: `The saved key was not replaced by the one in the file. ${removed}`,
+        };
+      }
+      const title = `Moved ${moved} saved key${moved === 1 ? "" : "s"} into ${status.keychain_name}`;
       return {
-        title: `Moved ${status.moved_keys} saved key${status.moved_keys === 1 ? "" : "s"} into ${status.keychain_name}`,
-        description: "The plaintext key file was overwritten and removed.",
+        title,
+        description:
+          kept > 0
+            ? `${kept} already in ${status.keychain_name} ${kept === 1 ? "was" : "were"} kept, not replaced. ${removed}`
+            : removed,
       };
+    }
     case "deleted":
       return {
         title: "Plaintext key file deleted",

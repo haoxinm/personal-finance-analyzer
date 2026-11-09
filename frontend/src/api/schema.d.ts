@@ -2855,6 +2855,11 @@ export interface components {
              * @default 0
              */
             moved_keys: number;
+            /**
+             * Kept Keys
+             * @default 0
+             */
+            kept_keys: number;
             /** Guidance */
             guidance: string;
             /** Warning */

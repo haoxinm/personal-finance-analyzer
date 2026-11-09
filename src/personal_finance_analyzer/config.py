@@ -24,7 +24,7 @@ import tomllib
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, NamedTuple
 from urllib.parse import urlsplit
 
 import keyring
@@ -46,6 +46,7 @@ from personal_finance_analyzer.secret_store import (
     platform_guidance,
     read_all_file_keys,
     read_file_key,
+    remove_file_store,
     write_file_key,
 )
 
@@ -574,11 +575,24 @@ def delete_api_key(provider: str) -> None:
         raise SecretStorageError(explain_keyring_error(refused))
 
 
-def move_file_keys_to_keychain() -> int:
-    """Copy every key in the plaintext file into the OS keychain, check each one reads back, and
-    only then remove it from the file (the file itself goes when the last key does). Returns how
-    many were moved. A key that cannot be moved stays in the file; nothing is deleted before its
-    keychain copy is verified.
+class FileKeyMove(NamedTuple):
+    """What `move_file_keys_to_keychain` did: keys copied into the keychain, and keys whose
+    account already had a (live) keychain value, which was kept and the file copy just dropped."""
+
+    moved: int
+    kept_existing: int
+
+
+def move_file_keys_to_keychain() -> FileKeyMove:
+    """Move every key in the plaintext file into the OS keychain, then remove the file.
+
+    An account that already has a keychain key keeps it (the keychain is read first, so that value
+    is the live one; the file copy may be older): the file entry is just dropped and counted in
+    ``kept_existing``. Every other key is copied, checked to read back, and only then removed from
+    the file. Whatever remains afterwards (a file with no usable string keys, or one that cannot be
+    parsed) is overwritten and removed too, so a successful call never leaves the file on disk. A
+    key that cannot be moved stays in the file and raises; nothing is deleted before its keychain
+    copy is verified.
 
     Raises:
         SecretStorageError: no usable keychain, or the keychain refused a key (the message says
@@ -590,12 +604,16 @@ def move_file_keys_to_keychain() -> int:
             f"The saved key was not moved: there is no usable system keychain ({keychain.detail}). "
             f"{platform_guidance()}"
         )
-    moved = 0
+    moved = kept = 0
     for account, key in read_all_file_keys().items():
         try:
             with KEYRING_LOCK:
-                keyring.set_password(_KEYRING_SERVICE, account, key)
-                verified = keyring.get_password(_KEYRING_SERVICE, account) == key
+                existing = keyring.get_password(_KEYRING_SERVICE, account)
+                if existing:
+                    verified = True
+                else:
+                    keyring.set_password(_KEYRING_SERVICE, account, key)
+                    verified = keyring.get_password(_KEYRING_SERVICE, account) == key
         except keyring.errors.KeyringError as exc:
             raise SecretStorageError(explain_keyring_error(exc)) from None
         if not verified:
@@ -604,8 +622,12 @@ def move_file_keys_to_keychain() -> int:
                 "copy was kept."
             )
         delete_file_key(account)
-        moved += 1
-    return moved
+        if existing:
+            kept += 1
+        else:
+            moved += 1
+    remove_file_store()  # nothing usable is left in it; never leave the file behind
+    return FileKeyMove(moved, kept)
 
 
 @dataclass(frozen=True)
@@ -636,6 +658,8 @@ class SecretStorageStatus:
     #: it; ``none`` everywhere else) and how many keys it moved into the keychain.
     file_key_outcome: Literal["none", "moved", "deleted", "kept"]
     moved_keys: int
+    #: Keys dropped from the file because the keychain already had a key for that account.
+    kept_keys: int
     #: Platform-specific setup advice; only filled in when no keychain is usable.
     guidance: str
     #: The plaintext warning; only filled in when the file store is enabled.
@@ -701,6 +725,7 @@ def secret_storage_status(
         legacy_checked=probe_legacy,
         file_key_outcome="none",
         moved_keys=0,
+        kept_keys=0,
         guidance="" if keychain.usable else platform_guidance(),
         warning=FILE_STORE_WARNING.format(path=path) if file_enabled else "",
         file_store_env_var=env_override_var("secrets", "allow_file_store"),
