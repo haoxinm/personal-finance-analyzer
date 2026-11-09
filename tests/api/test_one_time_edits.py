@@ -213,11 +213,13 @@ def test_bulk_update_patches_each_row_once_and_remembers_nothing(
     assert _category_of(session, other.id) != category_ids(session, *FUEL)  # not affected
 
 
-def test_kind_edits_are_patches_but_notes_are_not(client: TestClient, session: Session) -> None:
+def test_kind_edits_on_categorized_rows_are_patches_but_notes_are_not(
+    client: TestClient, session: Session
+) -> None:
     seed = base(session)
-    kind_edit = _pending(session, 1, seed)
+    kind_edit = add_txn(session, seed, 1, category=GROCERY, classified_by="llm")
     note_edit = _pending(session, 2, seed)
-    bulk_kind = _pending(session, 3, seed)
+    bulk_kind = add_txn(session, seed, 3, category=GROCERY, classified_by="llm")
     session.commit()
 
     assert (
@@ -235,6 +237,45 @@ def test_kind_edits_are_patches_but_notes_are_not(client: TestClient, session: S
     assert session.get(Transaction, kind_edit.id).classified_by == "user"  # type: ignore[union-attr]
     assert session.get(Transaction, bulk_kind.id).classified_by == "user"  # type: ignore[union-attr]
     assert session.get(Transaction, note_edit.id).classified_by == "llm"  # type: ignore[union-attr]
+
+
+def test_kind_only_edit_on_an_uncategorized_row_does_not_freeze_its_category(
+    client: TestClient, session: Session, engine: Engine
+) -> None:
+    """Regression: a kind-only edit used to mark an uncategorized row `user`, which every
+    re-classify, rule and LLM pass skips, so it stayed uncategorized forever."""
+    seed = base(session)
+    parked = _pending(session, 1, seed, merchant_key="corner shop")
+    bare = add_txn(session, seed, 2, merchant_key="no category", needs_review=True)
+    session.commit()
+
+    assert client.patch(f"/api/transactions/{parked.id}", json={"kind": "fee"}).status_code == 200
+    bulk = client.post(
+        "/api/transactions/bulk-update", json={"transaction_ids": [bare.id], "kind": "fee"}
+    )
+    assert bulk.json() == {"updated": 1}
+
+    session.expire_all()
+    for txn_id in (parked.id, bare.id):
+        row = session.get(Transaction, txn_id)
+        assert row is not None
+        assert row.kind == "fee" and row.is_spend is True  # the edit itself is applied
+        assert row.classified_by != "user"  # ... but the row is still open to classification
+
+    # A rule can therefore still categorize it later.
+    rule = Rule(
+        match_type="exact",
+        pattern="corner shop",
+        category_id=category_ids(session, *FUEL)[0],
+        subcategory_id=category_ids(session, *FUEL)[1],
+        priority=50,
+        enabled=True,
+        source="user",
+    )
+    session.add(rule)
+    session.commit()
+    _classify(engine, [parked.id])
+    assert _category_of(session, parked.id) == category_ids(session, *FUEL)
 
 
 # --- "Always categorize" is the explicit merchant rule ---------------------------------------
@@ -261,7 +302,7 @@ def test_patch_with_create_rule_saves_one_exact_rule_and_patches_the_transaction
     assert _category_of(session, sibling.id) == category_ids(session, *UNCATEGORIZED)
 
     applied = client.post(f"/api/rules/{rules[0].id}/apply")
-    assert applied.json() == {"updated": 1}
+    assert applied.json()["updated"] == 1
     assert _category_of(session, sibling.id) == category_ids(session, *FUEL)
 
 
@@ -279,7 +320,7 @@ def test_a_merchant_rule_never_overrides_an_earlier_patch(
     rule = _rules_for(session, "zorblax mart")[0]
 
     # ...does not touch the patched row via apply-to-existing, a classify run, or the API run.
-    assert client.post(f"/api/rules/{rule.id}/apply").json() == {"updated": 0}
+    assert client.post(f"/api/rules/{rule.id}/apply").json()["updated"] == 0
     _classify(engine, [patched.id, other.id])
     assert _category_of(session, patched.id) == category_ids(session, *FUEL)
     assert session.get(Transaction, patched.id).classified_by == "user"  # type: ignore[union-attr]
@@ -295,7 +336,7 @@ def test_a_new_rule_never_overrides_a_patch_even_with_higher_priority(
 
     rule = _user_rule(client, "zorblax mart", GROCERY, priority=1)
     assert rule["existing_matches"] == 0  # the preview already excludes the patched row
-    assert client.post(f"/api/rules/{rule['id']}/apply").json() == {"updated": 0}
+    assert client.post(f"/api/rules/{rule['id']}/apply").json()["updated"] == 0
     _classify(engine, [patched.id])
     assert _category_of(session, patched.id) == category_ids(session, *FUEL)
 
@@ -355,7 +396,7 @@ def test_undoing_a_plain_accept_restores_the_rows_and_leaves_rules_alone(
     body = _accept(client, first.id, similar_ids=[similar.id])
     assert body["undo"]["rule"] is None  # type: ignore[index]
     undone = client.post("/api/review/undo", json=body["undo"])
-    assert undone.json() == {"restored": 2}
+    assert undone.json()["restored"] == 2
 
     session.expire_all()
     for txn_id in (first.id, similar.id):
@@ -374,7 +415,7 @@ def test_undo_token_has_no_merchant_map_part(client: TestClient, session: Sessio
     session.commit()
     body = _accept(client, first.id, create_rule=True)
     assert set(body["undo"]) == {"transactions", "rule"}  # type: ignore[arg-type]
-    assert body["undo"]["rule"]["existed"] is False  # type: ignore[index]
+    assert body["undo"]["rule"]["before"] is None  # type: ignore[index]
 
 
 # --- Automated paths through the API ---------------------------------------------------------

@@ -416,18 +416,34 @@ def subcategory_key_of(session: Session, transaction: Transaction) -> str | None
     return sub.key if sub is not None else None
 
 
+def _has_real_category(session: Session, transaction: Transaction) -> bool:
+    """True if the row has a category other than the `others/uncategorized` fallback."""
+    if transaction.category_id is None or transaction.subcategory_id is None:
+        return False
+    return (
+        category_key_of(session, transaction),
+        subcategory_key_of(session, transaction),
+    ) != ("others", "uncategorized")
+
+
 def update_transaction_fields(
     session: Session, transaction: Transaction, *, kind: str | None, notes: str | None
 ) -> Transaction:
     """Update fields that are plain CRUD (not routed through `apply_user_correction`).
 
-    Changing `kind` is a one-time edit of this transaction, so it is marked
-    `classified_by='user'` and no automated pass reverts it; `notes` never lock a row.
+    Changing `kind` is a one-time edit of this transaction. When the row already has a real
+    category it is marked `classified_by='user'`, so no automated pass reverts the edit. A
+    kind-only edit on a row that is still uncategorized does *not* freeze it: the user said
+    something about the kind, not the category, and locking would leave the row uncategorized
+    forever (every re-classify, rule and LLM pass skips a `user` row). Its category can still be
+    filled in; the kind itself only changes again through a rule's explicit kind override.
+    `notes` never lock a row.
     """
     if kind is not None and kind != transaction.kind:
         transaction.kind = kind
         transaction.is_spend = kind in ("purchase", "fee", "interest")
-        transaction.classified_by = USER_CLASSIFIED
+        if _has_real_category(session, transaction):
+            transaction.classified_by = USER_CLASSIFIED
     if notes is not None:
         transaction.notes = notes
     transaction.updated_at = utcnow_iso()
