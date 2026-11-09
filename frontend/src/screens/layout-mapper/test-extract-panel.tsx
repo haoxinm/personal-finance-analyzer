@@ -70,6 +70,17 @@ export function TestExtractPanel({
           {event.status === "error" && event.error_detail ? `: ${event.error_detail}` : null}
         </p>
       ) : null}
+      {event?.status === "done" && (event.unmatched_edits ?? 0) > 0 ? (
+        <p role="alert" className="text-xs font-medium text-destructive">
+          {event.unmatched_edits} of your hand edits (category, kind or notes) could not be matched to a
+          rebuilt transaction and {event.unmatched_edits === 1 ? "was" : "were"} dropped. Check the rows you
+          corrected on this statement.
+        </p>
+      ) : event?.status === "done" && (event.restored_edits ?? 0) > 0 ? (
+        <p className="text-xs">
+          Kept {event.restored_edits} hand edit{event.restored_edits === 1 ? "" : "s"} on the rebuilt rows.
+        </p>
+      ) : null}
       {statement.txn_count != null ? (
         <p className="text-xs font-medium">
           {statement.txn_count} transaction(s)
