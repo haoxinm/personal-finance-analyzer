@@ -276,7 +276,7 @@ class FolderScanner:
                     report.items.append(item)
 
             if not dry_run:
-                self._cleanup(session, records, seen)
+                self._cleanup(session, seen)
                 session.commit()
 
     # ------------------------------------------------------------------ stability
@@ -490,12 +490,22 @@ class FolderScanner:
         if parsed:
             session.commit()
 
-    def _cleanup(self, session: Session, records: dict[str, WatchedFile], seen: set[str]) -> None:
+    def _cleanup(self, session: Session, seen: set[str]) -> None:
         """Forget failures of files that are gone (the user fixed them by moving or deleting) and
         keep only the newest `KEEP_SUCCESSES` successful records."""
-        for path, record in records.items():
-            if path not in seen and record.outcome in ("failed", "ignored"):
-                session.delete(record)
+        # (A fresh query, not `records`: the objects loaded at the start expired when the imports
+        # committed, and a Retry from another process may have deleted some meanwhile.)
+        gone = [
+            row_id
+            for row_id, path in session.execute(
+                select(WatchedFile.id, WatchedFile.path).where(
+                    WatchedFile.outcome.in_(("failed", "ignored"))
+                )
+            )
+            if path not in seen
+        ]
+        if gone:
+            session.execute(delete(WatchedFile).where(WatchedFile.id.in_(gone)))
         session.flush()
         keep = session.scalars(
             select(WatchedFile.id)

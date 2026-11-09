@@ -188,16 +188,18 @@ class WatchService:
                 if self._paused() or not self._ready():
                     return None
                 report = self._scanner.scan(settle_seconds=MANUAL_SETTLE_S if manual else 0.0)
+                summary = ScanSummary.of(report)
+                # The result is published before `running` clears, so whoever sees the scan
+                # finished also sees what it did.
+                with self._lock:
+                    self._last = summary
+                    if report.error:
+                        self._problem = report.error
+                    elif not report.busy:
+                        self._problem = None
         finally:
             with self._lock:
                 self._running = False
-        summary = ScanSummary.of(report)
-        with self._lock:
-            self._last = summary
-            if report.error:
-                self._problem = report.error
-            elif not report.busy:
-                self._problem = None
         if report.imported or report.failed:
             logger.info(
                 "folder scan: %d imported, %d failed, %d waiting",
