@@ -15,8 +15,16 @@ puts a login in front of everything:
   trusted reverse proxy, or when ``PFA_COOKIE_SECURE=1``). They expire after an idle period and
   after a fixed maximum age, die on logout, and do not survive a restart (the per-launch token
   changes then anyway).
-- **Rate limiting**: failed logins are counted per client address and globally; past the limit
-  every attempt, right or wrong, gets 429 until the window passes.
+- **Rate limiting**: an attempt is counted as a failure *before* its password is checked (and
+  un-counted if it turns out right), so a burst of parallel requests cannot all slip under the
+  limit; past the per-client limit every attempt, right or wrong, gets 429 until the window
+  passes. Once the global limit is reached, a client with no failures of its own still gets one
+  verified try per window, so a correct password gets through (a few LAN devices cannot lock the
+  owner out) while a guesser gets one guess per address, not unlimited ones. Behind a Docker
+  port mapping that hides client addresses (`api/clients.py`) all clients share one bucket, so
+  5 wrong guesses lock everyone out for the window: the limit still holds, but it cannot tell the
+  owner from a stranger there. At most `AuthConfig.max_concurrent_verifications` scrypt
+  verifications run at once (each uses ~32 MiB); other requests wait briefly, then get 429.
 - **Everything else is locked**: the SPA, the static files and the whole API answer 401 (API and
   non-GET requests) or a redirect to ``/login`` (page loads) without a valid session. Only
   ``/login`` and the health probe are open. The existing Host allowlist and per-launch CSRF token
@@ -26,6 +34,7 @@ puts a login in front of everything:
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 import hashlib
@@ -193,6 +202,10 @@ class AuthConfig:
     max_failures_per_client: int = 5
     max_failures_global: int = 40
     window_seconds: int = 300
+    #: scrypt verifications that may run at once (each holds ~32 MiB), and how long another login
+    #: request waits for a free slot before it is answered 429.
+    max_concurrent_verifications: int = 2
+    verify_wait_seconds: float = 5.0
     #: Monotonic seconds; tests substitute a fake to step through expiry and lockout windows.
     clock: Callable[[], float] = time.monotonic
 
@@ -257,8 +270,33 @@ class SessionStore:
             del self._sessions[sid]
 
 
+@dataclass(frozen=True)
+class Attempt:
+    """A login attempt the throttle has seen. ``wait`` > 0 means it is refused for that many
+    seconds; otherwise it is already counted as a failure until `LoginThrottle.succeed` or
+    `LoginThrottle.cancel` says otherwise."""
+
+    client: str
+    wait: int = 0
+    stamp: float = 0.0
+
+    @property
+    def allowed(self) -> bool:
+        return self.wait == 0
+
+
 class LoginThrottle:
-    """Counts failed logins in a sliding window, per client address and overall. Thread-safe."""
+    """Counts failed logins in a sliding window, per client address and overall. Thread-safe.
+
+    `reserve` checks the limits and, in the same step, records the attempt as a failure, so
+    concurrent attempts cannot all pass a check that none of them has charged yet; `succeed`
+    takes the charge back when the password was right. Once the global limit is reached each
+    client is allowed one attempt per window (instead of ``max_per_client``), so a correct
+    password still gets through while a distributed guesser is held to one guess per address.
+    """
+
+    #: Sweep clients with no failures left in the window when the table grows beyond this.
+    _SWEEP_AT = 1024
 
     def __init__(
         self,
@@ -279,32 +317,72 @@ class LoginThrottle:
         while queue and now - queue[0] >= self._window:
             queue.popleft()
 
-    def retry_after(self, client: str) -> int:
-        """Seconds until ``client`` may try again; 0 when it may try now."""
-        now = self._clock()
-        with self._lock:
-            self._trim(self._all, now)
-            waits = []
-            if len(self._all) >= self._max_global:
-                waits.append(self._all[0] + self._window - now)
-            queue = self._by_client.get(client)
-            if queue is not None:
-                self._trim(queue, now)
-                if not queue:
-                    del self._by_client[client]
-                elif len(queue) >= self._max_client:
-                    waits.append(queue[0] + self._window - now)
-            return max(1, int(max(waits)) + 1) if waits else 0
+    def _sweep(self, now: float) -> None:
+        for client in list(self._by_client):
+            queue = self._by_client[client]
+            self._trim(queue, now)
+            if not queue:
+                del self._by_client[client]
 
-    def record_failure(self, client: str) -> None:
+    def retry_after(self, client: str) -> int:
+        """Seconds until ``client`` may try again; 0 when it may try now. Does not count anything."""
         now = self._clock()
         with self._lock:
+            return self._wait(client, now)
+
+    def _wait(self, client: str, now: float) -> int:
+        self._trim(self._all, now)
+        limit = self._max_client
+        if len(self._all) >= self._max_global:
+            limit = min(limit, 1)
+        queue = self._by_client.get(client)
+        if queue is not None:
+            self._trim(queue, now)
+            if not queue:
+                del self._by_client[client]
+            elif len(queue) >= limit:
+                return max(1, int(queue[0] + self._window - now) + 1)
+        return 0
+
+    def reserve(self, client: str) -> Attempt:
+        """Check the limits and, when the attempt may go ahead, count it as a failure."""
+        now = self._clock()
+        with self._lock:
+            wait = self._wait(client, now)
+            if wait:
+                return Attempt(client, wait=wait)
+            if len(self._by_client) > self._SWEEP_AT:
+                self._sweep(now)
             self._all.append(now)
             self._by_client.setdefault(client, deque()).append(now)
+            return Attempt(client, stamp=now)
 
-    def record_success(self, client: str) -> None:
+    def succeed(self, attempt: Attempt) -> None:
+        """The password was right: take this attempt's charge back and forget the client's
+        earlier failures."""
         with self._lock:
-            self._by_client.pop(client, None)
+            self._refund(attempt)
+            self._by_client.pop(attempt.client, None)
+
+    def cancel(self, attempt: Attempt) -> None:
+        """The attempt was never checked (no verification slot): take its charge back."""
+        with self._lock:
+            self._refund(attempt)
+
+    def _refund(self, attempt: Attempt) -> None:
+        # Entries are a queue of stamps; remove one equal stamp from each (any equal one will do).
+        try:
+            self._all.remove(attempt.stamp)
+        except ValueError:
+            pass
+        queue = self._by_client.get(attempt.client)
+        if queue is not None:
+            try:
+                queue.remove(attempt.stamp)
+            except ValueError:
+                pass
+            if not queue:
+                del self._by_client[attempt.client]
 
 
 class AuthState:
@@ -321,6 +399,17 @@ class AuthState:
             config.window_seconds,
             config.clock,
         )
+        self._slots: asyncio.Semaphore | None = None
+        self._slots_loop: asyncio.AbstractEventLoop | None = None
+
+    def verify_slots(self) -> asyncio.Semaphore:
+        """The semaphore bounding concurrent password verifications (one per running event loop,
+        so the state can outlive a loop, as the test client's does)."""
+        loop = asyncio.get_running_loop()
+        if self._slots is None or self._slots_loop is not loop:
+            self._slots = asyncio.Semaphore(max(1, self.config.max_concurrent_verifications))
+            self._slots_loop = loop
+        return self._slots
 
 
 def client_address(request: Request) -> str:
@@ -495,23 +584,39 @@ def register_auth_routes(app: FastAPI, state: AuthState) -> None:
                 status_code=403,
             )
         client = client_address(request)
-        wait = state.throttle.retry_after(client)
-        if wait:
+        # Charged as a failure now, before the (slow) check, so parallel requests cannot all pass.
+        attempt = state.throttle.reserve(client)
+        if not attempt.allowed:
             response = _login_page(
                 app.state.token,
                 next_path,
-                error=f"Too many failed attempts. Try again in {wait} seconds.",
+                error=f"Too many failed attempts. Try again in {attempt.wait} seconds.",
                 status_code=429,
             )
-            response.headers["Retry-After"] = str(wait)
+            response.headers["Retry-After"] = str(attempt.wait)
             return response
-        ok = await run_in_threadpool(verify_password, password, state.config.password_hash)
+        slots = state.verify_slots()
+        try:
+            await asyncio.wait_for(slots.acquire(), state.config.verify_wait_seconds)
+        except TimeoutError:
+            state.throttle.cancel(attempt)
+            response = _login_page(
+                app.state.token,
+                next_path,
+                error="The server is busy checking other sign-ins. Try again in a few seconds.",
+                status_code=429,
+            )
+            response.headers["Retry-After"] = "5"
+            return response
+        try:
+            ok = await run_in_threadpool(verify_password, password, state.config.password_hash)
+        finally:
+            slots.release()
         if not ok:
-            state.throttle.record_failure(client)
             return _login_page(
                 app.state.token, next_path, error="Incorrect password.", status_code=401
             )
-        state.throttle.record_success(client)
+        state.throttle.succeed(attempt)
         response = RedirectResponse(next_path, status_code=303)
         _set_session_cookie(response, request, state, state.sessions.create())
         return response

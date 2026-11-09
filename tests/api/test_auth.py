@@ -18,6 +18,7 @@ from personal_finance_analyzer.api.auth import (
     SESSION_COOKIE,
     AuthConfig,
     AuthConfigError,
+    LoginThrottle,
     SessionStore,
     hash_password,
     load_password_hash,
@@ -453,27 +454,156 @@ def test_a_successful_login_clears_that_clients_failures(anon: TestClient) -> No
         assert sign_in(anon, "wrong guess").status_code == 401  # type: ignore[attr-defined]
 
 
-def test_global_limit_stops_a_distributed_guesser(
-    engine: Engine, session: Session, web_dir: Path, clock: FakeClock
-) -> None:
-    del session
-    app = create_app(
+def _app_with(engine: Engine, web_dir: Path, clock: FakeClock, **limits: float) -> FastAPI:
+    return create_app(
         engine=engine,
         settings=Settings(),
         token=TOKEN,
         web_dir=web_dir,
-        auth=AuthConfig(
-            password_hash=PASSWORD_HASH,
-            clock=clock,
-            max_failures_per_client=100,
-            max_failures_global=3,
-        ),
+        auth=AuthConfig(password_hash=PASSWORD_HASH, clock=clock, **limits),  # type: ignore[arg-type]
         allowed_hosts=("nas.local",),
     )
-    with TestClient(app, base_url="http://nas.local:8756", follow_redirects=False) as client:
+
+
+def test_global_limit_holds_a_distributed_guesser_to_one_guess_per_address(
+    engine: Engine, session: Session, web_dir: Path, clock: FakeClock
+) -> None:
+    del session
+    app = _app_with(engine, web_dir, clock, max_failures_per_client=100, max_failures_global=3)
+
+    def browser(address: str) -> TestClient:
+        return TestClient(
+            app,
+            base_url="http://nas.local:8756",
+            follow_redirects=False,
+            client=(address, 50000),
+        )
+
+    with browser("192.168.1.10") as guesser:
         for _ in range(3):
-            assert sign_in(client, "wrong guess").status_code == 401  # type: ignore[attr-defined]
-        assert sign_in(client).status_code == 429  # type: ignore[attr-defined]
+            assert sign_in(guesser, "wrong guess").status_code == 401  # type: ignore[attr-defined]
+        # The global limit is reached: this address has used its one try for the window...
+        assert sign_in(guesser, "wrong guess").status_code == 429  # type: ignore[attr-defined]
+        assert sign_in(guesser).status_code == 429  # type: ignore[attr-defined]
+    # ...but another address (the owner) still gets one verified try, and a correct password
+    # gets through the global lockout.
+    with browser("192.168.1.20") as owner:
+        assert sign_in(owner).status_code == 303  # type: ignore[attr-defined]
+    # A different guesser gets exactly one wrong guess, then is held.
+    with browser("192.168.1.30") as other:
+        assert sign_in(other, "wrong guess").status_code == 401  # type: ignore[attr-defined]
+        assert sign_in(other, "wrong guess").status_code == 429  # type: ignore[attr-defined]
+
+
+def test_throttle_reserve_counts_the_attempt_before_it_is_verified() -> None:
+    now = [0.0]
+    throttle = LoginThrottle(3, 100, 60, lambda: now[0])
+    attempts = [throttle.reserve("a") for _ in range(5)]
+    assert [a.allowed for a in attempts] == [True, True, True, False, False]
+    assert all(a.wait > 0 for a in attempts[3:])
+    # A correct password refunds its own charge and clears the client's history.
+    throttle.succeed(attempts[0])
+    assert throttle.reserve("a").allowed
+    # A cancelled attempt (never verified) does not count.
+    throttle2 = LoginThrottle(1, 100, 60, lambda: now[0])
+    first = throttle2.reserve("b")
+    throttle2.cancel(first)
+    assert throttle2.reserve("b").allowed
+    assert not throttle2.reserve("b").allowed
+    now[0] += 61
+    assert throttle2.reserve("b").allowed
+
+
+def _post_burst(app: FastAPI, count: int) -> list[int]:
+    import asyncio
+
+    import httpx
+
+    async def burst() -> list[int]:
+        transport = httpx.ASGITransport(app=app, client=("192.168.1.9", 40000))
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://nas.local:8756", follow_redirects=False
+        ) as client:
+            responses = await asyncio.gather(
+                *(
+                    client.post(
+                        "/login", data={"password": "wrong guess", "token": TOKEN, "next": "/"}
+                    )
+                    for _ in range(count)
+                )
+            )
+        return sorted(r.status_code for r in responses)
+
+    return asyncio.run(burst())
+
+
+def test_a_parallel_burst_of_wrong_passwords_verifies_only_the_allowed_few(
+    engine: Engine,
+    session: Session,
+    web_dir: Path,
+    clock: FakeClock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import threading
+    import time
+
+    from personal_finance_analyzer.api import auth as auth_module
+
+    del session
+    app = _app_with(engine, web_dir, clock, max_concurrent_verifications=2)
+    lock = threading.Lock()
+    stats = {"calls": 0, "running": 0, "peak": 0}
+
+    def slow_verify(password: str, encoded: str) -> bool:
+        with lock:
+            stats["calls"] += 1
+            stats["running"] += 1
+            stats["peak"] = max(stats["peak"], stats["running"])
+        time.sleep(0.05)
+        with lock:
+            stats["running"] -= 1
+        return False
+
+    monkeypatch.setattr(auth_module, "verify_password", slow_verify)
+
+    statuses = _post_burst(app, 40)
+    # The per-client limit (5) is charged before verification, so only 5 requests were ever
+    # verified, never more than 2 at a time; the other 35 were refused outright.
+    assert stats["calls"] == 5
+    assert stats["peak"] <= 2
+    assert statuses == [401] * 5 + [429] * 35
+
+
+def test_requests_that_cannot_get_a_verification_slot_get_429_and_are_not_charged(
+    engine: Engine,
+    session: Session,
+    web_dir: Path,
+    clock: FakeClock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import time
+
+    from personal_finance_analyzer.api import auth as auth_module
+
+    del session
+    app = _app_with(
+        engine,
+        web_dir,
+        clock,
+        max_concurrent_verifications=1,
+        verify_wait_seconds=0.01,
+        max_failures_per_client=50,
+    )
+
+    def slow_verify(password: str, encoded: str) -> bool:
+        time.sleep(0.3)
+        return False
+
+    monkeypatch.setattr(auth_module, "verify_password", slow_verify)
+
+    assert _post_burst(app, 4) == [401, 429, 429, 429]
+    # Only the verified attempt was charged.
+    assert len(app.state.auth.throttle._by_client["192.168.1.9"]) == 1
 
 
 # --- session lifetime ---------------------------------------------------------------------
