@@ -43,10 +43,23 @@ function useUndoToken() {
   const undo = React.useCallback(
     async (token: UndoToken) => {
       try {
-        const { error } = await apiClient.POST("/review/undo", { body: token });
+        const { data, error } = await apiClient.POST("/review/undo", { body: token });
         throwIfError(error);
         refresh();
-        toast({ title: "Undone" });
+        // The server restores a row only if it still is what the change left it as: a row edited
+        // since stays as the user set it and is reported here instead of being overwritten.
+        const skipped = data?.skipped?.length ?? 0;
+        const notes: string[] = [];
+        if (skipped > 0) {
+          notes.push(
+            `${skipped} transaction${skipped === 1 ? " was" : "s were"} edited since, so ${skipped === 1 ? "it was" : "they were"} left as you set ${skipped === 1 ? "it" : "them"}.`,
+          );
+        }
+        if (data?.rule_skipped) notes.push("The rule was changed since, so it was left alone.");
+        toast({
+          title: data !== undefined && data.restored === 0 ? "Nothing to undo" : "Undone",
+          description: notes.length > 0 ? notes.join(" ") : undefined,
+        });
       } catch (error) {
         toast({
           title: "Undo failed",

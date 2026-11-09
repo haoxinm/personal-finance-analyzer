@@ -544,7 +544,7 @@ describe("TransactionsScreen", () => {
           });
         }
         if (request.method === "POST" && url.pathname === "/api/review/undo") {
-          return jsonResponse({ restored: 1 });
+          return jsonResponse({ restored: 1, skipped: [], rule_skipped: false });
         }
         throw new Error(`unexpected fetch: ${request.method} ${request.url}`);
       };
@@ -654,24 +654,25 @@ describe("TransactionsScreen", () => {
         subcategories: [{ id: 2, key: "gasoline", name: "Gasoline", pending: false }],
       },
     ];
+    const TOKEN_STATE = {
+      confidence: 1,
+      needs_review: false,
+      kind: "purchase",
+      is_spend: true,
+      merchant_canonical: null,
+    };
     const TOKEN = {
       transactions: [
         {
           transaction_id: 1,
-          category_id: 2,
-          subcategory_id: 2,
-          confidence: 1,
-          classified_by: "user",
-          needs_review: false,
-          kind: "purchase",
-          is_spend: true,
-          merchant_canonical: null,
+          before: { ...TOKEN_STATE, category_id: 2, subcategory_id: 2, classified_by: "user" },
+          after: { ...TOKEN_STATE, category_id: 3, subcategory_id: 3, classified_by: "user_rule" },
         },
       ],
       rule: null,
     };
 
-    function routes() {
+    function routes(undoResponse: object = { restored: 1, skipped: [], rule_skipped: false }) {
       return (request: Request) => {
         const url = new URL(request.url);
         if (url.pathname === "/api/taxonomy") return jsonResponse(CATEGORIES_WITH_FUEL);
@@ -688,7 +689,7 @@ describe("TransactionsScreen", () => {
           return jsonResponse({ reverted: 1, skipped: 1, undo: TOKEN });
         }
         if (request.method === "POST" && url.pathname === "/api/review/undo") {
-          return jsonResponse({ restored: 1 });
+          return jsonResponse(undoResponse);
         }
         throw new Error(`unexpected fetch: ${request.method} ${request.url}`);
       };
@@ -713,6 +714,22 @@ describe("TransactionsScreen", () => {
       const undoBody = (await callsTo(fetchMock, "POST", "/api/review/undo")[0]!.clone().json()) as unknown;
       expect(undoBody).toEqual(TOKEN);
       expect(await screen.findByText("Undone")).toBeInTheDocument();
+    });
+
+    it("tells when Undo left a row alone because it was edited again since", async () => {
+      const user = userEvent.setup();
+      await mountWithFetch(routes({ restored: 0, skipped: [1], rule_skipped: false }));
+      await screen.findByText("Corner Store");
+
+      await user.click(screen.getByRole("button", { name: "Edit Corner Store" }));
+      const dialog = await screen.findByRole("dialog", { name: "Edit transaction 1" });
+      await user.click(await within(dialog).findByRole("button", { name: "Revert to automatic" }));
+      await user.click(await screen.findByRole("button", { name: "Undo" }));
+
+      expect(await screen.findByText("Nothing to undo")).toBeInTheDocument();
+      expect(
+        screen.getByText("1 transaction was edited since, so it was left as you set it."),
+      ).toBeInTheDocument();
     });
 
     it("reverts the selected rows from the bulk bar and reports the skipped ones", async () => {
