@@ -8,8 +8,10 @@
 #
 # Starts the container with bind mounts under a scratch directory, a password file and a PUID/PGID,
 # then checks: healthy; the login is required; a wrong password and a right one; migrations ran
-# (the API answers with the default user); the data landed on the bind mount; and a recreated
-# container finds the same data. Everything it creates is removed on exit.
+# (the API answers with the default user); the data landed on the bind mount; an uploaded PDF is
+# kept at a readable path (./pfa/documents/<Person>/Statements/...) on the host, with the README,
+# and no hash-named statements/ folder; and a recreated container finds the same data and file.
+# Everything it creates is removed on exit.
 #
 # The container keeps the data under PUID:PGID with mode 0700/0600 (UMASK 077), so the user running
 # this script (a CI runner is uid 1001, never the PUID) usually cannot even list the bind mount.
@@ -89,17 +91,51 @@ check "SPA served after login" "$(status -b "$JAR" "$URL/")" 200
 check "API needs the token too" "$(status -b "$JAR" "$URL/api/users")" 403
 api() { curl -s -b "$JAR" -H "X-PFA-Token: $PAGE_TOKEN" "$@"; }
 check "migrated: default user exists" "$(api "$URL/api/users" | grep -c '"is_default":true')" 1
-api -X POST -H 'Content-Type: application/json' -d '{"name":"Persisted"}' "$URL/api/users" >/dev/null
+PERSON_ID="$(api -X POST -H 'Content-Type: application/json' -d '{"name":"Persisted"}' "$URL/api/users" \
+  | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')"
+[ -n "$PERSON_ID" ] || fail "could not create a person"
+
+# A one-page PDF with no text layer: the app files it straight away (nothing to parse), so the
+# readable path can be checked without a real statement. (A real import files it the same way
+# once the statement is confirmed, as <Person>/Statements/<Bank>/<YYYY-MM> <Bank> <account>.pdf.)
+printf '%s\n' '%PDF-1.4' \
+  '1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj' \
+  '2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj' \
+  '3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 200]>>endobj' \
+  'trailer<</Root 1 0 R/Size 4>>' '%%EOF' > "$WORK/blank.pdf"
+check "upload accepted" "$(status -b "$JAR" -H "X-PFA-Token: $PAGE_TOKEN" -F "user_id=$PERSON_ID" \
+  -F "file=@$WORK/blank.pdf;type=application/pdf" "$URL/api/statements")" 201
 
 inmount 'test -f /pfa/data/finance.db' || fail "finance.db is not on the bind mount"
 echo "ok   finance.db is on the bind mount"
+
+# The PDF is on the host under a readable path (not data/statements/<hash>.pdf).
+UNSORTED="$WORK/pfa/documents/Persisted/Statements/Unsorted"
+KEPT="$(find "$UNSORTED" -type f -name '*.pdf' 2>/dev/null)"
+[ -n "$KEPT" ] && [ "$(printf '%s\n' "$KEPT" | wc -l | tr -d ' ')" = 1 ] \
+  || fail "the uploaded PDF is not at $UNSORTED/<date> Statement <hash>.pdf"
+case "$(basename "$KEPT")" in
+  *' Statement '*.pdf) ;;
+  *) fail "unexpected document name: $(basename "$KEPT")" ;;
+esac
+echo "ok   uploaded PDF is on the host at documents/Persisted/Statements/Unsorted/$(basename "$KEPT")"
+[ -f "$WORK/pfa/documents/README.txt" ] || fail "documents/README.txt is missing"
+echo "ok   documents/README.txt explains the layout"
+[ ! -e "$WORK/pfa/data/statements" ] || fail "data/statements/ exists: PDFs must not be kept by hash there any more"
+[ -z "$(find "$WORK/pfa/data/incoming" -name '*.pdf' 2>/dev/null)" ] || fail "an upload was left in data/incoming"
+echo "ok   no hash-named copies under data/"
 if [ "${PFA_SMOKE_CHECK_OWNER:-}" = 1 ]; then
   check "files are owned by PUID:PGID" "$(inmount 'stat -c %u:%g /pfa/data/finance.db')" "$PUID_:$PGID_"
+  check "documents folder is owned by PUID:PGID" "$(stat -c '%u:%g' "$WORK/pfa/documents")" "$PUID_:$PGID_"
+  check "kept PDF is owned by PUID:PGID" "$(stat -c '%u:%g' "$KEPT")" "$PUID_:$PGID_"
+  check "kept PDF is private by default (UMASK 077)" "$(stat -c '%a' "$KEPT")" 600
 fi
 
 docker rm -f "$NAME" >/dev/null
 start
 login
 check "data survives recreating the container" "$(api "$URL/api/users" | grep -c Persisted)" 1
+[ -f "$KEPT" ] || fail "the kept PDF disappeared after recreating the container"
+echo "ok   the kept PDF is still on the host"
 
 echo "SMOKE TEST PASSED"

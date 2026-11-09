@@ -9,9 +9,13 @@
 # Environment (same names as the linuxserver.io images, so a NAS user's habits carry over):
 #   PUID, PGID  numeric user and group that own the files on the bind mounts (default 1000:1000).
 #               Use the NAS user's ids (`id <user>` over SSH) so you can read and edit the files.
-#   UMASK       permission mask for files the app creates (default 077: owner only; the app
-#               itself keeps its directories 0700 whatever this says).
-#   PFA_HOME    the data directory (default /pfa/data).
+#   UMASK       permission mask for files the app creates (default 077: owner only). The data
+#               directory stays 0700 whatever this says; the documents folder (your PDFs, which
+#               you read from the NAS) follows it, so 027 or 022 lets a group or everyone open them.
+#   PFA_HOME    the data directory: database, settings, logs (default /pfa/data).
+#   PFA_DOCUMENTS_DIR  the documents folder: your statement and tax PDFs under readable names
+#               (default /pfa/documents, beside the data directory; may be a separate bind mount,
+#               for example an existing NAS share).
 #
 # Started as root it fixes ownership of the data directory, then drops to PUID:PGID with setpriv
 # (util-linux, already in the image) before anything of the app runs. Started with
@@ -23,11 +27,14 @@ PGID="${PGID:-1000}"
 UMASK="${UMASK:-077}"
 DATA="${PFA_HOME:-/pfa/data}"
 PARENT="$(dirname "$DATA")"
+DOCS="${PFA_DOCUMENTS_DIR:-$PARENT/documents}"
+export PFA_DOCUMENTS_DIR="$DOCS"
 
 say() { printf 'pfa-entrypoint: %s\n' "$*" >&2; }
 die() { say "ERROR: $*"; exit 1; }
 is_number() { case "$1" in '' | *[!0-9]*) return 1 ;; *) return 0 ;; esac; }
 owner_of() { stat -c '%u:%g' "$1"; }
+is_mountpoint() { awk -v a="$1" '$5 == a { found = 1 } END { exit !found }' /proc/self/mountinfo 2>/dev/null; }
 
 case "$UMASK" in
   [0-7][0-7][0-7] | 0[0-7][0-7][0-7]) ;;
@@ -46,7 +53,7 @@ if [ "$(id -u)" = 0 ] && [ -z "${PFA_ENTRYPOINT_DROPPED:-}" ]; then
     # so a restart never walks thousands of PDFs. Best effort: NFS with root squash refuses
     # chown, and that is fine as long as the app user can write (checked below).
     umask 077
-    mkdir -p "$DATA" 2>/dev/null || true
+    mkdir -p "$DATA" "$DOCS" 2>/dev/null || true
     if [ "$(owner_of "$PARENT")" != "$PUID:$PGID" ]; then
       chown "$PUID:$PGID" "$PARENT" 2>/dev/null || say "note: could not chown $PARENT to $PUID:$PGID"
     fi
@@ -54,6 +61,18 @@ if [ "$(id -u)" = 0 ] && [ -z "${PFA_ENTRYPOINT_DROPPED:-}" ]; then
       say "setting ownership of $DATA to $PUID:$PGID (first start or changed PUID/PGID)"
       chown -R "$PUID:$PGID" "$DATA" 2>/dev/null || say "note: could not chown everything under $DATA"
     fi
+    # The documents folder beside the data directory gets the same treatment. A folder you mounted
+    # there yourself (an existing NAS share) is never chowned: it may hold other people's files, and
+    # may refuse chown anyway (NFS with root squash). The app user just needs to be able to write to
+    # it (checked below); give that user access on the NAS side.
+    case "$DOCS/" in
+      "$PARENT"/*)
+        if [ -d "$DOCS" ] && ! is_mountpoint "$DOCS" && [ "$(owner_of "$DOCS")" != "$PUID:$PGID" ]; then
+          say "setting ownership of $DOCS to $PUID:$PGID (first start or changed PUID/PGID)"
+          chown -R "$PUID:$PGID" "$DOCS" 2>/dev/null || say "note: could not chown everything under $DOCS"
+        fi
+        ;;
+    esac
   fi
 
   PFA_ENTRYPOINT_DROPPED=1 exec setpriv --reuid="$PUID" --regid="$PGID" --clear-groups -- "$0" "$@"
@@ -75,9 +94,12 @@ if [ "${1:-serve}" = run ]; then
   exec "$@"
 fi
 
-mkdir -p "$DATA" 2>/dev/null || true
+mkdir -p "$DATA" "$DOCS" 2>/dev/null || true
 if [ ! -d "$DATA" ] || [ ! -w "$DATA" ] || [ ! -w "$PARENT" ]; then
   die "cannot write to $DATA and $PARENT as uid $(id -u) gid $(id -g). Set PUID/PGID to the owner of the host directory mounted at $PARENT, or make that directory writable for uid $(id -u)."
+fi
+if [ ! -d "$DOCS" ] || [ ! -w "$DOCS" ]; then
+  die "cannot write to the documents folder $DOCS as uid $(id -u) gid $(id -g). Set PUID/PGID to a user that may write to the host folder mounted there (an SMB/NFS share needs write access for that user), or make it writable for uid $(id -u)."
 fi
 
 # A missing bind mount is the one way to lose data: the files would live in the container's own
@@ -86,13 +108,24 @@ if ! awk -v a="$DATA" -v b="$PARENT" '$5 == a || $5 == b { found = 1 } END { exi
   say "WARNING: nothing is mounted at $PARENT. Your data is stored inside the container and will be LOST when the container is removed or recreated. Bind-mount a host directory there (see docker-compose.yml)."
 fi
 
+# A documents folder outside /pfa that is not a mount of its own would also live (and vanish) with
+# the container.
+case "$DOCS/" in
+  "$PARENT"/*) ;;
+  *)
+    if ! is_mountpoint "$DOCS"; then
+      say "WARNING: nothing is mounted at $DOCS. Your documents are stored inside the container and will be LOST when the container is removed or recreated. Bind-mount a host directory there (see docker-compose.yml)."
+    fi
+    ;;
+esac
+
 case "${1:-serve}" in
   serve)
     [ "$#" -gt 0 ] && shift
     if [ "$TMPDIR" = "$PARENT/tmp" ]; then # leftovers of an interrupted run
       rm -rf "${PARENT:?}/tmp"/* 2>/dev/null || true
     fi
-    say "uid=$(id -u) gid=$(id -g) umask=$UMASK data=$DATA"
+    say "uid=$(id -u) gid=$(id -g) umask=$UMASK data=$DATA documents=$DOCS"
     /opt/pfa/bin/pfa migrate
     exec /opt/pfa/bin/pfa serve --no-open-browser "$@"
     ;;

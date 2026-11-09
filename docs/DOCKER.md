@@ -66,54 +66,112 @@ $ docker run -d --name pfa --init --restart unless-stopped -p 0.0.0.0:8756:8756 
 
 ## Storage
 
-One host directory is mounted at `/pfa` in the container:
+One host directory is mounted at `/pfa` in the container, and it holds two folders side by side:
 
 ```
 ./pfa/                      (host)  <->  /pfa      (container)
-  data/                                  PFA_HOME, the app's data directory
+  data/                                  PFA_HOME, the app's own data
     finance.db (+ -wal, -shm)            the SQLite database
     config.toml                          settings (never contains a secret)
-    statements/                          your uploaded PDF statements and kept tax forms
     specs/  logs/  extract_cache/        layout specs, logs, debugging cache (off by default)
     .tmp/                                private scratch space while a backup is exported (gone afterwards)
+    incoming/                            uploads waiting to be confirmed (emptied as you import)
+  documents/                             PFA_DOCUMENTS_DIR: YOUR PDFs, under readable names
+    README.txt                           explains the layout (written once, never overwritten)
+    Alex/Statements/Chase/2024-03 Chase credit 1234.pdf
+    Alex/Tax/2024/W-2 - Acme Corp.pdf
+    Shared/...                           anything not assigned to a person
   tmp/                                   scratch space for other large temporary files
   .data.restore-upload-*/                private scratch space while a restore uploads (gone afterwards)
   data.<timestamp>.before-restore/       appears after an in-app restore: the replaced data
 ```
 
 The scratch directories hold plaintext while a backup is being built or restored, which is why they
-sit on the same disk and have the same protection as the data (mode `0700`) instead of in the
+sit on the same disk as the data and have the same protection (mode `0700`) instead of in the
 container's `/tmp`; the app removes them when the operation ends and sweeps away what a crash
 left behind.
+
+- **`./pfa/data`** is the database and settings: keep it on the NAS's own disk (see
+  [below](#the-database-must-be-on-local-storage)).
+- **`./pfa/documents`** is where the app keeps a copy of every statement and tax form you import,
+  as ordinary PDFs in folders named for the person, the bank or the tax year. You can browse,
+  open, copy and back them up with File Station, SMB or `ls`, **without the app**, and they are
+  still there if the app, the container, the image or even the database were gone. (Tax forms are
+  only kept if you opt in: `[privacy] store_tax_pdf_copies = true` in `config.toml`, because they
+  hold full SSNs; statements are kept unless you switched `store_pdf_copies` off.)
 
 **Bind mounts, not Docker volumes.** A bind mount is a folder you named; Docker only reads and
 writes it. A named volume lives in Docker's own store, where `docker volume prune`,
 `docker compose down -v`, a reinstall of the Docker or Container Manager package, or an unnoticed
 anonymous volume (what you get if you forget the mount) can delete it. The image declares no
 `VOLUME`, so Docker never invents one, and the entrypoint prints a loud warning if nothing is
-mounted at `/pfa`. On a NAS use an absolute path inside a shared folder that is already in your
-backup plan, for example `/volume1/docker/pfa:/pfa`.
+mounted at `/pfa` (or at a documents folder you placed outside it). On a NAS use an absolute path
+inside a shared folder that is already in your backup plan, for example
+`/volume1/docker/pfa:/pfa`.
 
 **Easy to find, usable without the app.** Everything is ordinary files owned by your NAS user
 (`PUID`/`PGID`, see below). `finance.db` opens in any SQLite tool, `config.toml` is text, and the
-PDFs are normal PDFs.
+PDFs are normal PDFs in a tree you can read.
 
-**Documents currently live under `data/statements/`, named by a content hash** (for example
-`3f2a...c91.pdf`), together with the database.
+### What the file names look like
 
-> **TODO (next release):** a separate documents folder (planned as `./pfa/documents`, mounted
-> beside `data` and set with an environment variable) with human-readable file names, so the PDFs
-> can be browsed by bank, account and month without the app. The app does not read such a setting
-> yet, so mounting something at `/pfa/documents` today has no effect.
+```
+documents/<Person>/Statements/<Bank>/<YYYY-MM> <Bank> <account>.pdf    month the statement ends
+documents/<Person>/Statements/Unsorted/<date> Statement <8 hex>.pdf    not parsed (yet)
+documents/<Person>/Tax/<year>/<Form> - <Payer>.pdf                     W-2 - Acme Corp.pdf, 1040.pdf
+documents/Shared/...                                                   not assigned to a person
+```
 
-Until then:
+Two files that would get the same name become `... (2).pdf`, `... (3).pdf`. A corrected form is
+`W-2 - Acme Corp (corrected).pdf`. Names never contain an SSN, an EIN or a full account number
+(at most the last four digits the app already shows), and they are safe on Windows, macOS, Linux
+and SMB.
 
-- To keep PDFs in a different place from the database, bind-mount that folder over
-  `/pfa/data/statements` (for instance `-v /volume2/finance-docs:/pfa/data/statements`). Reading,
-  writing and the app's own backup all work. The one limitation: restoring a backup *inside the
-  app* swaps whole directories, which cannot cross a mount point, so with a nested mount restore
-  with the CLI after stopping the container, or restore into a fresh `./pfa`.
-- Do **not** put `data/` itself (the database) on an NFS or SMB share. See below.
+**The app reads your folder, it does not own it.** If you move or rename a file inside
+`documents/`, the app still finds it again by its content; if you delete one, the screens that
+would show it say "PDF not found". The app never renames files behind your back (not even when you
+rename a person or an account), and never deletes a file it did not put there: an import's file is
+removed only when you delete that statement or document in the app (and only if no other
+statement or document uses the same PDF). To apply the current names after a rename:
+
+```console
+$ docker compose exec pfa pfa documents reorganize --dry-run    # show what would be renamed
+$ docker compose exec pfa pfa documents reorganize              # do it
+$ docker compose exec pfa pfa documents check                   # missing / moved / unreferenced files
+```
+
+### Keeping the documents somewhere else (an existing NAS share)
+
+`./pfa/documents` is just a default. To keep the PDFs in a folder you already have (and already
+back up), mount that folder at `/pfa/documents` as well; Docker lets a more specific mount sit on
+top of the `/pfa` one:
+
+```yaml
+    volumes:
+      - /volume1/docker/pfa:/pfa                      # data/ and tmp/ (the database lives here)
+      - /volume2/family/finance:/pfa/documents        # your PDFs, on the share you already use
+```
+
+or point `PFA_DOCUMENTS_DIR` at a different path and mount that (`-v /volume2/finance:/documents
+-e PFA_DOCUMENTS_DIR=/documents`). Details:
+
+- **PDFs are fine on a network share; the database is not.** Reading and writing files over SMB or
+  NFS is what those protocols are for. Only SQLite (`data/`) needs local storage.
+- The container **never chowns** a documents folder you mounted yourself, whether at
+  `/pfa/documents` or elsewhere (it may hold other people's files):
+  give `PUID`/`PGID` write access on the NAS side. If it cannot write, it stops at start with a
+  message saying so.
+- The documents folder is **never swapped or renamed**, so a mount point is fine for backups and
+  for an in-app *Restore* too: restoring writes the backup's PDFs *into* the folder (names that
+  already exist with other content get a number; identical files are left alone) and never deletes
+  anything that is already there.
+- Everything that is not an app file (your own scans, other formats) is left alone; only `.pdf`
+  files are included in the app's backup, under the `documents/` prefix of the archive.
+- **Upgrading from an earlier version?** Older releases kept PDFs in `data/statements/` under a
+  hash name. The first start of this version moves each one to its readable place (copy, flush to
+  disk, record the new name, only then delete the old file; safe to interrupt, finished on the next
+  start) and removes the emptied `statements/` folder. Nothing is deleted that no statement or tax
+  document refers to.
 
 ### The database must be on local storage
 
@@ -131,19 +189,23 @@ container may open a given database; never run two against the same `./pfa`.
 
 ### Ownership, `PUID`, `PGID`, `UMASK`
 
-The container starts as root only long enough to give `./pfa/data` to `PUID:PGID` (Docker creates a
-missing host folder root-owned), then drops privileges (`setpriv`) before any app code runs.
+The container starts as root only long enough to give `./pfa/data` and `./pfa/documents` to
+`PUID:PGID` (Docker creates a missing host folder root-owned), then drops privileges (`setpriv`)
+before any app code runs.
 
 - Set `PUID`/`PGID` to your NAS user's numeric ids (`id <user>` over SSH) so you can open and edit
   the files from File Station, SMB or SSH.
 - `UMASK` (default `077`) is the permission mask for files the app creates: `077` owner only,
-  `027` group can read, `022` everyone can read. The app keeps its own directories at `0700`
-  whatever `UMASK` says (they hold financial data), so to let a family member or a backup tool
-  running as another user read them, add that user to the group and `chmod g+rx` the folders you
-  want shared, or run the backup as `PUID`.
+  `027` group can read, `022` everyone can read. It decides the permissions of your **documents**
+  (so `027` lets the family's group open the PDFs, which is the point of a readable folder; a
+  normal, non-Docker install always uses `0700`/`0600` there). The app keeps its *data* directory
+  (`./pfa/data`, the database) at `0700` whatever `UMASK` says, so to let a backup tool running as
+  another user read it, add that user to the group and `chmod g+rx` the folders you want shared, or
+  run the backup as `PUID`.
 - Ownership is fixed recursively only when the top folder is not already yours (first start, or
   after changing `PUID`), so restarts are quick even with thousands of PDFs. If the share refuses
-  `chown` (NFS with root squash), pre-own the folder as `PUID` yourself.
+  `chown` (NFS with root squash), pre-own the folder as `PUID` yourself. A documents folder you
+  mounted yourself is never chowned (see above).
 - Prefer Docker's own `user: "1000:1000"` (or `--user`)? That works too: the entrypoint then skips
   the ownership step and requires that `./pfa` is already writable by that user.
 - `PUID=0` is refused unless you set `PFA_ALLOW_ROOT=1`.
@@ -640,10 +702,14 @@ The other LLM settings (provider URL, model) are in Settings or `config.toml` as
 The app's own backup works in the container, on the same data:
 
 - **In the app**: Settings > Backup & restore. *Export* downloads an encrypted archive (database,
-  PDFs, specs, settings; never the LLM key) through the browser; *Restore* uploads one, checks it,
-  and swaps it in, keeping the replaced data next to it as
-  `./pfa/data.<timestamp>.before-restore` (delete that folder when you are happy, it holds a full
-  copy).
+  the PDFs of your documents folder, specs, settings; never the LLM key) through the browser;
+  *Restore* uploads one, checks it, and swaps the data in, keeping the replaced data next to it as
+  `./pfa/data.<timestamp>.before-restore` (delete that folder when you are happy, it holds the old
+  database). The PDFs are written into `./pfa/documents` in place, after the swap succeeded: files
+  that were already there are never deleted or overwritten (a name clash gets a number, an
+  identical file is left as is), and the app tells you how many other files in the folder were not
+  part of the backup. Backups made by older versions restore too; their hash-named PDFs come out
+  under readable names.
 - **From a shell** (for a cron or Task Scheduler job):
 
   ```console
@@ -656,7 +722,8 @@ The app's own backup works in the container, on the same data:
   secret if you prefer). `pfa backup inspect` and `pfa backup restore` work the same way.
 - **File-level** (Hyper Backup, ZFS snapshots, rsync, Unraid appdata backup): copy `./pfa` while the
   container is stopped (`docker compose stop`), or use a filesystem snapshot. Copying a live SQLite
-  database file by hand can capture it mid-write.
+  database file by hand can capture it mid-write. `./pfa/documents` is plain PDFs: it can be copied
+  at any time, and a documents folder on its own share can simply be part of that share's backup.
 
 Back up the password/secret files separately; they are not part of `./pfa`.
 
@@ -668,7 +735,8 @@ $ docker compose up -d
 ```
 
 The entrypoint runs `pfa migrate` on every start, so a new version upgrades the database before
-serving. Make a backup first (above), and pin a fixed tag instead of `latest` if you want to
+serving (and, the first time after upgrading from a release that kept PDFs in `data/statements/`,
+moves them into `documents/` under readable names, see [Storage](#storage)). Make a backup first (above), and pin a fixed tag instead of `latest` if you want to
 choose when to upgrade (`image: ghcr.io/haoxinm/personal-finance-analyzer:sha-1a2b3c4`, or a release such as `:0.2.0`). The app refuses
 a backup made by a newer version than it runs, and migrations are not reversible: to go back to an
 older image, restore the backup you made before upgrading. Tags: `latest` (the main branch,
@@ -684,7 +752,8 @@ Auto-updaters such as Watchtower work, but take a backup schedule with them.
 | `PUID`, `PGID` | `1000`, `1000` | owner of the files in `./pfa` |
 | `UMASK` | `077` | permission mask for new files |
 | `TZ` | `UTC` | time zone for logs and local dates |
-| `PFA_HOME` | `/pfa/data` | data directory (do not change unless you move the mount) |
+| `PFA_HOME` | `/pfa/data` | data directory: database, settings, logs (do not change unless you move the mount) |
+| `PFA_DOCUMENTS_DIR` | `/pfa/documents` | your PDFs under readable names; may be a separate mount (also `[storage] documents_dir` in `config.toml`) |
 | `PFA_HOST` | `0.0.0.0` | address to listen on |
 | `PFA_SERVER__PORT` | `8756` | port to listen on (also what the healthcheck probes) |
 | `PFA_PASSWORD[_FILE]`, `PFA_PASSWORD_HASH[_FILE]` | none | the login; one is required |
@@ -775,6 +844,14 @@ a *directory* with that name).
 
 **`PFA_PASSWORD_FILE=... cannot be read`.** The file is read as `PUID`, not as root. Create it as
 that user, or `chmod 644` it (or use a hash, which is not secret).
+
+**`cannot write to the documents folder ... as uid ...`.** The folder you mounted at
+`/pfa/documents` (or `PFA_DOCUMENTS_DIR`) is not writable by `PUID:PGID`. On a NAS share give that
+user read/write access (for SMB/NFS mounts the container cannot chown it for you).
+
+**`PDF not found` where a statement or tax form should show.** The file was moved out of the
+documents folder or deleted. The app finds files that were merely moved or renamed *inside* it;
+`pfa documents check` lists what is missing, moved or not referenced.
 
 **`cannot write to /pfa/data ... as uid ...`.** The folder is not writable by `PUID:PGID`. Set them
 to the folder's owner (`ls -ln`), or fix the folder's ownership or ACL on the NAS. With `--user`

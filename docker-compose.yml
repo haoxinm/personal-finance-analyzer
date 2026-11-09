@@ -21,9 +21,13 @@
 # YOUR DATA LIVES IN ./pfa ON THE HOST (a bind mount, not a Docker volume), so `docker volume prune`,
 # `docker compose down -v` and deleting the container or image never touch it:
 #   ./pfa/data/finance.db        the database (keep this on the NAS's own disk, not an NFS/SMB share)
-#   ./pfa/data/statements/       your PDF statements and tax forms
 #   ./pfa/data/config.toml       settings;  ./pfa/data/logs/  logs
+#   ./pfa/documents/             YOUR PDFs under readable names you can browse without the app:
+#                                  Alex/Statements/Chase/2024-03 Chase credit 1234.pdf
+#                                  Alex/Tax/2024/W-2 - Acme Corp.pdf
 # On a NAS use an absolute path, e.g. /volume1/docker/pfa:/pfa (Synology) or /mnt/tank/apps/pfa:/pfa.
+# To keep the PDFs on a share you already use (PDFs are fine on a network share, the database is
+# not), mount it on top at /pfa/documents: see the commented line under `volumes:` below.
 
 services:
   pfa:
@@ -49,7 +53,9 @@ services:
       # Files in ./pfa will be owned by this user and group: use your NAS user's ids (`id <user>`).
       PUID: "1000"
       PGID: "1000"
-      UMASK: "077" # 077 owner only; 027 lets the group read; 022 lets everyone read
+      # Permissions of your documents (PDFs): 077 owner only; 027 lets the group read; 022 lets
+      # everyone read. (The database folder stays owner-only whatever this says.)
+      UMASK: "077"
       TZ: "America/Chicago"
 
       # The names you type in the browser (comma separated; any port). Anything else is refused.
@@ -79,6 +85,9 @@ services:
 
     volumes:
       - ./pfa:/pfa
+      # Optional: keep the documents (PDFs only) on a different folder or share. Give PUID/PGID
+      # write access to it on the NAS; the app never chowns a folder mounted here.
+      # - /volume2/family/finance:/pfa/documents
 
     secrets:
       - pfa_password
