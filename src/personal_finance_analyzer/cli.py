@@ -182,7 +182,7 @@ def serve_cmd(
         "--host",
         envvar="PFA_HOST",
         help="Address to listen on (default 127.0.0.1, this machine only). Anything else, such "
-        "as 0.0.0.0 in a container, requires PFA_PASSWORD (see docs/DOCKER.md).",
+        "as 0.0.0.0 in a container, requires PFA_PASSWORD (see the README).",
     ),
 ) -> None:
     """Start the web server (I8: binds 127.0.0.1 unless --host says otherwise, and then needs a

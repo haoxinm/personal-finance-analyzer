@@ -26,7 +26,7 @@ stack hands it. Docker's port publishing often replaces it: IPv6 connections to 
 are proxied by docker-proxy over IPv4 and arrive from the bridge gateway (172.x), and Docker
 Desktop and rootless Docker make every client one private address. Every client then looks
 "local" and no IP check can tell them apart. The guarantee is not exposing the port (publish it on
-a LAN address or IPv4 only, never forward it on the router; docs/DOCKER.md). `default_gateway`
+a LAN address or IPv4 only, never forward it on the router; see the README). `default_gateway`
 and `BlockLog.warn_gateway_peer` exist so the app can say so in the log when it sees this.
 """
 

@@ -8,6 +8,22 @@ database, one local web server. There is no multi-tenant deployment, no authenti
 user's own computer (see the non-goals in the design record — hosted/multi-tenant deployment and
 authentication are explicitly out of scope for v1).
 
+The one supported exception is serving the app on a home network (`pfa serve --host`; see the
+README's "Serving it on your home network"): there the server listens on the network, so it refuses
+to start without a single shared login password (`src/personal_finance_analyzer/api/auth.py`:
+scrypt-hashed, in-memory sessions in an `HttpOnly`, `SameSite=Strict` cookie, rate-limited), keeps
+the `Host` allowlist (widened only by `PFA_ALLOWED_HOSTS`) and the per-launch token underneath, and
+should sit behind an HTTPS reverse proxy. On top of the login it refuses, with `403` and before the
+login page, every client whose address is not on the local network
+(`src/personal_finance_analyzer/api/clients.py`: private, link-local and loopback ranges by default;
+`PFA_ALLOWED_CLIENTS` and `PFA_TRUSTED_PROXIES` adjust it). That check is defense in depth: behind
+some proxies and NAT layers the real client address is hidden, and the app logs a warning when it
+sees requests from a gateway address. The guarantee is not exposing the port: never forward it on
+your router. Login attempts are counted before the password is checked and at most two scrypt
+verifications run at once, so a burst of parallel guesses gets no extra tries and cannot exhaust a
+small host's memory. It is still a single-user design: one password, one set of data, not for
+exposure to the internet.
+
 Given that, the threats this project actually defends against are:
 
 1. **A malicious or compromised web page open in the user's browser reaching the local API.**

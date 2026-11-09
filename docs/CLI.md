@@ -37,6 +37,33 @@ Starts the local web server. Binds `127.0.0.1` only, mints a fresh random token 
 and opens your browser to it automatically (`--no-open-browser` to skip that). See the
 [privacy model](../README.md#privacy-model) for what the token and `Host` check protect against.
 
+`--host ADDRESS` (or `PFA_HOST`) listens on another address, such as `0.0.0.0` for a home server.
+Anything but loopback **refuses to start without a login password** (`PFA_PASSWORD`,
+`PFA_PASSWORD_FILE`, `PFA_PASSWORD_HASH` or `PFA_PASSWORD_HASH_FILE`) unless
+`PFA_INSECURE_NO_AUTH=1` is set, and the names you browse by must be listed in
+`PFA_ALLOWED_HOSTS`. `serve` does not migrate the database itself: run `pfa migrate` first.
+
+Beyond loopback the server is also **local-network only**: a client whose address is not private
+(loopback, `10/8`, `172.16/12`, `192.168/16`, link-local, IPv6 `fc00::/7`) gets `403` before the
+login page. `PFA_ALLOWED_CLIENTS` (comma-separated CIDRs; `private` is the default set, so
+`private,100.64.0.0/10` adds Tailscale) changes the list, `PFA_TRUSTED_PROXIES` names reverse
+proxies whose `X-Forwarded-For` decides the client address, and `PFA_ALLOW_PUBLIC_CLIENTS=1` turns
+the check off with a loud warning. See the README's
+[Serving it on your home network](../README.md#serving-it-on-your-home-network).
+
+## `auth`
+
+```console
+$ pfa auth hash-password
+Password:
+Repeat for confirmation:
+scrypt$15$8$1$...$...
+```
+
+Prints a `PFA_PASSWORD_HASH` value (scrypt) for a login password, so the plaintext never has to be
+stored in an environment file or secret. `--stdin` reads the password from standard input instead.
+The prompts go to stderr, so `pfa auth hash-password > file` captures only the hash.
+
 ## `import`
 
 ```console

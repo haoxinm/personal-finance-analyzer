@@ -8,7 +8,7 @@ import typer
 
 from personal_finance_analyzer.api.auth import MIN_PASSWORD_LENGTH, hash_password
 
-auth_app = typer.Typer(help="Helpers for the web login (see docs/DOCKER.md).", no_args_is_help=True)
+auth_app = typer.Typer(help="Helpers for the web login (see the README).", no_args_is_help=True)
 
 
 @auth_app.command(name="hash-password")
