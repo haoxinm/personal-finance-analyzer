@@ -28,6 +28,7 @@ from pathlib import Path
 from sqlite3 import Connection as SQLite3Connection
 
 from sqlalchemy import Engine, create_engine, event
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session, sessionmaker
 
 from personal_finance_analyzer.core.fs_check import filesystem_type, is_network_filesystem
@@ -120,18 +121,21 @@ def _new_engine(url: str, choice: JournalChoice) -> Engine:
 def make_engine(db_url: str | None = None) -> Engine:
     """Create a SQLAlchemy engine for the SQLite database at ``db_url``, or the default data
     directory's ``finance.db`` when omitted. Applies the required PRAGMAs on every new connection
-    (the journal mode per `choose_journal_mode`; the network-filesystem check runs only for the
-    default database)."""
+    (the journal mode per `choose_journal_mode`, including the network-filesystem check for the
+    directory the database file lives in)."""
     if db_url is None:
         ensure_home()
         file = db_path()
         return _new_engine(f"sqlite:///{file}", choose_journal_mode(file.parent))
-    return _new_engine(db_url, choose_journal_mode())
+    database = make_url(db_url).database
+    directory = Path(database).parent if database and database != ":memory:" else None
+    return _new_engine(db_url, choose_journal_mode(directory))
 
 
 def make_engine_for_path(path: Path) -> Engine:
-    """Create an engine for an explicit SQLite file path (used by tests and `migrate`)."""
-    return _new_engine(f"sqlite:///{path}", choose_journal_mode())
+    """Create an engine for an explicit SQLite file path (used by tests, `migrate` and restore),
+    with the same journal-mode choice (network-filesystem check included) as `make_engine`."""
+    return _new_engine(f"sqlite:///{path}", choose_journal_mode(path.parent))
 
 
 def make_session_factory(engine: Engine) -> sessionmaker[Session]:
