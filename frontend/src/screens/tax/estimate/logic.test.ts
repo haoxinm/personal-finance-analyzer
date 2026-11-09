@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { estimateCalc, taxProfile } from "./test-fixtures";
 import {
   AGE_LIMITS,
+  ageLimits,
   breakdownSections,
   clampAge,
   draftFromProfile,
@@ -122,8 +123,12 @@ describe("profile draft", () => {
 });
 
 describe("age counts", () => {
-  it("mirrors the API's per-person limits for every filing status: boxes 2, aged 65 or older 1", () => {
-    expect(AGE_LIMITS).toEqual({ boxes: 2, age65: 1 });
+  it("mirrors the API's limits: boxes 2 and aged 65 or older 1, or 4 and 2 when joint", () => {
+    expect(AGE_LIMITS).toEqual({ person: { boxes: 2, age65: 1 }, joint: { boxes: 4, age65: 2 } });
+    expect(ageLimits("mfj")).toEqual({ boxes: 4, age65: 2 });
+    for (const status of ["single", "mfs", "hoh", "qss"] as const) {
+      expect(ageLimits(status)).toEqual({ boxes: 2, age65: 1 });
+    }
   });
 
   it("reads the saved count and sends it in the body", () => {
@@ -133,21 +138,33 @@ describe("age counts", () => {
     expect("body" in result && result.body).toMatchObject({ age65_or_blind_count: 2, age65_count: 1 });
   });
 
-  it("brings a profile saved with a household total (more than one person can have) back to one person", () => {
+  it("keeps a joint profile's household total of 4 boxes and 2 people aged 65 or older", () => {
     const d = draftFromProfile(taxProfile({ age65_or_blind_count: 4, age65_count: 2, filing_status: "mfj" }), FALLBACK);
-    expect(d).toMatchObject({ age65OrBlind: 2, age65: 1 });
+    expect(d).toMatchObject({ age65OrBlind: 4, age65: 2 });
+    const result = draftToBody(d);
+    expect("body" in result && result.body).toMatchObject({ age65_or_blind_count: 4, age65_count: 2 });
+  });
+
+  it("brings a profile saved with more than its status allows back within the limits", () => {
+    const single = draftFromProfile(taxProfile({ age65_or_blind_count: 4, age65_count: 2, filing_status: "single" }), FALLBACK);
+    expect(single).toMatchObject({ age65OrBlind: 2, age65: 1 });
+    const joint = draftFromProfile(taxProfile({ age65_or_blind_count: 4, age65_count: 3, filing_status: "mfj" }), FALLBACK);
+    expect(joint).toMatchObject({ age65OrBlind: 4, age65: 2 });
   });
 
   it("clamps a draft that exceeds the limits, and leaves a valid one alone", () => {
-    const valid = { ...draftFromProfile(null, FALLBACK), filingStatus: "mfj" as const, age65OrBlind: 2, age65: 1 };
-    expect(clampAge(valid)).toBe(valid);
-    expect(clampAge({ ...valid, age65OrBlind: 4, age65: 2 })).toMatchObject({ age65OrBlind: 2, age65: 1 });
+    const joint = { ...draftFromProfile(null, FALLBACK), filingStatus: "mfj" as const, age65OrBlind: 4, age65: 2 };
+    expect(clampAge(joint)).toBe(joint);
+    // Leaving mfj for another status brings the counts back to one person's.
+    expect(clampAge({ ...joint, filingStatus: "single" })).toMatchObject({ age65OrBlind: 2, age65: 1 });
+    expect(clampAge({ ...joint, filingStatus: "hoh", age65OrBlind: 3, age65: 1 })).toMatchObject({ age65OrBlind: 2, age65: 1 });
     // The "65 or older" count is a subset of the boxes.
-    expect(clampAge({ ...valid, age65OrBlind: 0 })).toMatchObject({ age65OrBlind: 0, age65: 0 });
+    expect(clampAge({ ...joint, age65OrBlind: 1 })).toMatchObject({ age65OrBlind: 1, age65: 1 });
+    expect(clampAge({ ...joint, age65OrBlind: 0 })).toMatchObject({ age65OrBlind: 0, age65: 0 });
   });
 
-  it("refuses counts the API would refuse, for every filing status", () => {
-    for (const filingStatus of ["single", "mfj", "mfs", "hoh", "qss"] as const) {
+  it("refuses counts the API would refuse: 2 and 1 per person, 4 and 2 when joint", () => {
+    for (const filingStatus of ["single", "mfs", "hoh", "qss"] as const) {
       const base = { ...draftFromProfile(null, FALLBACK), filingStatus };
       const tooMany = draftToBody({ ...base, age65OrBlind: 3 });
       expect("errors" in tooMany && tooMany.errors.age65OrBlind).toMatch(/At most 2 per person/);
@@ -157,6 +174,15 @@ describe("age counts", () => {
       expect("errors" in notSubset && notSubset.errors.age65).toMatch(/subset/);
       expect("body" in draftToBody({ ...base, age65OrBlind: 2, age65: 1 })).toBe(true);
     }
+    const joint = { ...draftFromProfile(null, FALLBACK), filingStatus: "mfj" as const };
+    const tooMany = draftToBody({ ...joint, age65OrBlind: 5 });
+    expect("errors" in tooMany && tooMany.errors.age65OrBlind).toMatch(/At most 4 for a joint profile/);
+    const tooManySeniors = draftToBody({ ...joint, age65OrBlind: 4, age65: 3 });
+    expect("errors" in tooManySeniors && tooManySeniors.errors.age65).toMatch(/At most 2 for a joint profile/);
+    const notSubset = draftToBody({ ...joint, age65OrBlind: 1, age65: 2 });
+    expect("errors" in notSubset && notSubset.errors.age65).toMatch(/subset/);
+    expect("body" in draftToBody({ ...joint, age65OrBlind: 3, age65: 2 })).toBe(true);
+    expect("body" in draftToBody({ ...joint, age65OrBlind: 4, age65: 2 })).toBe(true);
   });
 
   it("is part of what makes two drafts the same", () => {

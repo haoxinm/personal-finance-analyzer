@@ -501,7 +501,7 @@ describe("profile form", () => {
     );
   });
 
-  it("limits the age counts to one person's, for every filing status, and says each spouse enters their own", async () => {
+  it("limits the age counts to one person's, up to both spouses' when joint, and explains who enters what", async () => {
     mockApi({ estimates: { 1: estimate() } });
     renderScreen();
     const boxes = await screen.findByLabelText("Age 65 or older / blind boxes checked");
@@ -517,25 +517,45 @@ describe("profile form", () => {
     expect(values(seniors)).toEqual(["0", "1"]);
     await userEvent.selectOptions(seniors, "1");
 
-    // The same caps hold jointly: a spouse enters their own boxes on their own profile.
+    expect(screen.getByTestId("profile-form")).toHaveTextContent(/This profile covers only this person/);
+
+    // Jointly the profile may hold both spouses' boxes (4) and both people aged 65+ (2).
     await userEvent.selectOptions(screen.getByLabelText("Filing status"), "mfj");
-    expect(values(boxes)).toEqual(["0", "1", "2"]);
-    expect(values(seniors)).toEqual(["0", "1"]);
-    expect(screen.getByTestId("profile-form")).toHaveTextContent(/A spouse enters their own on their own profile/);
+    expect(values(boxes)).toEqual(["0", "1", "2", "3", "4"]);
+    expect(values(seniors)).toEqual(["0", "1", "2"]);
+    expect(screen.getByTestId("profile-form")).toHaveTextContent(
+      /Enter both spouses' boxes here unless your spouse has their own profile in the app, in which case each enters their own/,
+    );
     expect(boxes).toHaveValue("2");
     expect(seniors).toHaveValue("1");
+    await userEvent.selectOptions(boxes, "4");
+    await userEvent.selectOptions(seniors, "2");
+
+    // Leaving joint brings the counts back to one person's.
+    await userEvent.selectOptions(screen.getByLabelText("Filing status"), "hoh");
+    expect(boxes).toHaveValue("2");
+    expect(seniors).toHaveValue("1");
+    await userEvent.selectOptions(screen.getByLabelText("Filing status"), "mfj");
+    await userEvent.selectOptions(boxes, "4");
+    await userEvent.selectOptions(seniors, "2");
 
     // Lowering the boxes brings "65 or older" back within them.
+    await userEvent.selectOptions(boxes, "1");
+    expect(seniors).toHaveValue("1");
     await userEvent.selectOptions(boxes, "0");
     expect(seniors).toHaveValue("0");
-    await userEvent.selectOptions(boxes, "2");
-    await userEvent.selectOptions(seniors, "1");
+    await userEvent.selectOptions(boxes, "4");
+    await userEvent.selectOptions(seniors, "2");
     await userEvent.click(screen.getByRole("button", { name: "Save profile" }));
     await waitFor(() => expect(put).toHaveBeenCalledTimes(1));
     expect(put).toHaveBeenCalledWith(
       "/tax/profiles/{user_id}/{tax_year}",
       expect.objectContaining({
-        body: expect.objectContaining({ age65_or_blind_count: 2, age65_count: 1 }) as unknown,
+        body: expect.objectContaining({
+          filing_status: "mfj",
+          age65_or_blind_count: 4,
+          age65_count: 2,
+        }) as unknown,
       }),
     );
   });

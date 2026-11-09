@@ -122,9 +122,10 @@ export interface ProfileDraft {
   deductionMode: DeductionMode;
   /** The itemized total, as typed. */
   itemized: string;
-  /** This person's boxes checked for the additional standard deduction (age 65 or older, blind). */
+  /** Boxes checked for the additional standard deduction (age 65 or older, blind): up to 2 per
+   * person, 4 on a joint profile. */
   age65OrBlind: number;
-  /** 1 when this person is 65 or older (the 2025-2028 senior deduction), else 0. */
+  /** People aged 65 or older (the 2025-2028 senior deduction): 0 or 1, up to 2 on a joint profile. */
   age65: number;
   /** The other dollar fields, as typed (blank = 0). */
   money: Record<MoneyKey, string>;
@@ -144,7 +145,7 @@ export function draftFromProfile(
   const money = Object.fromEntries(
     PLAIN_KEYS.map((k) => [k, toInput(profile?.[k] ?? 0)]),
   ) as ProfileDraft["money"];
-  // A profile saved before the counts became per person may hold more than a person can have.
+  // A saved profile may hold more than its filing status allows (an old household total).
   return clampAge({
     filingStatus: profile?.filing_status ?? fallback.filingStatus,
     spouseId: profile ? (profile.joint_with_user_id ?? null) : fallback.spouseId,
@@ -158,17 +159,32 @@ export function draftFromProfile(
 
 export const MONEY_ERROR = "Enter a dollar amount of 0 or more";
 
-/** What the API accepts for every filing status: a profile describes only its own person, so the
- * boxes checked for the additional standard deduction (age 65 or older, blind) are at most 2 and
- * the "65 or older" count is at most 1 and never more than the boxes. A linked spouse enters
- * their own on their own profile; the joint return adds the two together. */
-export const AGE_LIMITS = { boxes: 2, age65: 1 } as const;
+/** What the API accepts: the boxes checked for the additional standard deduction (age 65 or older,
+ * blind) and the "65 or older" count, which is never more than the boxes. A profile describes one
+ * person: at most 2 boxes and 1 person aged 65+. A joint profile may hold both spouses' (4 and 2),
+ * for a spouse who has no profile of their own in the app; when both spouses have a profile the
+ * estimate limits each to 2 and 1 and adds them together. */
+export const AGE_LIMITS = {
+  person: { boxes: 2, age65: 1 },
+  joint: { boxes: 4, age65: 2 },
+} as const;
 
-/** The draft's age counts brought back within the per-person limits (the API refuses more, and an
- * older profile may hold a household total). */
+export interface AgeLimits {
+  readonly boxes: number;
+  readonly age65: number;
+}
+
+/** The limits for a filing status (the API's: 4 and 2 for `mfj`, 2 and 1 for every other). */
+export function ageLimits(filingStatus: EstimateFilingStatus): AgeLimits {
+  return filingStatus === "mfj" ? AGE_LIMITS.joint : AGE_LIMITS.person;
+}
+
+/** The draft's age counts brought back within the limits of its filing status (the API refuses
+ * more: switching from joint to another status, or an older profile, may hold too many). */
 export function clampAge(draft: ProfileDraft): ProfileDraft {
-  const age65OrBlind = Math.min(draft.age65OrBlind, AGE_LIMITS.boxes);
-  const age65 = Math.min(draft.age65, AGE_LIMITS.age65, age65OrBlind);
+  const limits = ageLimits(draft.filingStatus);
+  const age65OrBlind = Math.min(draft.age65OrBlind, limits.boxes);
+  const age65 = Math.min(draft.age65, limits.age65, age65OrBlind);
   return age65OrBlind === draft.age65OrBlind && age65 === draft.age65
     ? draft
     : { ...draft, age65OrBlind, age65 };
@@ -188,11 +204,13 @@ export function draftToBody(
   const errors: DraftErrors = {};
   const itemized = parseMoneyField(draft.itemized);
   if (itemized === null) errors.itemized = MONEY_ERROR;
-  if (draft.age65OrBlind > AGE_LIMITS.boxes) {
-    errors.age65OrBlind = `At most ${AGE_LIMITS.boxes} per person`;
+  const limits = ageLimits(draft.filingStatus);
+  const scope = draft.filingStatus === "mfj" ? "for a joint profile" : "per person";
+  if (draft.age65OrBlind > limits.boxes) {
+    errors.age65OrBlind = `At most ${limits.boxes} ${scope}`;
   }
-  if (draft.age65 > AGE_LIMITS.age65) {
-    errors.age65 = `At most ${AGE_LIMITS.age65} per person`;
+  if (draft.age65 > limits.age65) {
+    errors.age65 = `At most ${limits.age65} ${scope}`;
   } else if (draft.age65 > draft.age65OrBlind) {
     errors.age65 = "Cannot be more than the boxes checked (it is a subset)";
   }

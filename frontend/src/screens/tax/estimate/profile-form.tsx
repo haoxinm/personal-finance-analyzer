@@ -10,7 +10,7 @@ import { FILING_STATUS_OPTIONS, errorMessage } from "../logic";
 import { useDeleteTaxProfile, useSaveTaxProfile } from "./hooks";
 import {
   MONEY_FIELDS,
-  AGE_LIMITS,
+  ageLimits,
   clampAge,
   draftFromProfile,
   draftToBody,
@@ -66,6 +66,7 @@ export function ProfileForm({ userId, year, users, profile, fallback }: ProfileF
   const [confirmingDelete, setConfirmingDelete] = React.useState(false);
 
   const dirty = !sameDraft(draft, baseline);
+  const limits = ageLimits(draft.filingStatus);
   const spouses = users.filter((u) => u.id !== userId);
 
   function patch(next: Partial<ProfileDraft>) {
@@ -166,21 +167,20 @@ export function ProfileForm({ userId, year, users, profile, fallback }: ProfileF
             <SelectField<string>
               label="Age 65 or older / blind boxes checked"
               value={String(draft.age65OrBlind)}
-              options={countOptions(AGE_LIMITS.boxes)}
+              options={countOptions(limits.boxes)}
               onChange={(v) => patch({ age65OrBlind: Number(v) })}
             />
             <SelectField<string>
               label="Aged 65 or older (senior deduction, 2025-2028)"
               value={String(draft.age65)}
-              options={countOptions(Math.min(AGE_LIMITS.age65, draft.age65OrBlind))}
+              options={countOptions(Math.min(limits.age65, draft.age65OrBlind))}
               onChange={(v) => patch({ age65: Number(v) })}
             />
           </div>
           <p className="-mt-2 text-xs text-muted-foreground">
-            This profile covers only this person: one box for being 65 or older and one for being blind (at
-            most {AGE_LIMITS.boxes}), whatever the filing status. Enter 1 in the second field if this person is
-            65 or older: only then does the senior deduction apply. A spouse enters their own on their own
-            profile; a joint return adds the two together.
+            {draft.filingStatus === "mfj"
+              ? `One box for each person who is 65 or older and one for each who is blind (at most ${limits.boxes} for two people). Enter both spouses' boxes here unless your spouse has their own profile in the app, in which case each enters their own. In the second field, enter how many of you are 65 or older: only then does the senior deduction apply.`
+              : `This profile covers only this person: one box for being 65 or older and one for being blind (at most ${limits.boxes}). Enter 1 in the second field if this person is 65 or older: only then does the senior deduction apply.`}
           </p>
           {errors.age65OrBlind || errors.age65 ? (
             <p role="alert" className="text-xs text-destructive">
