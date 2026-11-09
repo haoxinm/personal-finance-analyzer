@@ -185,8 +185,10 @@ build is missing or stale).
   nothing about the merchant or about future transactions. *"Always categorize “merchant” this
   way"* (Review's second button, or "Also create a rule" in the edit popover) is the explicit
   merchant-level action: it saves a rule for that merchant's future transactions. A rule reaches
-  transactions you already have only when you press "Apply to existing" on the Rules screen, and
-  it never changes one you edited by hand. Precedence: one-time edits > your rules > built-in
+  transactions you already have only when you press "Apply to existing" on the Rules screen
+  (which first shows how many rows it will change, and whether that spans several users or changes
+  kinds, then offers an Undo), and it never changes one you edited by hand. Undoing a Review accept
+  or a rule application never reverts something you edited afterwards. Precedence: one-time edits > your rules > built-in
   rules > issuer category and merchant cache > LLM. The Review screen can re-run the cascade over
   everything uncategorized.
 - **Reconciles every import** against the statement's own printed totals (section subtotals,
