@@ -28,6 +28,13 @@ describe("import screen storage", () => {
     expect(isSkipConfirmForIssuer(9)).toBe(true);
   });
 
+  it("carries a skip-confirmation list saved before the rename over to the new key", () => {
+    window.localStorage.setItem("spend-analyzer:import:skip-confirm-issuer-ids", "[7]");
+    expect(isSkipConfirmForIssuer(7)).toBe(true);
+    expect(window.localStorage.getItem("pfa:import:skip-confirm-issuer-ids")).toBe("[7]");
+    expect(window.localStorage.getItem("spend-analyzer:import:skip-confirm-issuer-ids")).toBeNull();
+  });
+
   it("survives a corrupt skip-confirmation value", () => {
     window.localStorage.setItem("pfa:import:skip-confirm-issuer-ids", "{not json");
     expect(isSkipConfirmForIssuer(1)).toBe(false);

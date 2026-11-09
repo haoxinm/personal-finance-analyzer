@@ -2,6 +2,7 @@ import * as React from "react";
 import { useSearchParams } from "react-router-dom";
 
 import { useUsers } from "@/api/hooks";
+import { readWithLegacy } from "@/lib/local-storage";
 import type { components } from "@/api/client";
 
 export type User = components["schemas"]["User"];
@@ -10,6 +11,8 @@ export type User = components["schemas"]["User"];
 export const SELECTED_USER_PARAM = "user";
 /** localStorage key restoring the selection when navigating between screens (nav links carry no query). */
 export const SELECTED_USER_STORAGE_KEY = "pfa:selected-user";
+/** The key before the app was renamed; read once and moved (see `readWithLegacy`). */
+export const LEGACY_SELECTED_USER_STORAGE_KEY = "spend-analyzer:selected-user";
 const ALL = "all";
 
 function parseRaw(raw: string | null, users: readonly User[]): number | null | undefined {
@@ -42,11 +45,7 @@ export function resolveSelectedUser(
 }
 
 export function readStoredUser(): string | null {
-  try {
-    return window.localStorage.getItem(SELECTED_USER_STORAGE_KEY);
-  } catch {
-    return null;
-  }
+  return readWithLegacy(SELECTED_USER_STORAGE_KEY, LEGACY_SELECTED_USER_STORAGE_KEY);
 }
 
 export function writeStoredUser(value: string): void {
