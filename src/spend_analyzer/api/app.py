@@ -11,6 +11,7 @@ every `/api` request's `Host` header is consistent with `127.0.0.1`/`localhost`.
 
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
@@ -45,7 +46,9 @@ from spend_analyzer.api.routers import (
     settings as settings_router,
 )
 from spend_analyzer.api.security import LocalhostGuardMiddleware, generate_token
+from spend_analyzer.backup import archive as backup_archive
 from spend_analyzer.config import Settings
+from spend_analyzer.core.paths import get_home
 from spend_analyzer.db.session import make_engine, make_session_factory
 from spend_analyzer.ingest.tax import staging as tax_staging
 from spend_analyzer.jobs.runner import JobRunner
@@ -70,6 +73,9 @@ def create_app(
     session_factory: sessionmaker[Session] = make_session_factory(resolved_engine)
 
     tax_staging.purge_all()  # re-selected tax PDFs never outlive the process
+    # A backup export or restore that was killed leaves plaintext scratch files behind.
+    with contextlib.suppress(OSError):
+        backup_archive.sweep_stale_work_dirs(get_home())
     app = FastAPI(title="Spend Analyzer API", version="0.1.0")
     app.state.engine = resolved_engine
     app.state.session_factory = session_factory

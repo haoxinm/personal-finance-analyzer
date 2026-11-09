@@ -6300,16 +6300,26 @@
         "summary": "Restore Backup",
         "description": "Replace all current data with the uploaded backup (the old data directory is kept beside\nit, see `previous_dir`).",
         "operationId": "restore_backup_api_backup_restore_post",
-        "requestBody": {
-          "content": {
-            "multipart/form-data": {
-              "schema": {
-                "$ref": "#/components/schemas/Body_restore_backup_api_backup_restore_post"
-              }
-            }
-          },
-          "required": true
-        },
+        "parameters": [
+          {
+            "name": "X-Backup-Passphrase",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Base64 of the UTF-8 passphrase; omit for an unencrypted backup.",
+              "title": "X-Backup-Passphrase"
+            },
+            "description": "Base64 of the UTF-8 passphrase; omit for an unencrypted backup."
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -6328,6 +6338,18 @@
                 "schema": {
                   "$ref": "#/components/schemas/HTTPValidationError"
                 }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "description": "The .spendbackup archive, as the raw request body.",
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
               }
             }
           }
@@ -6873,31 +6895,6 @@
           "file"
         ],
         "title": "Body_provide_document_source_api_tax_documents__document_id__source_post"
-      },
-      "Body_restore_backup_api_backup_restore_post": {
-        "properties": {
-          "file": {
-            "type": "string",
-            "contentMediaType": "application/octet-stream",
-            "title": "File"
-          },
-          "passphrase": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Passphrase"
-          }
-        },
-        "type": "object",
-        "required": [
-          "file"
-        ],
-        "title": "Body_restore_backup_api_backup_restore_post"
       },
       "Body_upload_statement_api_statements_post": {
         "properties": {

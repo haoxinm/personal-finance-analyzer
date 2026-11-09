@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { backupFilename, exportBackup, restoreBackup } from "./backup";
+import { backupFilename, encodePassphrase, exportBackup, restoreBackup } from "./backup";
 
 describe("backup API calls", () => {
   afterEach(() => {
@@ -38,7 +38,7 @@ describe("backup API calls", () => {
     expect(JSON.parse(init?.body as string)).toEqual({ encrypt: false });
   });
 
-  it("uploads the file as multipart without setting a Content-Type, and returns the result", async () => {
+  it("uploads the file as the raw body with the passphrase in a header, and returns the result", async () => {
     const result = { created_at: "2026-10-30T10:00:00+00:00", counts: { users: 1 }, migrated: false, previous_dir: null };
     const fetchMock = vi.fn<typeof fetch>(() =>
       Promise.resolve(new Response(JSON.stringify(result), { headers: { "Content-Type": "application/json" } })),
@@ -51,10 +51,16 @@ describe("backup API calls", () => {
     const [url, init] = fetchMock.mock.calls[0] ?? [];
     expect(url as string).toContain("/api/backup/restore");
     expect(init?.method).toBe("POST");
-    expect(new Headers(init?.headers).has("Content-Type")).toBe(false);
-    const form = init?.body as FormData;
-    expect(form.get("passphrase")).toBe("pw-pw-pw-pw");
-    expect((form.get("file") as File).name).toBe("mine.spendbackup");
+    const headers = new Headers(init?.headers);
+    expect(headers.get("Content-Type")).toBe("application/octet-stream");
+    expect(headers.get("X-Backup-Passphrase")).toBe(btoa("pw-pw-pw-pw"));
+    expect(init?.body).toBe(file); // the File itself: streamed from disk, never FormData
+  });
+
+  it("base64-encodes the UTF-8 bytes of a non-ASCII passphrase", () => {
+    const encoded = encodePassphrase("pässwörd-日本語");
+    const decoded = new TextDecoder().decode(Uint8Array.from(atob(encoded), (c) => c.charCodeAt(0)));
+    expect(decoded).toBe("pässwörd-日本語");
   });
 
   it("omits an empty passphrase (unencrypted backups)", async () => {
@@ -62,7 +68,15 @@ describe("backup API calls", () => {
     vi.stubGlobal("fetch", fetchMock);
     await restoreBackup(new File(["bytes"], "mine.spendbackup"), "");
     const [, init] = fetchMock.mock.calls[0] ?? [];
-    expect((init?.body as FormData).has("passphrase")).toBe(false);
+    expect(new Headers(init?.headers).has("X-Backup-Passphrase")).toBe(false);
+  });
+
+  it("explains a dropped connection (the server refuses an oversized upload without reading it)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>(() => Promise.reject(new TypeError("Failed to fetch"))),
+    );
+    await expect(restoreBackup(new File(["bytes"], "x.spendbackup"), "")).rejects.toThrow(/did not complete/);
   });
 
   it("throws the server's detail message on failure", async () => {

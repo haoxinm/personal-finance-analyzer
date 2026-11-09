@@ -4,21 +4,30 @@ Both are `POST`: the export carries a passphrase (never in a URL, which ends up 
 history), and a state-changing route must not be reachable by a plain link or `<img>`. Like every
 `/api` route they sit behind the Host allowlist and the per-launch token (`api/security.py`).
 
-`export` builds the archive in a private temporary directory and streams it back; the keychain
-API key is never part of it. `restore` streams the upload to disk (capped at
-`MAX_BACKUP_UPLOAD_BYTES`), verifies it in a staging directory, then quiesces this server
-(`api/restore_gate.py`), swaps the data directory and reopens the database. The previous data
-directory is kept next to it, never deleted.
+`export` builds the archive in a private scratch directory under the data directory (not the
+system temp directory) and streams it back, removing it afterwards; the keychain API key is never
+part of it.
+
+`restore` takes the archive as the raw request body (`application/octet-stream`, not multipart:
+a multipart upload is spooled by the framework into the system temp directory, which is often
+RAM-backed and is not protected like the data directory, and is then copied a second time). The
+body is streamed straight into a private 0700 work directory next to the data directory, cut off
+with 413 the moment it passes `MAX_BACKUP_UPLOAD_BYTES`, and deleted on every exit path. The
+passphrase, which a raw body cannot carry, travels in the `X-Backup-Passphrase` header as
+base64 of its UTF-8 bytes (headers are latin-1; base64 keeps any passphrase intact). The archive is
+then verified in a staging directory, this server is quiesced (`api/restore_gate.py`), the data
+directory is swapped and the database reopened. The previous data directory is kept next to it,
+never deleted.
 """
 
 from __future__ import annotations
 
-import shutil
-import tempfile
+import base64
+import binascii
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict
@@ -27,13 +36,17 @@ from sqlalchemy.orm import Session
 from starlette.background import BackgroundTask
 
 from spend_analyzer.api.restore_gate import RestoreGate
-from spend_analyzer.api.services.uploads import MAX_BACKUP_UPLOAD_BYTES, stream_upload_to_file
+from spend_analyzer.api.services.uploads import MAX_BACKUP_UPLOAD_BYTES, stream_body_to_file
 from spend_analyzer.backup import archive
 from spend_analyzer.backup.errors import BackupBusyError, BackupError, RestoreTargetError
-from spend_analyzer.core.paths import db_path
+from spend_analyzer.core.paths import db_path, get_home
 from spend_analyzer.db.models import Job
 
 router = APIRouter(tags=["backup"])
+
+#: Header carrying the restore passphrase: base64 of its UTF-8 bytes.
+PASSPHRASE_HEADER = "X-Backup-Passphrase"
+UPLOAD_CONTENT_TYPE = "application/octet-stream"
 
 
 class BackupExportRequest(BaseModel):
@@ -67,32 +80,48 @@ def export_backup(body: BackupExportRequest) -> FileResponse:
             detail="a passphrase is required (or send encrypt=false to skip encryption)",
         )
     passphrase = body.passphrase if body.encrypt else None
-    tmp_dir = Path(tempfile.mkdtemp(prefix="spend-export-"))
+    tmp_dir = archive.make_work_dir(get_home(), "export")
     out = tmp_dir / archive.default_filename()
     try:
         archive.create_backup(out, passphrase=passphrase)
     except BackupError as exc:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
+        archive.remove_work_dir(tmp_dir)
         raise _http_error(exc) from exc
     except BaseException:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
+        archive.remove_work_dir(tmp_dir)
         raise
     return FileResponse(
         out,
         media_type="application/octet-stream",
         filename=out.name,
         headers={"Cache-Control": "no-store"},
-        background=BackgroundTask(shutil.rmtree, tmp_dir, ignore_errors=True),
+        background=BackgroundTask(archive.remove_work_dir, tmp_dir),
     )
+
+
+def _require_own_data_directory(request: Request) -> None:
+    engine = request.app.state.engine
+    if engine.url.database is None or Path(engine.url.database).resolve() != db_path().resolve():
+        raise HTTPException(
+            status_code=409, detail="this server is not using the data directory to restore into"
+        )
+
+
+def _decode_passphrase(header: str | None) -> str | None:
+    if not header:
+        return None
+    try:
+        return base64.b64decode(header, validate=True).decode("utf-8") or None
+    except (binascii.Error, UnicodeDecodeError):
+        raise HTTPException(
+            status_code=400, detail=f"{PASSPHRASE_HEADER} must be base64 of the UTF-8 passphrase"
+        ) from None
 
 
 def _restore(request: Request, upload: Path, passphrase: str | None) -> archive.RestoreResult:
     engine = request.app.state.engine
     gate: RestoreGate = request.app.state.restore_gate
-    if engine.url.database is None or Path(engine.url.database).resolve() != db_path().resolve():
-        raise HTTPException(
-            status_code=409, detail="this server is not using the data directory to restore into"
-        )
+    _require_own_data_directory(request)
     quiesced = False
 
     def quiesce() -> None:
@@ -117,24 +146,46 @@ def _restore(request: Request, upload: Path, passphrase: str | None) -> archive.
             gate.end_exclusive()
 
 
-@router.post("/backup/restore", response_model=BackupRestoreResponse)
+@router.post(
+    "/backup/restore",
+    response_model=BackupRestoreResponse,
+    openapi_extra={
+        "requestBody": {
+            "required": True,
+            "description": "The .spendbackup archive, as the raw request body.",
+            "content": {UPLOAD_CONTENT_TYPE: {"schema": {"type": "string", "format": "binary"}}},
+        }
+    },
+)
 async def restore_backup(
     request: Request,
-    file: Annotated[UploadFile, File()],
-    passphrase: Annotated[str | None, Form()] = None,
+    passphrase_b64: Annotated[
+        str | None,
+        Header(
+            alias=PASSPHRASE_HEADER,
+            description="Base64 of the UTF-8 passphrase; omit for an unencrypted backup.",
+        ),
+    ] = None,
 ) -> BackupRestoreResponse:
     """Replace all current data with the uploaded backup (the old data directory is kept beside
     it, see `previous_dir`)."""
-    tmp_dir = Path(tempfile.mkdtemp(prefix="spend-restore-"))
+    content_type = request.headers.get("content-type", "").split(";")[0].strip().lower()
+    if content_type != UPLOAD_CONTENT_TYPE:
+        raise HTTPException(
+            status_code=415, detail=f"send the backup as the raw body ({UPLOAD_CONTENT_TYPE})"
+        )
+    passphrase = _decode_passphrase(passphrase_b64)
+    _require_own_data_directory(request)  # before taking gigabytes off the wire
+    work = await run_in_threadpool(archive.make_sibling_work_dir, get_home(), "restore-upload")
     try:
-        upload = tmp_dir / "upload.spendbackup"
-        await stream_upload_to_file(file, upload, max_bytes=MAX_BACKUP_UPLOAD_BYTES)
+        upload = work / "upload.spendbackup"
+        await stream_body_to_file(request, upload, max_bytes=MAX_BACKUP_UPLOAD_BYTES)
         try:
-            result = await run_in_threadpool(_restore, request, upload, passphrase or None)
+            result = await run_in_threadpool(_restore, request, upload, passphrase)
         except BackupError as exc:
             raise _http_error(exc) from exc
     finally:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
+        archive.remove_work_dir(work)
     return BackupRestoreResponse(
         created_at=result.manifest.created_at,
         counts=result.manifest.counts,

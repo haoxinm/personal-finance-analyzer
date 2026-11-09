@@ -1629,13 +1629,6 @@ export interface components {
             /** File */
             file: string;
         };
-        /** Body_restore_backup_api_backup_restore_post */
-        Body_restore_backup_api_backup_restore_post: {
-            /** File */
-            file: string;
-            /** Passphrase */
-            passphrase?: string | null;
-        };
         /** Body_upload_statement_api_statements_post */
         Body_upload_statement_api_statements_post: {
             /** File */
@@ -6631,13 +6624,17 @@ export interface operations {
     restore_backup_api_backup_restore_post: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @description Base64 of the UTF-8 passphrase; omit for an unencrypted backup. */
+                "X-Backup-Passphrase"?: string | null;
+            };
             path?: never;
             cookie?: never;
         };
+        /** @description The .spendbackup archive, as the raw request body. */
         requestBody: {
             content: {
-                "multipart/form-data": components["schemas"]["Body_restore_backup_api_backup_restore_post"];
+                "application/octet-stream": string;
             };
         };
         responses: {

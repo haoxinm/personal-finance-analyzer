@@ -20,6 +20,17 @@ Restore validates everything (decryption, manifest, member names, sizes, hashes,
 database integrity) in a staging directory that is a sibling of the data directory, migrates it if
 the archive is older, and only then swaps it in with two renames. An existing data directory is
 moved aside to ``<name>.<timestamp>.before-restore``, never deleted.
+
+The archive is treated as hostile input. Extraction counts the bytes it actually writes against
+per-member and total limits (never trusting the sizes a crafted zip or manifest declares), and
+refuses an archive with an absurd number of members or one that cannot fit on the disk.
+
+Everything plaintext that exists only while a backup is built or restored (the zip before it is
+encrypted, a decrypted archive, an upload on its way to a restore, an export on its way to the
+download) lives in a private 0700 scratch directory that shares the data's filesystem and
+protection, never in the system temp directory (often RAM-backed in a container, and readable by
+other local users and their backup tools). It is removed on every exit path, and a directory a
+crashed process left behind is swept away once it is old enough (`sweep_stale_work_dirs`).
 """
 
 from __future__ import annotations
@@ -33,11 +44,12 @@ import shutil
 import sqlite3
 import sys
 import tempfile
+import time
 import tomllib
 import zipfile
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from importlib import metadata
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import IO, Any
@@ -74,6 +86,17 @@ _MAX_MANIFEST_BYTES = 1024 * 1024
 _PDF_NAME = re.compile(r"^[0-9a-f]{64}\.pdf$")
 _SPEC_SEGMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._ -]{0,127}$")
 _MAX_SPEC_DEPTH = 4
+
+#: Limits on what extraction accepts, so a crafted archive cannot fill the disk. They are well
+#: above any real data directory: a statement PDF is capped at 25 MB on upload, config and specs
+#: are small text, and the database is the only large member.
+MAX_MEMBERS = 50_000
+MAX_DB_BYTES = 8 * 1024**3
+MAX_PDF_BYTES = 64 * 1024**2
+MAX_TEXT_BYTES = 4 * 1024**2
+MAX_TOTAL_BYTES = 16 * 1024**3
+#: Free space that must remain after the declared sizes are written.
+_DISK_MARGIN_BYTES = 64 * 1024**2
 
 
 @dataclass(frozen=True)
@@ -242,6 +265,8 @@ def _parse_manifest(raw: bytes) -> Manifest:
 def _copy_hashed(
     src: IO[bytes], dst: IO[bytes], *, limit: int | None = None, label: str = ""
 ) -> tuple[int, str]:
+    """Copy ``src`` to ``dst`` and return the byte count and SHA-256. With ``limit`` it stops at the
+    first chunk that takes the count past it, before writing that chunk."""
     digest = hashlib.sha256()
     total = 0
     while chunk := src.read(_COPY_CHUNK):
@@ -364,12 +389,130 @@ def _write_zip(home: Path, zip_path: Path, work: Path) -> Manifest:
     return manifest
 
 
+#: The private scratch directory inside the data directory (see `make_work_dir`).
+WORK_DIRNAME = ".tmp"
+
+#: Work directories older than this are assumed to belong to a process that died (a restore or
+#: export takes seconds to minutes) and are removed by `sweep_stale_work_dirs`.
+STALE_WORK_DIR_AGE = timedelta(hours=12)
+
+#: Prefixes of the work directories created beside the data directory (see
+#: `make_sibling_work_dir`, and `restore_backup`'s staging directory); the sweep only touches
+#: names that match exactly, so it can never remove something of the user's.
+_SIBLING_KINDS = ("restore-upload", "restore", "backup", "export", "inspect")
+
+
+def _sibling_pattern(home: Path) -> re.Pattern[str]:
+    kinds = "|".join(re.escape(kind) for kind in _SIBLING_KINDS)
+    # `tempfile.mkdtemp` appends 8 characters from [a-z0-9_].
+    return re.compile(rf"^\.{re.escape(home.name)}\.(?:{kinds})-[a-z0-9_]{{8}}$")
+
+
+def _newest_mtime(path: Path) -> float:
+    """Latest modification time of ``path`` and its direct children: a directory's own mtime does
+    not change while a file inside it is being written."""
+    newest = path.lstat().st_mtime
+    if path.is_dir() and not path.is_symlink():
+        for child in path.iterdir():
+            with contextlib.suppress(OSError):
+                newest = max(newest, child.lstat().st_mtime)
+    return newest
+
+
+def sweep_stale_work_dirs(
+    home: Path, *, max_age: timedelta = STALE_WORK_DIR_AGE, now: float | None = None
+) -> list[Path]:
+    """Remove work directories a crashed backup, export or restore left behind: everything in
+    ``<home>/.tmp/`` and the sibling directories of ``home`` named like `make_sibling_work_dir`'s
+    and `restore_backup`'s staging directory, whose newest file is older than ``max_age``.
+    Best effort (an entry that cannot be removed is skipped); returns what was removed.
+
+    Run at server start and before every backup operation, so a restore that was killed halfway
+    does not leave a plaintext copy of the data lying around indefinitely."""
+    cutoff = (time.time() if now is None else now) - max_age.total_seconds()
+    base = home / WORK_DIRNAME
+    candidates: list[Path] = []
+    with contextlib.suppress(OSError):
+        if base.is_dir() and not base.is_symlink():
+            candidates.extend(base.iterdir())
+    pattern = _sibling_pattern(home)
+    with contextlib.suppress(OSError):
+        if home.parent.is_dir():
+            candidates.extend(
+                child
+                for child in home.parent.iterdir()
+                if pattern.match(child.name) and child.is_dir() and not child.is_symlink()
+            )
+    removed: list[Path] = []
+    for candidate in candidates:
+        try:
+            if _newest_mtime(candidate) > cutoff:
+                continue
+            if candidate.is_dir() and not candidate.is_symlink():
+                shutil.rmtree(candidate)
+            else:
+                candidate.unlink()
+        except OSError:
+            continue
+        removed.append(candidate)
+    with contextlib.suppress(OSError):  # still in use, or already gone
+        base.rmdir()
+    return removed
+
+
+def make_sibling_work_dir(home: Path, prefix: str) -> Path:
+    """A fresh 0700 scratch directory next to ``home`` (same filesystem and parent, so the same
+    protection as the data directory). For plaintext that has to survive a swap of ``home``
+    itself, such as a restore's upload: a directory inside ``home`` would be moved aside with it.
+    Release it with `remove_work_dir`."""
+    sweep_stale_work_dirs(home)
+    home.parent.mkdir(parents=True, exist_ok=True)
+    return Path(tempfile.mkdtemp(prefix=f".{home.name}.{prefix}-", dir=home.parent))
+
+
+def make_work_dir(home: Path, prefix: str) -> Path:
+    """A fresh 0700 scratch directory for plaintext intermediates (the zip before it is encrypted,
+    the decrypted archive of a restore, an export on its way to the download).
+
+    It lives under ``<home>/.tmp/`` (itself 0700), so it shares the data's filesystem and
+    protection rather than the system temp directory. When ``home`` does not exist yet (inspecting
+    a backup on a machine that has not run the app) it is a sibling of ``home`` instead, and
+    nothing is created inside ``home``. Release it with `remove_work_dir`."""
+    if not home.is_dir():
+        return make_sibling_work_dir(home, prefix)
+    sweep_stale_work_dirs(home)
+    base = home / WORK_DIRNAME
+    base.mkdir(exist_ok=True)
+    with contextlib.suppress(OSError):  # no POSIX permission bits on some filesystems
+        base.chmod(0o700)
+    return Path(tempfile.mkdtemp(prefix=f"{prefix}-", dir=base))
+
+
+def remove_work_dir(work: Path) -> None:
+    """Delete a work directory, and the shared ``.tmp`` parent once it is empty."""
+    shutil.rmtree(work, ignore_errors=True)
+    if work.parent.name == WORK_DIRNAME:
+        with contextlib.suppress(OSError):  # not empty: another export or restore is running
+            work.parent.rmdir()
+
+
+@contextlib.contextmanager
+def work_dir(home: Path, prefix: str) -> Iterator[Path]:
+    """`make_work_dir`, removed on exit however the block ends."""
+    work = make_work_dir(home, prefix)
+    try:
+        yield work
+    finally:
+        remove_work_dir(work)
+
+
 def create_backup(dest: Path, *, passphrase: str | None, home: Path | None = None) -> Manifest:
     """Write a backup of ``home`` (default: the data directory) to ``dest``.
 
     ``passphrase`` encrypts the archive; ``None`` writes it unencrypted (the caller must have
-    asked for that explicitly). The archive is built in a private temporary directory and moved
-    into place, so ``dest`` never holds a half-written file.
+    asked for that explicitly). The archive is built in a private scratch directory under the
+    data directory (never the system temp directory) and moved into place, so ``dest`` never
+    holds a half-written file and the plaintext zip never leaves the data's own protection.
 
     Raises:
         BackupError: no database, an unusable config.toml, or a passphrase that is too short.
@@ -377,8 +520,9 @@ def create_backup(dest: Path, *, passphrase: str | None, home: Path | None = Non
     source = home if home is not None else get_home()
     if passphrase is not None:
         crypto.validate_new_passphrase(passphrase)
-    with tempfile.TemporaryDirectory(prefix="spend-backup-") as tmp:
-        work = Path(tmp)
+    if not source.is_dir():
+        raise BackupError(f"there is no data directory at {source} to back up")
+    with work_dir(source, "backup") as work:
         zip_path = work / "archive.zip"
         manifest = _write_zip(source, zip_path, work)
         partial = dest.with_name(dest.name + ".partial")
@@ -425,6 +569,11 @@ def _open_archive(
     try:
         with zipfile.ZipFile(zip_source) as zf:
             names = zf.namelist()
+            if len(names) > MAX_MEMBERS:
+                raise BackupFormatError(
+                    f"the backup holds {len(names)} files, more than a backup may contain "
+                    f"({MAX_MEMBERS})"
+                )
             if len(set(names)) != len(names):
                 raise BackupFormatError("the backup contains duplicate entries")
             if MANIFEST_NAME not in names:
@@ -446,8 +595,8 @@ def inspect_backup(path: Path, *, passphrase: str | None = None) -> BackupInfo:
     """Read ``path``'s manifest (counts and file list only; no data is extracted). An encrypted
     backup needs its passphrase, and is authenticated end to end while it is decrypted."""
     with (
-        tempfile.TemporaryDirectory(prefix="spend-inspect-") as tmp,
-        _open_archive(path, passphrase, Path(tmp)) as (_zf, manifest, encrypted),
+        work_dir(get_home(), "inspect") as work,
+        _open_archive(path, passphrase, work) as (_zf, manifest, encrypted),
     ):
         return BackupInfo(manifest=manifest, encrypted=encrypted)
 
@@ -472,15 +621,23 @@ def _contains_files(home: Path) -> bool:
 
 
 def _db_in_use(db_file: Path) -> bool:
-    """Whether another process still has ``db_file`` open. In WAL mode the last connection to
-    close removes the ``-wal``/``-shm`` files, so if they survive our own open+close someone else
-    holds the database (a running ``spend-analyzer serve``)."""
+    """Whether another process still has ``db_file`` open, by two independent signs.
+
+    Locks: a connection of ours takes an exclusive lock for an instant. Another process in the
+    middle of a transaction (any journal mode, including the rollback journal, which leaves no
+    sidecar files) makes that wait out the timeout and fail.
+
+    Sidecar files: in WAL mode (what the app uses) the last connection to close removes the
+    ``-wal``/``-shm`` files, so if they survive our own open+close someone else holds the
+    database, even one that is sitting idle (a running ``spend-analyzer serve``)."""
     if not db_file.exists():
         return False
     try:
-        con = sqlite3.connect(db_file, timeout=1)
+        con = sqlite3.connect(db_file, timeout=1, isolation_level=None)
         try:
             con.execute("PRAGMA journal_mode").fetchone()
+            con.execute("BEGIN EXCLUSIVE")
+            con.execute("ROLLBACK")
         finally:
             con.close()
     except sqlite3.Error:
@@ -496,14 +653,49 @@ def _check_target(target: Path, *, replace: bool) -> None:
         )
 
 
+def _member_limit(path: str) -> int:
+    if path == DB_MEMBER:
+        return MAX_DB_BYTES
+    if path.endswith(".pdf"):
+        return MAX_PDF_BYTES
+    return MAX_TEXT_BYTES
+
+
 def _extract(zf: zipfile.ZipFile, manifest: Manifest, new_home: Path) -> None:
     """Write every member into ``new_home``, checking its size and SHA-256 against the manifest
-    while streaming (a member that grows past its declared size is aborted, not buffered)."""
+    while streaming (a member that grows past its declared size is aborted, not buffered).
+
+    The manifest is attacker-controlled too, so the sizes it declares are first held to the
+    per-member and total limits and to the free disk space, and then the bytes actually written
+    are counted against the same limits: a member that inflates past what it declared is stopped
+    at that point, never extracted whole."""
+    declared = 0
+    for entry in manifest.files:
+        if entry.size > _member_limit(entry.path):
+            raise BackupFormatError(
+                f"{entry.path} is larger than a file in a backup may be "
+                f"({_member_limit(entry.path)} bytes)"
+            )
+        declared += entry.size
+    if declared > MAX_TOTAL_BYTES:
+        raise BackupFormatError(
+            f"the backup's files add up to more than a backup may hold ({MAX_TOTAL_BYTES} bytes)"
+        )
+    free = shutil.disk_usage(new_home.parent).free
+    if declared + _DISK_MARGIN_BYTES > free:
+        raise BackupError(
+            f"not enough free disk space to restore this backup: it needs about {declared} bytes "
+            f"and {free} are free"
+        )
+    written = 0
     for entry in manifest.files:
         dest = new_home.joinpath(*PurePosixPath(entry.path).parts)
         dest.parent.mkdir(parents=True, exist_ok=True)
         with zf.open(entry.path) as src, dest.open("wb") as out:
-            size, sha256 = _copy_hashed(src, out, limit=entry.size, label=entry.path)
+            size, sha256 = _copy_hashed(
+                src, out, limit=min(entry.size, MAX_TOTAL_BYTES - written), label=entry.path
+            )
+        written += size
         if size != entry.size or sha256 != entry.sha256:
             raise BackupFormatError(
                 f"{entry.path} does not match the backup's manifest (hash mismatch): the file is "
@@ -617,6 +809,7 @@ def restore_backup(
     """
     target = home if home is not None else get_home()
     _check_target(target, replace=replace)
+    sweep_stale_work_dirs(target)  # what a restore that crashed earlier left behind
     target.parent.mkdir(parents=True, exist_ok=True)
     stage = Path(tempfile.mkdtemp(prefix=f".{target.name}.restore-", dir=target.parent))
     try:
@@ -630,7 +823,12 @@ def restore_backup(
                     f"this backup's database (schema {revision}) is newer than this version of "
                     "Spend Analyzer understands; upgrade the app, then restore it again"
                 )
-            _extract(zf, manifest, new_home)
+            try:
+                _extract(zf, manifest, new_home)
+            except OSError as exc:
+                raise BackupError(
+                    f"could not write the restored files (is the disk full?): {exc}"
+                ) from exc
         shutil.rmtree(work)  # the decrypted archive is plaintext; do not leave it lying around
         create_home_layout(new_home)
         staged_db = new_home / "spend.db"

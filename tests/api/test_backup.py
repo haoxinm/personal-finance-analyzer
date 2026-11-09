@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import base64
 import io
+import tempfile
 import threading
 import zipfile
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -37,12 +40,33 @@ def _siblings(home: Path) -> list[str]:
     return sorted(p.name for p in home.parent.iterdir())
 
 
+def _headers(passphrase: str | None) -> dict[str, str]:
+    headers = {"Content-Type": "application/octet-stream"}
+    if passphrase is not None:
+        headers["X-Backup-Passphrase"] = base64.b64encode(passphrase.encode()).decode()
+    return headers
+
+
 def _upload(path: Path, passphrase: str | None = PASSPHRASE) -> dict[str, object]:
-    data = {"passphrase": passphrase} if passphrase is not None else {}
-    return {
-        "files": {"file": (path.name, path.read_bytes(), "application/octet-stream")},
-        "data": data,
-    }
+    """Keyword arguments for `client.post(RESTORE, ...)`: the archive as the raw body."""
+    return {"content": path.read_bytes(), "headers": _headers(passphrase)}
+
+
+def _scratch_leftovers(home: Path) -> list[str]:
+    """Anything a restore or export left in the data directory's scratch area or beside it."""
+    found = [p.name for p in home.parent.iterdir() if ".restore-" in p.name or "-upload-" in p.name]
+    if (home / archive.WORK_DIRNAME).exists():
+        found.append(archive.WORK_DIRNAME)
+    return found
+
+
+@pytest.fixture
+def system_tmp(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """An empty stand-in for the system temp directory: a backup operation must not write to it."""
+    root = tmp_path / "system_tmp"
+    root.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(root))
+    return root
 
 
 # ---- security ------------------------------------------------------------------------------
@@ -60,7 +84,11 @@ def test_restore_upload_without_token_is_403_and_changes_nothing(
 ) -> None:
     before = (home / "spend.db").read_bytes()
     siblings = _siblings(home)
-    response = client.post(RESTORE, headers={"X-Spend-Token": ""}, **_upload(other_machine_backup))
+    response = client.post(
+        RESTORE,
+        content=other_machine_backup.read_bytes(),
+        headers={**_headers(PASSPHRASE), "X-Spend-Token": ""},
+    )
     assert response.status_code == 403
     assert (home / "spend.db").read_bytes() == before
     assert _siblings(home) == siblings
@@ -160,13 +188,21 @@ def test_export_rejects_unknown_fields(client: TestClient) -> None:
     )
 
 
-def test_export_cleans_up_its_temp_files(client: TestClient) -> None:
-    import tempfile
-
-    tmp_root = Path(tempfile.gettempdir())
-    before = set(tmp_root.glob("spend-export-*"))
+def test_export_keeps_plaintext_out_of_system_temp_and_cleans_up(
+    client: TestClient, home: Path, system_tmp: Path
+) -> None:
     assert client.post(EXPORT, json={"passphrase": PASSPHRASE}).status_code == 200
-    assert set(tmp_root.glob("spend-export-*")) == before
+    assert client.post(EXPORT, json={"encrypt": False}).status_code == 200
+    assert list(system_tmp.iterdir()) == []
+    assert _scratch_leftovers(home) == []  # the response's background task removed the work dir
+
+
+def test_failed_export_cleans_up_too(client: TestClient, home: Path, system_tmp: Path) -> None:
+    (home / "config.toml").write_text("this is [not toml", encoding="utf-8")
+    response = client.post(EXPORT, json={"passphrase": PASSPHRASE})
+    assert response.status_code == 400
+    assert list(system_tmp.iterdir()) == []
+    assert _scratch_leftovers(home) == []
 
 
 # ---- restore -------------------------------------------------------------------------------
@@ -212,9 +248,7 @@ def test_restore_wrong_passphrase_is_400_and_touches_nothing(
 
 def test_restore_rejects_junk_upload(client: TestClient, home: Path) -> None:
     siblings = _siblings(home)
-    response = client.post(
-        RESTORE, files={"file": ("x.spendbackup", b"not a backup", "application/octet-stream")}
-    )
+    response = client.post(RESTORE, content=b"not a backup", headers=_headers(None))
     assert response.status_code == 400
     assert _siblings(home) == siblings
 
@@ -231,6 +265,104 @@ def test_restore_upload_over_the_cap_is_413(
     assert _siblings(home) == siblings
 
 
+def test_restore_streams_into_a_private_dir_never_system_temp(
+    client: TestClient,
+    home: Path,
+    other_machine_backup: Path,
+    system_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[Path] = []
+    real = archive.make_sibling_work_dir
+
+    def spy(h: Path, prefix: str) -> Path:
+        work = real(h, prefix)
+        seen.append(work)
+        assert (work.stat().st_mode & 0o077) == 0  # owner only
+        return work
+
+    monkeypatch.setattr(archive, "make_sibling_work_dir", spy)
+    response = client.post(RESTORE, **_upload(other_machine_backup))
+    assert response.status_code == 200, response.text
+    assert len(seen) == 1 and seen[0].parent == home.parent
+    assert list(system_tmp.iterdir()) == []  # no spooled copy of the upload
+    assert not seen[0].exists()
+    previous = Path(response.json()["previous_dir"])
+    assert not (previous / archive.WORK_DIRNAME).exists()  # no plaintext moved aside with it
+
+
+def test_restore_upload_over_the_cap_is_cut_off_while_streaming(
+    client: TestClient,
+    home: Path,
+    system_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No Content-Length (a chunked body): the cap is enforced on the bytes actually received,
+    the rest of the body is never read, and the partial file is deleted."""
+    from spend_analyzer.api.routers import backup as backup_router
+
+    monkeypatch.setattr(backup_router, "MAX_BACKUP_UPLOAD_BYTES", 4096)
+    sizes: list[int] = []
+    real_stream = backup_router.stream_body_to_file
+
+    async def watching(request: object, dest: Path, *, max_bytes: int) -> int:
+        try:
+            return await real_stream(request, dest, max_bytes=max_bytes)  # type: ignore[arg-type]
+        finally:
+            sizes.append(dest.stat().st_size)  # what reached the disk before the cut-off
+
+    monkeypatch.setattr(backup_router, "stream_body_to_file", watching)
+
+    def body() -> Iterator[bytes]:
+        for _ in range(1000):
+            yield b"x" * 1024
+
+    siblings = _siblings(home)
+    response = client.post(RESTORE, content=body(), headers=_headers(None))
+    assert response.status_code == 413
+    assert "cap" in response.json()["detail"]
+    assert sizes and sizes[0] <= 4096  # never written past the cap
+    assert _siblings(home) == siblings  # the partial upload's work dir is gone
+    assert list(system_tmp.iterdir()) == []
+    assert (home / "spend.db").is_file()
+    assert client.get("/api/users").status_code == 200  # nothing was quiesced or swapped
+
+
+def test_restore_announced_size_over_the_cap_is_refused_before_reading(
+    client: TestClient, home: Path, other_machine_backup: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from spend_analyzer.api.routers import backup as backup_router
+
+    monkeypatch.setattr(backup_router, "MAX_BACKUP_UPLOAD_BYTES", 10)
+    response = client.post(RESTORE, **_upload(other_machine_backup))  # Content-Length > 10
+    assert response.status_code == 413
+    assert _scratch_leftovers(home) == []
+
+
+def test_restore_wants_a_raw_body_not_multipart(client: TestClient, home: Path) -> None:
+    siblings = _siblings(home)
+    response = client.post(RESTORE, files={"file": ("x.spendbackup", b"data")})
+    assert response.status_code == 415
+    assert "raw body" in response.json()["detail"]
+    assert _siblings(home) == siblings
+
+
+def test_restore_passphrase_header_must_be_base64(client: TestClient, home: Path) -> None:
+    headers = {"Content-Type": "application/octet-stream", "X-Backup-Passphrase": "not base64!!"}
+    response = client.post(RESTORE, content=b"x", headers=headers)
+    assert response.status_code == 400
+    assert "base64" in response.json()["detail"]
+
+
+def test_restore_passphrase_may_be_non_ascii(client: TestClient, tmp_path: Path) -> None:
+    other = tmp_path / "unicode_machine"
+    seed_home(other)
+    sealed = tmp_path / "unicode.spendbackup"
+    archive.create_backup(sealed, passphrase="pässwörd-日本語-ok", home=other)
+    response = client.post(RESTORE, **_upload(sealed, "pässwörd-日本語-ok"))
+    assert response.status_code == 200, response.text
+
+
 def test_restore_refused_while_a_job_is_running(
     client: TestClient, session: Session, home: Path, other_machine_backup: Path
 ) -> None:
@@ -243,6 +375,7 @@ def test_restore_refused_while_a_job_is_running(
     assert response.status_code == 409
     assert "job is still running" in response.json()["detail"]
     assert _siblings(home) == siblings
+    assert _scratch_leftovers(home) == []
     # Nothing was swapped: the live database still has its running job, and the gate is released.
     assert [j.id for j in session.scalars(select(Job)).all()] == ["busy-1"]
     assert client.get("/api/users").status_code == 200
@@ -266,6 +399,7 @@ def test_restore_refused_when_server_uses_a_different_database(
         ) as other_client:
             response = other_client.post(RESTORE, **_upload(other_machine_backup))
         assert response.status_code == 409
+        assert "not using the data directory" in response.json()["detail"]
     finally:
         engine.dispose()
 

@@ -14,7 +14,7 @@ import re
 import tempfile
 from pathlib import Path
 
-from fastapi import HTTPException, UploadFile
+from fastapi import HTTPException, Request, UploadFile
 
 from spend_analyzer.core.paths import statements_dir
 from spend_analyzer.ingest.extract import sha256_file
@@ -22,7 +22,8 @@ from spend_analyzer.ingest.extract import sha256_file
 #: A12: hard cap on an uploaded file's size.
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 #: Cap for a `.spendbackup` upload (`/api/backup/restore`): it bundles every kept PDF, so it is far
-#: larger than one statement, but still bounded (and streamed to disk, never held in memory).
+#: larger than one statement, but still bounded (and streamed straight into a private work
+#: directory as the request body, never held in memory or spooled to the system temp directory).
 MAX_BACKUP_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024
 PDF_MAGIC = b"%PDF-"
 _UNSAFE_NAME_CHARS = re.compile(r"[^A-Za-z0-9._ -]")
@@ -62,26 +63,32 @@ async def read_pdf_upload(file: UploadFile) -> bytes:
     return data
 
 
-async def stream_upload_to_file(file: UploadFile, dest: Path, *, max_bytes: int) -> None:
-    """Copy an upload to ``dest`` in 1 MiB pieces, enforcing ``max_bytes`` while streaming.
+async def stream_body_to_file(request: Request, dest: Path, *, max_bytes: int) -> int:
+    """Write the request body to ``dest`` as it arrives, enforcing ``max_bytes`` while streaming,
+    and return its size.
+
+    The body is never spooled anywhere else first (a multipart ``UploadFile`` would be copied to
+    the system temp directory, which may be RAM-backed and is not protected like the data
+    directory) and an oversized one is cut off at the cap, not read to the end.
 
     Raises:
-        HTTPException: 413 when the upload exceeds ``max_bytes`` (``dest`` is left partial; the
-            caller discards its directory).
+        HTTPException: 413 when the announced ``Content-Length`` or the bytes actually received
+            exceed ``max_bytes`` (``dest`` is left partial; the caller discards its directory).
     """
+    too_big = HTTPException(
+        status_code=413, detail=f"upload exceeds the {max_bytes // (1024 * 1024)} MB cap"
+    )
+    announced = request.headers.get("content-length")
+    if announced is not None and announced.isdigit() and int(announced) > max_bytes:
+        raise too_big
     total = 0
     with dest.open("wb") as out:
-        while True:
-            chunk = await file.read(1024 * 1024)
-            if not chunk:
-                return
+        async for chunk in request.stream():
             total += len(chunk)
             if total > max_bytes:
-                raise HTTPException(
-                    status_code=413,
-                    detail=f"upload exceeds the {max_bytes // (1024 * 1024)} MB cap",
-                )
+                raise too_big
             out.write(chunk)
+    return total
 
 
 def save_upload(file_bytes: bytes) -> Path:

@@ -2,11 +2,17 @@
  * Moving all data to another machine: download a backup, restore one.
  *
  *   POST /api/backup/export    body {passphrase, encrypt} -> the .spendbackup file
- *   POST /api/backup/restore   multipart {file, passphrase} -> {created_at, counts, migrated, previous_dir}
+ *   POST /api/backup/restore   the raw file as an application/octet-stream body, the passphrase in the
+ *                              X-Backup-Passphrase header (base64 of its UTF-8 bytes)
+ *                              -> {created_at, counts, migrated, previous_dir}
  *
  * The endpoints are in `src/api/schema.d.ts`, but the calls stay on `fetch` with hand-written
- * response types: the export is a binary download and the restore a multipart upload, neither of
- * which the typed client's JSON helpers cover (it does the same as `api-key.ts`). The archive
+ * response types: the export is a binary download and the restore a raw-body upload, neither of
+ * which the typed client's JSON helpers cover (it does the same as `api-key.ts`). The restore is
+ * not multipart on purpose: a multipart upload is spooled by the server into its system temp
+ * directory (a second plaintext copy outside the data directory) before it is looked at, and a
+ * raw body can be streamed straight into a private work directory and cut off at the size cap.
+ * The browser sends a `File` body straight from disk, without reading it into memory. The archive
  * never contains the LLM API key (it lives in the OS credential store).
  */
 import { useMutation, useQueryClient } from "@tanstack/react-query";
@@ -67,16 +73,27 @@ export async function exportBackup(passphrase: string | null): Promise<Blob> {
   return response.blob();
 }
 
+/** Header values are latin-1, so the passphrase travels as base64 of its UTF-8 bytes. */
+export function encodePassphrase(passphrase: string): string {
+  let binary = "";
+  for (const byte of new TextEncoder().encode(passphrase)) binary += String.fromCharCode(byte);
+  return btoa(binary);
+}
+
 /** Uploads a backup; on success the server's data directory has been replaced by it. */
 export async function restoreBackup(file: File, passphrase: string): Promise<RestoreResult> {
-  const form = new FormData();
-  form.append("file", file);
-  if (passphrase) form.append("passphrase", passphrase);
-  const response = await fetch(backupUrl("restore"), {
-    method: "POST",
-    headers: tokenHeaders(), // no Content-Type: the browser adds the multipart boundary
-    body: form,
-  });
+  const headers: Record<string, string> = { "Content-Type": "application/octet-stream", ...tokenHeaders() };
+  if (passphrase) headers["X-Backup-Passphrase"] = encodePassphrase(passphrase);
+  let response: Response;
+  try {
+    response = await fetch(backupUrl("restore"), { method: "POST", headers, body: file });
+  } catch {
+    // The server answers an oversized upload (413) without reading the rest of the body, which a
+    // browser can report as a dropped connection instead of the response.
+    throw new Error(
+      "The upload did not complete. The server may have refused the file (a backup over 2 GB is refused), or the connection dropped.",
+    );
+  }
   if (!response.ok) {
     throw new Error(await readErrorDetail(response));
   }

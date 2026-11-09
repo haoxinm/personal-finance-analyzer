@@ -37,11 +37,13 @@ MAGIC = b"SPENDENC"
 SCRYPT_LOG2_N = 17
 SCRYPT_R = 8
 SCRYPT_P = 1
-#: A header asking for more than this (1 GiB of memory) is rejected rather than honoured, so a
-#: hostile file cannot make `restore` allocate without bound.
+#: A header asking for more than this is rejected rather than honoured, so a hostile file cannot
+#: make `restore` allocate without bound. scrypt needs about ``128 * N * r`` bytes, so the per-field
+#: bounds alone would still allow 2 GiB (N = 2**20, r = 16); the product is capped at 1 GiB too.
 _MAX_LOG2_N = 20
 _MAX_R = 16
 _MAX_P = 4
+_MAX_SCRYPT_BYTES = 1024**3
 
 CHUNK_SIZE = 64 * 1024
 _TAG_SIZE = 16
@@ -119,6 +121,8 @@ def decrypt_stream(src: BinaryIO, dst: BinaryIO, passphrase: str) -> None:
     _, log2_n, r, p, chunk_size, salt, prefix = _HEADER.unpack(header)
     if not (1 <= log2_n <= _MAX_LOG2_N and 1 <= r <= _MAX_R and 1 <= p <= _MAX_P):
         raise BackupFormatError("the backup's key-derivation settings are out of range")
+    if 128 * (1 << log2_n) * r > _MAX_SCRYPT_BYTES:
+        raise BackupFormatError("the backup's key-derivation settings need too much memory")
     if not 1 <= chunk_size <= 16 * 1024 * 1024:
         raise BackupFormatError("the backup's chunk size is out of range")
     aead = AESGCM(_derive_key(passphrase, salt, log2_n, r, p))
