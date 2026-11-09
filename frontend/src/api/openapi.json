@@ -7960,7 +7960,9 @@
           "short_term_capital_gain",
           "long_term_capital_gain",
           "self_employment",
-          "other"
+          "other",
+          "retirement_deferral",
+          "hsa_employer"
         ],
         "title": "IncomeCategoryEnum",
         "description": "Mirror of `core.tax_types.IncomeCategory`."
@@ -11471,7 +11473,7 @@
           "amount_minor"
         ],
         "title": "TaxMemoAmount",
-        "description": "A memo line (not part of total income): `qualified_dividends` or `tax_exempt`."
+        "description": "A memo line (not part of total income): `qualified_dividends`, `tax_exempt`, or the W-2 box 12\nmemos `retirement_deferral` and `hsa_employer`."
       },
       "TaxPageInfo": {
         "properties": {

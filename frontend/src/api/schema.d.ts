@@ -1948,7 +1948,7 @@ export interface components {
          * @description Mirror of `core.tax_types.IncomeCategory`.
          * @enum {string}
          */
-        IncomeCategoryEnum: "salary_wages" | "interest" | "ordinary_dividends" | "qualified_dividends" | "short_term_capital_gain" | "long_term_capital_gain" | "self_employment" | "other";
+        IncomeCategoryEnum: "salary_wages" | "interest" | "ordinary_dividends" | "qualified_dividends" | "short_term_capital_gain" | "long_term_capital_gain" | "self_employment" | "other" | "retirement_deferral" | "hsa_employer";
         /** IncomeItemIn */
         IncomeItemIn: {
             category: components["schemas"]["IncomeCategoryEnum"];
@@ -3090,7 +3090,8 @@ export interface components {
         };
         /**
          * TaxMemoAmount
-         * @description A memo line (not part of total income): `qualified_dividends` or `tax_exempt`.
+         * @description A memo line (not part of total income): `qualified_dividends`, `tax_exempt`, or the W-2 box 12
+         *     memos `retirement_deferral` and `hsa_employer`.
          */
         TaxMemoAmount: {
             /** Category */
