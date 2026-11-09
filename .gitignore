@@ -228,3 +228,7 @@ __marimo__/
 .env
 src/personal_finance_analyzer/web/
 
+
+# Local container data and secrets (see docker-compose.yml)
+/pfa/
+/secrets/

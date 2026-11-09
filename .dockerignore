@@ -1,0 +1,50 @@
+# Keep the build context small and keep anything private out of the image.
+# (The image copies only: pyproject.toml, uv.lock, README.md, hatch_build.py, src/, frontend/, docker/.)
+
+# Version control and tooling
+.git
+.gitignore
+.gitattributes
+.github
+.claude
+.pre-commit-config.yaml
+.vscode
+.idea
+
+# Never ship user data, secrets or statements (also blocked in .gitignore)
+data
+pfa
+**/*.pdf
+**/*.db
+**/*.db-wal
+**/*.db-shm
+.env
+.env.*
+secrets
+**/secrets
+
+# Tests and their fixtures (synthetic PDFs, goldens), benchmarks, docs, helper scripts
+tests
+scripts
+docs
+CONTRIBUTING.md
+SECURITY.md
+
+# Build output and caches, rebuilt inside the image
+.venv
+venv
+**/__pycache__
+**/*.pyc
+.mypy_cache
+.ruff_cache
+.pytest_cache
+.coverage
+htmlcov
+dist
+build
+**/*.egg-info
+frontend/node_modules
+frontend/dist
+frontend/playwright-report
+frontend/test-results
+src/personal_finance_analyzer/web

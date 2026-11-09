@@ -1,0 +1,83 @@
+# Personal Finance Analyzer on a NAS or any Docker host. Full guide: docs/DOCKER.md
+#
+#   1. mkdir -p pfa secrets
+#   2. Create the login password file, as the same NAS user whose ids you put in PUID/PGID below
+#      (a long passphrase; it is read once at start, hashed in memory, and never stored):
+#         printf '%s' 'a long passphrase of your own' > secrets/pfa_password.txt
+#         chmod 600 secrets/pfa_password.txt
+#   3. Edit PUID, PGID, TZ and PFA_ALLOWED_HOSTS below, then:   docker compose up -d
+#   4. Open http://<nas-name-or-ip>:8756 and sign in.
+#
+# YOUR DATA LIVES IN ./pfa ON THE HOST (a bind mount, not a Docker volume), so `docker volume prune`,
+# `docker compose down -v` and deleting the container or image never touch it:
+#   ./pfa/data/finance.db        the database (keep this on the NAS's own disk, not an NFS/SMB share)
+#   ./pfa/data/statements/       your PDF statements and tax forms
+#   ./pfa/data/config.toml       settings;  ./pfa/data/logs/  logs
+# On a NAS use an absolute path, e.g. /volume1/docker/pfa:/pfa (Synology) or /mnt/tank/apps/pfa:/pfa.
+
+services:
+  pfa:
+    # Pin a version (e.g. :0.2.0) once you are happy; :latest follows the newest release,
+    # :edge follows the main branch.
+    image: ghcr.io/haoxinm/personal-finance-analyzer:latest
+    container_name: personal-finance-analyzer
+    init: true
+    restart: unless-stopped
+
+    ports:
+      # LAN access. To put a reverse proxy in front instead, publish to this machine only:
+      #   - "127.0.0.1:8756:8756"
+      - "8756:8756"
+
+    environment:
+      # Files in ./pfa will be owned by this user and group: use your NAS user's ids (`id <user>`).
+      PUID: "1000"
+      PGID: "1000"
+      UMASK: "077" # 077 owner only; 027 lets the group read; 022 lets everyone read
+      TZ: "America/Chicago"
+
+      # The names you type in the browser (comma separated; any port). Anything else is refused.
+      PFA_ALLOWED_HOSTS: "nas.local,192.168.1.10"
+      # The login password, from the secret below. (PFA_PASSWORD_HASH_FILE takes a hash made with
+      # `docker run --rm -it --entrypoint pfa ghcr.io/haoxinm/personal-finance-analyzer auth hash-password`
+      # instead, so even the file never holds the password.)
+      PFA_PASSWORD_FILE: /run/secrets/pfa_password
+
+      # Optional LLM for classification: put the key in a secret (see "secrets" below).
+      # PFA_LLM_API_KEY_FILE: /run/secrets/pfa_llm_api_key
+
+      # Behind a reverse proxy that terminates HTTPS: believe its X-Forwarded-* headers, so the
+      # session cookie is marked Secure and login limits count real client addresses. Use the
+      # proxy's address or Docker network (a wide range here weakens the login rate limit).
+      # PFA_TRUSTED_PROXIES: "172.18.0.0/16"
+
+    volumes:
+      - ./pfa:/pfa
+
+    secrets:
+      - pfa_password
+      # - pfa_llm_api_key
+
+    # Least privilege: it may start as root only to match PUID/PGID, then runs as that user.
+    cap_drop: [ALL]
+    cap_add: [CHOWN, SETUID, SETGID, DAC_OVERRIDE]
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp
+
+    # No outbound traffic at all (the app works without it; see "Network" in docs/DOCKER.md):
+    # drop the `ports:` above and the `networks:` line below, attach a reverse proxy to both
+    # `pfa-internal` and your normal network, and this block makes pfa unable to call out.
+    # networks: [pfa-internal]
+
+secrets:
+  pfa_password:
+    file: ./secrets/pfa_password.txt
+  # pfa_llm_api_key:
+  #   file: ./secrets/pfa_llm_api_key.txt
+
+# networks:
+#   pfa-internal:
+#     internal: true
