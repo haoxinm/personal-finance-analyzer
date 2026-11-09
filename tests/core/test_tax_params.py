@@ -123,6 +123,11 @@ def test_published_deductions_and_limits(
     assert p.capital_loss_limit_mfs_minor == 1_500 * D
     assert p.niit_threshold_minor["mfj"] == 250_000 * D
     assert p.additional_medicare_threshold_minor["mfs"] == 125_000 * D
+    # IRC 3101(b)(2): 250,000 only for a joint return; a surviving spouse is at 200,000 (Form 8959)
+    assert p.additional_medicare_threshold_minor["mfj"] == 250_000 * D
+    assert p.additional_medicare_threshold_minor["qss"] == 200_000 * D
+    # IRC 1411(b): the NIIT threshold is 250,000 for a joint return and a surviving spouse
+    assert p.niit_threshold_minor["qss"] == 250_000 * D
 
 
 def test_standard_deduction_adds_the_aged_blind_amount() -> None:
@@ -384,8 +389,14 @@ def test_senior_deduction_params_and_phaseout() -> None:
     assert p.senior_deduction("single", 1, 50_000 * D) == 6_000 * D
     assert p.senior_deduction("single", 1, 95_000 * D) == 4_800 * D  # 6% of 20,000 = 1,200
     assert p.senior_deduction("single", 1, 175_000 * D) == 0  # fully phased out at 175,000
+    assert p.senior_deduction("single", 1, 100_000 * D) == 4_500 * D  # 6,000 - 6% of 25,000
     assert p.senior_deduction("mfj", 2, 150_000 * D) == 12_000 * D
-    assert p.senior_deduction("mfj", 2, 190_000 * D) == (12_000 - 2_400) * D
+    assert p.senior_deduction("mfj", 2, 190_000 * D) == 2 * (6_000 - 2_400) * D
+    # the reduction applies to each person's 6,000, so a joint return is not cut twice as fast
+    assert p.senior_deduction("mfj", 2, 200_000 * D) == 6_000 * D  # 2 x (6,000 - 3,000)
+    assert p.senior_deduction("mfj", 2, 250_000 * D) == 0  # each person fully phased out
+    assert p.senior_deduction("mfj", 1, 175_000 * D) == 4_500 * D  # 6,000 - 6% of 25,000
+    assert p.senior_deduction("mfj", 1, 250_000 * D) == 0
     assert p.senior_deduction("mfj", 1, 100_000 * D) == 6_000 * D
     assert p.senior_deduction("mfj", 3, 100_000 * D) == 12_000 * D  # at most two on a joint return
     assert p.senior_deduction("single", 2, 0) == 6_000 * D  # one taxpayer

@@ -97,16 +97,17 @@ class FederalParams:
 
     def senior_deduction(self, filing_status: str, qualifying_people: int, magi_minor: int) -> int:
         """The senior deduction for `qualifying_people` (age 65+ with an SSN) at `magi_minor`
-        (cents): the combined amount is reduced by the rate times the MAGI above the threshold
-        (not below zero). 0 for married filing separately and in years the deduction does not
-        exist."""
+        (cents). IRC 151(d)(5)(C)(ii) reduces the per-person amount by the rate times the MAGI
+        above the threshold (not below zero), so each qualifying person gets
+        ``max(amount - reduction, 0)``. 0 for married filing separately and in years the
+        deduction does not exist."""
         threshold = self.senior_phaseout_threshold_minor.get(filing_status)
         if threshold is None or self.senior_deduction_minor <= 0 or qualifying_people <= 0:
             return 0
         people = min(qualifying_people, 2 if filing_status == "mfj" else 1)
         reduction = max(magi_minor - threshold, 0) * self.senior_phaseout_rate_bp // 10_000
-        # the phase-out reduces the combined amount of a joint return (Schedule 1-A, Part V)
-        return max(self.senior_deduction_minor * people - reduction, 0)
+        # the reduction applies to each person's own $6,000 (Schedule 1-A), not the joint total
+        return people * max(self.senior_deduction_minor - reduction, 0)
 
     def standard_deduction(self, filing_status: str, aged_or_blind_count: int = 0) -> int:
         """Basic standard deduction plus the additional amount per aged / blind box (0-4 boxes;

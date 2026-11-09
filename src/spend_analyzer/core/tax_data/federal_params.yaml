@@ -31,10 +31,12 @@
 #   ss_wage_base                  Social Security wage base (OASDI taxable maximum)
 #   elective_deferral_limit       401(k)/403(b)/TSP employee elective deferral limit (no catch-up)
 #   niit_threshold / additional_medicare_threshold  statutory MAGI / wage thresholds (IRC 1411,
-#                                 3101(b)(2); not indexed)
+#                                 3101(b)(2); not indexed). NIIT: 250,000 for a joint return and a
+#                                 qualifying surviving spouse. Additional Medicare Tax: 250,000 for a
+#                                 joint return only; a surviving spouse uses 200,000 (Form 8959)
 #   senior_deduction              only for taxable years 2025-2028 (IRC 151(d)(5)(C)): `amount` per
 #                                 qualifying person aged 65 or over (a joint return counts both
-#                                 spouses), reduced by `phaseout_rate_percent` of MAGI over
+#                                 spouses), reduced, for each person, by `phaseout_rate_percent` of MAGI over
 #                                 `phaseout_threshold` (by status; married filing separately cannot
 #                                 claim it). Omit the key for every other year.
 #   brackets  [[lower threshold in dollars of taxable income, rate in percent], ...]; strictly
@@ -54,7 +56,7 @@ years:
     ss_wage_base: 147000
     elective_deferral_limit: 20500
     niit_threshold: {single: 200000, mfj: 250000, mfs: 125000, hoh: 200000, qss: 250000}
-    additional_medicare_threshold: {single: 200000, mfj: 250000, mfs: 125000, hoh: 200000, qss: 250000}
+    additional_medicare_threshold: {single: 200000, mfj: 250000, mfs: 125000, hoh: 200000, qss: 200000}
     brackets:
       single: [[0, 10], [10275, 12], [41775, 22], [89075, 24], [170050, 32], [215950, 35], [539900, 37]]
       mfj: [[0, 10], [20550, 12], [83550, 22], [178150, 24], [340100, 32], [431900, 35], [647850, 37]]
@@ -77,7 +79,7 @@ years:
     ss_wage_base: 160200
     elective_deferral_limit: 22500
     niit_threshold: {single: 200000, mfj: 250000, mfs: 125000, hoh: 200000, qss: 250000}
-    additional_medicare_threshold: {single: 200000, mfj: 250000, mfs: 125000, hoh: 200000, qss: 250000}
+    additional_medicare_threshold: {single: 200000, mfj: 250000, mfs: 125000, hoh: 200000, qss: 200000}
     brackets:
       single: [[0, 10], [11000, 12], [44725, 22], [95375, 24], [182100, 32], [231250, 35], [578125, 37]]
       mfj: [[0, 10], [22000, 12], [89450, 22], [190750, 24], [364200, 32], [462500, 35], [693750, 37]]
@@ -100,7 +102,7 @@ years:
     ss_wage_base: 168600
     elective_deferral_limit: 23000
     niit_threshold: {single: 200000, mfj: 250000, mfs: 125000, hoh: 200000, qss: 250000}
-    additional_medicare_threshold: {single: 200000, mfj: 250000, mfs: 125000, hoh: 200000, qss: 250000}
+    additional_medicare_threshold: {single: 200000, mfj: 250000, mfs: 125000, hoh: 200000, qss: 200000}
     brackets:
       single: [[0, 10], [11600, 12], [47150, 22], [100525, 24], [191950, 32], [243725, 35], [609350, 37]]
       mfj: [[0, 10], [23200, 12], [94300, 22], [201050, 24], [383900, 32], [487450, 35], [731200, 37]]
@@ -125,7 +127,7 @@ years:
     ss_wage_base: 176100
     elective_deferral_limit: 23500
     niit_threshold: {single: 200000, mfj: 250000, mfs: 125000, hoh: 200000, qss: 250000}
-    additional_medicare_threshold: {single: 200000, mfj: 250000, mfs: 125000, hoh: 200000, qss: 250000}
+    additional_medicare_threshold: {single: 200000, mfj: 250000, mfs: 125000, hoh: 200000, qss: 200000}
     senior_deduction:
       amount: 6000
       phaseout_rate_percent: 6
@@ -153,7 +155,7 @@ years:
     ss_wage_base: 184500
     elective_deferral_limit: 24500
     niit_threshold: {single: 200000, mfj: 250000, mfs: 125000, hoh: 200000, qss: 250000}
-    additional_medicare_threshold: {single: 200000, mfj: 250000, mfs: 125000, hoh: 200000, qss: 250000}
+    additional_medicare_threshold: {single: 200000, mfj: 250000, mfs: 125000, hoh: 200000, qss: 200000}
     senior_deduction:
       amount: 6000
       phaseout_rate_percent: 6

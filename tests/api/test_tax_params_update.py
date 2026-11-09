@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from fastapi.testclient import TestClient
 
 from spend_analyzer.api.services import tax_params_update as upd
 from spend_analyzer.config import Settings, TaxConfig
@@ -242,3 +243,14 @@ def test_fetch_text_refuses_oversized_and_wraps_errors(monkeypatch: pytest.Monke
     )
     with pytest.raises(upd.FetchError, match="HTTPStatusError"):
         upd.fetch_text(upd.PARAMS_URL)
+
+
+def test_tax_summary_triggers_the_background_check(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[Settings] = []
+    monkeypatch.setattr(
+        upd, "maybe_check_in_background", lambda settings, **kw: calls.append(settings)
+    )
+    assert client.get("/api/tax/summary").status_code == 200
+    assert len(calls) == 1
