@@ -258,6 +258,12 @@ def apply_user_correction(
     )
 
 
+def apply_kind_edit(session: Session, txn: Any, kind: Kind) -> None:
+    """Apply a kind-only edit to `txn` and re-file its category to match (does not commit)."""
+    fn = _resolve("spend_analyzer.classify.cascade", "apply_kind_edit")
+    fn(session, txn, kind)
+
+
 def approve_subcategory(session: Session, subcategory_id: int) -> None:
     """Approve a pending dynamic subcategory (A14).
 

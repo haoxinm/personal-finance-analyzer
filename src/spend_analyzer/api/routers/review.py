@@ -66,7 +66,9 @@ def undo_token_from_schema(body: schemas.AcceptUndo) -> cascade.AcceptUndo:
     rule = body.rule
     return cascade.AcceptUndo(
         transactions=tuple(
-            cascade.TransactionSnapshot(t.transaction_id, state(t.before), state(t.after))
+            cascade.TransactionSnapshot(
+                t.transaction_id, state(t.before), state(t.after), t.dedupe_hash
+            )
             for t in body.transactions
         ),
         rule=cascade.RuleSnapshot(

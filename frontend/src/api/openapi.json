@@ -10608,13 +10608,18 @@
           },
           "after": {
             "$ref": "#/components/schemas/TransactionState"
+          },
+          "dedupe_hash": {
+            "type": "string",
+            "title": "Dedupe Hash"
           }
         },
         "type": "object",
         "required": [
           "transaction_id",
           "before",
-          "after"
+          "after",
+          "dedupe_hash"
         ],
         "title": "TransactionSnapshot",
         "description": "One transaction as the operation found it (`before`) and left it (`after`); sent back\nunchanged to `POST /review/undo`, which restores `before` only if the row still equals\n`after`."

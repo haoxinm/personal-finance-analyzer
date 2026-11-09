@@ -457,7 +457,12 @@ def _forged(txn_id: int, **after: object) -> dict[str, object]:
     }
     return {
         "transactions": [
-            {"transaction_id": txn_id, "before": {**state, **after}, "after": state},
+            {
+                "transaction_id": txn_id,
+                "before": {**state, **after},
+                "after": state,
+                "dedupe_hash": "hash-1",
+            },
         ],
         "rule": None,
     }

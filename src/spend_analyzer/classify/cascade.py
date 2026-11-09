@@ -397,6 +397,95 @@ def apply_user_correction(
     return rule
 
 
+def apply_kind_edit(session: Session, txn: Transaction, kind: Kind) -> None:
+    """Apply a kind-only edit to `txn` and keep its category consistent with the new kind. Does
+    not commit.
+
+    * Spend -> payment/transfer: a row the user has not categorized by hand is filed under
+      `others/payments_transfers` exactly as the kind step would (`classified_by='kind'`).
+    * Payment/transfer -> spend: the `payments_transfers` filing came from the kind step, not
+      from the user, so it is cleared and the deterministic cascade (user rules, user merchant
+      map, built-in rules, issuer category, cache; never the LLM, which a kind edit does not
+      trigger) is re-run for this one row. When nothing places it the row is left in
+      `others/uncategorized` and flagged `needs_review`, still open to a later classify pass.
+    * Otherwise a row with a real category becomes a one-time edit (`classified_by='user'`);
+      an uncategorized row stays open so rules and the LLM can still fill it in.
+
+    A row that is already `classified_by='user'` keeps its category in every case.
+    """
+    if kind == txn.kind:
+        return
+    was_non_spend = txn.kind in _NON_SPEND_KINDS
+    txn.kind = kind
+    txn.is_spend = kind_is_spend(kind)
+    txn.updated_at = utcnow_iso()
+    if txn.classified_by == USER_CLASSIFIED:
+        return
+
+    if kind in _NON_SPEND_KINDS:
+        _write_outcome(
+            session,
+            txn,
+            _Outcome(
+                category_key=_PAYMENTS_TRANSFERS_CATEGORY,
+                subcategory_key=_PAYMENTS_TRANSFERS_SUBCATEGORY,
+                confidence=1.0,
+                classified_by="kind",
+            ),
+            needs_review=False,
+        )
+        return
+
+    if was_non_spend or txn.classified_by == "kind":
+        user_rules, builtin_rules = _load_rule_sets(session)
+        outcome = _classify_deterministic(
+            session, txn, user_rules=user_rules, builtin_rules=builtin_rules
+        )
+        if outcome is not None:
+            _write_outcome(
+                session,
+                txn,
+                outcome,
+                needs_review=outcome.needs_review_override,
+            )
+            return
+        txn.category_id = None
+        txn.subcategory_id = None
+        txn.confidence = None
+        txn.classified_by = None
+        txn.needs_review = True
+        _park_uncategorized(session, txn)
+        return
+
+    if _has_real_category(session, txn):
+        txn.classified_by = USER_CLASSIFIED
+
+
+def _has_real_category(session: Session, txn: Transaction) -> bool:
+    """True if `txn` has a category other than the `others/uncategorized` fallback."""
+    if txn.category_id is None or txn.subcategory_id is None:
+        return False
+    category = session.get(Category, txn.category_id)
+    sub = session.get(Subcategory, txn.subcategory_id)
+    if category is None or sub is None:
+        return False
+    return (category.key, sub.key) != (_UNCATEGORIZED_CATEGORY, _UNCATEGORIZED_SUBCATEGORY)
+
+
+def _park_uncategorized(session: Session, txn: Transaction) -> None:
+    category = session.execute(
+        select(Category).where(Category.key == _UNCATEGORIZED_CATEGORY)
+    ).scalar_one()
+    subcategory = session.execute(
+        select(Subcategory).where(
+            Subcategory.category_id == category.id,
+            Subcategory.key == _UNCATEGORIZED_SUBCATEGORY,
+        )
+    ).scalar_one()
+    txn.category_id = category.id
+    txn.subcategory_id = subcategory.id
+
+
 def _write_user_patch(
     session: Session,
     txn: Transaction,
@@ -584,7 +673,7 @@ def apply_rule_to_existing(session: Session, rule: Rule) -> tuple[int, AcceptUnd
             _outcome_from_rule(session, rule, classified_by="user_rule"),
             needs_review=False,
         )
-        snapshots.append(TransactionSnapshot(txn.id, before, _state_of(txn)))
+        snapshots.append(TransactionSnapshot(txn.id, before, _state_of(txn), txn.dedupe_hash))
     session.flush()
     return len(snapshots), AcceptUndo(transactions=tuple(snapshots), rule=None)
 
@@ -624,6 +713,9 @@ class TransactionSnapshot:
     transaction_id: int
     before: TransactionState
     after: TransactionState
+    #: The row's `dedupe_hash`: ids can be reused after a delete (no AUTOINCREMENT), so undo
+    #: refuses a row whose hash differs.
+    dedupe_hash: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -762,7 +854,7 @@ def accept_review(
         kind=None,
         create_rule=create_rule,
     )
-    snapshots = [TransactionSnapshot(txn.id, before_main, _state_of(txn))]
+    snapshots = [TransactionSnapshot(txn.id, before_main, _state_of(txn), txn.dedupe_hash)]
     rule_snapshot = (
         RuleSnapshot(rule_id=rule.id, before=rule_state_before, after=_rule_state_of(rule))
         if rule is not None
@@ -790,7 +882,9 @@ def accept_review(
             kind=None,
             create_rule=False,
         )
-        snapshots.append(TransactionSnapshot(other.id, before_other, _state_of(other)))
+        snapshots.append(
+            TransactionSnapshot(other.id, before_other, _state_of(other), other.dedupe_hash)
+        )
         applied.append(other.id)
     session.flush()
     return AcceptResult(
@@ -862,7 +956,7 @@ def undo_accept(session: Session, undo: AcceptUndo) -> UndoResult:
         txn = session.get(Transaction, snap.transaction_id)
         if index == 0:
             first_txn = txn
-        if txn is None or _state_of(txn) != snap.after:
+        if txn is None or txn.dedupe_hash != snap.dedupe_hash or _state_of(txn) != snap.after:
             skipped.append(snap.transaction_id)
             continue
         before = snap.before
@@ -1319,6 +1413,7 @@ __all__ = [
     "RuleSnapshot",
     "TransactionSnapshot",
     "accept_review",
+    "apply_kind_edit",
     "apply_rule_to_existing",
     "apply_user_correction",
     "approve_subcategory",

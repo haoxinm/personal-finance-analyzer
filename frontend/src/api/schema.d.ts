@@ -2907,6 +2907,8 @@ export interface components {
             transaction_id: number;
             before: components["schemas"]["TransactionState"];
             after: components["schemas"]["TransactionState"];
+            /** Dedupe Hash */
+            dedupe_hash: string;
         };
         /**
          * TransactionState

@@ -287,6 +287,8 @@ class TransactionSnapshot(_Model):
     transaction_id: int
     before: TransactionState
     after: TransactionState
+    #: The row's dedupe hash; undo skips a row whose hash differs (its id was reused).
+    dedupe_hash: str
 
 
 class RuleState(_Model):

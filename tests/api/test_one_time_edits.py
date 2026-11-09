@@ -278,6 +278,100 @@ def test_kind_only_edit_on_an_uncategorized_row_does_not_freeze_its_category(
     assert _category_of(session, parked.id) == category_ids(session, *FUEL)
 
 
+PAYMENTS = ("others", "payments_transfers")
+
+
+def _kind_edit(client: TestClient, txn_id: int, kind: str, *, bulk: bool) -> None:
+    if bulk:
+        response = client.post(
+            "/api/transactions/bulk-update", json={"transaction_ids": [txn_id], "kind": kind}
+        )
+    else:
+        response = client.patch(f"/api/transactions/{txn_id}", json={"kind": kind})
+    assert response.status_code == 200, response.text
+
+
+@pytest.mark.parametrize("bulk", [False, True])
+def test_transfer_to_purchase_re_runs_the_cascade_instead_of_freezing_payments(
+    client: TestClient, session: Session, bulk: bool
+) -> None:
+    """Regression: a misdetected Zelle row (transfer -> purchase) stayed under Payments &
+    transfers, frozen as a user edit, and never reached rules."""
+    seed = base(session)
+    ruled = add_txn(
+        session,
+        seed,
+        1,
+        category=PAYMENTS,
+        classified_by="kind",
+        kind="transfer",
+        merchant_key="zelle joe's pizza",
+    )
+    unplaced = add_txn(
+        session,
+        seed,
+        2,
+        category=PAYMENTS,
+        classified_by="kind",
+        kind="transfer",
+        merchant_key="zelle nobody knows",
+    )
+    session.commit()
+    _user_rule(client, "zelle joe's pizza", GROCERY)
+
+    for txn in (ruled, unplaced):
+        _kind_edit(client, txn.id, "purchase", bulk=bulk)
+
+    session.expire_all()
+    row = session.get(Transaction, ruled.id)
+    assert row is not None
+    assert row.kind == "purchase" and row.is_spend is True
+    assert (row.category_id, row.subcategory_id) == category_ids(session, *GROCERY)
+    assert row.classified_by == "user_rule" and row.needs_review is False
+
+    row = session.get(Transaction, unplaced.id)
+    assert row is not None
+    assert row.kind == "purchase" and row.is_spend is True
+    assert (row.category_id, row.subcategory_id) == category_ids(session, *UNCATEGORIZED)
+    assert row.needs_review is True and row.classified_by != "user"
+
+
+@pytest.mark.parametrize("bulk", [False, True])
+def test_purchase_to_transfer_files_the_row_under_payments_transfers(
+    client: TestClient, session: Session, bulk: bool
+) -> None:
+    seed = base(session)
+    row = add_txn(session, seed, 1, category=GROCERY, classified_by="llm")
+    session.commit()
+
+    _kind_edit(client, row.id, "transfer", bulk=bulk)
+
+    session.expire_all()
+    fresh = session.get(Transaction, row.id)
+    assert fresh is not None
+    assert fresh.kind == "transfer" and fresh.is_spend is False
+    assert (fresh.category_id, fresh.subcategory_id) == category_ids(session, *PAYMENTS)
+    assert fresh.classified_by == "kind"
+
+
+def test_undo_skips_a_row_whose_id_was_reused_by_a_different_transaction(
+    client: TestClient, session: Session
+) -> None:
+    seed = base(session)
+    first = _pending(session, 1, seed, merchant_key="zorblax mart")
+    session.commit()
+    body = _accept(client, first.id)
+    undo = body["undo"]
+    assert undo["transactions"][0]["dedupe_hash"] == "hash-1"  # type: ignore[index]
+
+    first = session.get(Transaction, first.id)  # type: ignore[assignment]
+    first.dedupe_hash = "hash-reused"  # type: ignore[union-attr]
+    session.commit()
+
+    result = client.post("/api/review/undo", json=undo).json()
+    assert result["restored"] == 0 and result["skipped"] == [first.id]  # type: ignore[union-attr]
+
+
 # --- "Always categorize" is the explicit merchant rule ---------------------------------------
 
 

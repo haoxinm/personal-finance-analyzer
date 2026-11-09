@@ -14,14 +14,15 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from sqlalchemy import ColumnElement, Select, and_, func, not_, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from spend_analyzer.api.services import gateway
 from spend_analyzer.core.paths import statements_dir
-from spend_analyzer.core.types import USER_CLASSIFIED
+from spend_analyzer.core.types import USER_CLASSIFIED, Kind
 from spend_analyzer.db.models import (
     Account,
     Category,
@@ -416,22 +417,14 @@ def subcategory_key_of(session: Session, transaction: Transaction) -> str | None
     return sub.key if sub is not None else None
 
 
-def _has_real_category(session: Session, transaction: Transaction) -> bool:
-    """True if the row has a category other than the `others/uncategorized` fallback."""
-    if transaction.category_id is None or transaction.subcategory_id is None:
-        return False
-    return (
-        category_key_of(session, transaction),
-        subcategory_key_of(session, transaction),
-    ) != ("others", "uncategorized")
-
-
 def update_transaction_fields(
     session: Session, transaction: Transaction, *, kind: str | None, notes: str | None
 ) -> Transaction:
     """Update fields that are plain CRUD (not routed through `apply_user_correction`).
 
-    Changing `kind` is a one-time edit of this transaction. When the row already has a real
+    Changing `kind` is a one-time edit of this transaction (see `cascade.apply_kind_edit`: a row
+    moved between spend and payment/transfer is re-filed to match, so payments never stay
+    frozen under "Payments & transfers" as spending). When the row already has a real
     category it is marked `classified_by='user'`, so no automated pass reverts the edit. A
     kind-only edit on a row that is still uncategorized does *not* freeze it: the user said
     something about the kind, not the category, and locking would leave the row uncategorized
@@ -440,10 +433,7 @@ def update_transaction_fields(
     `notes` never lock a row.
     """
     if kind is not None and kind != transaction.kind:
-        transaction.kind = kind
-        transaction.is_spend = kind in ("purchase", "fee", "interest")
-        if _has_real_category(session, transaction):
-            transaction.classified_by = USER_CLASSIFIED
+        gateway.apply_kind_edit(session, transaction, cast(Kind, kind))
     if notes is not None:
         transaction.notes = notes
     transaction.updated_at = utcnow_iso()
