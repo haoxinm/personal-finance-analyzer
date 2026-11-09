@@ -313,6 +313,45 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/review/accept": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Accept Review */
+        post: operations["accept_review_api_review_accept_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/review/undo": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Undo Review
+         * @description Reverse one accept (or one rule application) from its undo token. `restored` is how many
+         *     transactions went back; `skipped` lists the ones left alone because they changed afterwards,
+         *     and `rule_skipped` says the accept's rule was left alone for the same reason.
+         */
+        post: operations["undo_review_api_review_undo_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/classify/run": {
         parameters: {
             query?: never;
@@ -662,6 +701,51 @@ export interface paths {
         put?: never;
         /** Create Rule */
         post: operations["create_rule_api_rules_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/rules/{rule_id}/apply-preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Preview Apply Rule
+         * @description What applying a user rule to existing transactions would change right now (nothing is
+         *     changed): how many rows, how many users own them, how many would get a different kind. A rule
+         *     with no owner applies across every user's transactions.
+         */
+        get: operations["preview_apply_rule_api_rules__rule_id__apply_preview_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/rules/{rule_id}/apply": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Apply Rule
+         * @description Apply a user rule to the transactions that already exist (rules otherwise only affect
+         *     future classification). Never overwrites a hand-corrected transaction or one a
+         *     higher-priority rule claims; `updated` is how many rows changed. `undo` is a token for
+         *     `POST /review/undo` that puts those rows back (rows edited since are skipped).
+         */
+        post: operations["apply_rule_api_rules__rule_id__apply_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1212,6 +1296,17 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /**
+         * AcceptUndo
+         * @description Opaque undo token for one Review accept or one "apply rule to existing" (everything it
+         *     changed): each patched transaction before and after and, for an "always categorize" accept,
+         *     the merchant's rule. Held by the client and validated on use.
+         */
+        AcceptUndo: {
+            /** Transactions */
+            transactions: components["schemas"]["TransactionSnapshot"][];
+            rule?: components["schemas"]["RuleSnapshot"] | null;
+        };
         /** Account */
         Account: {
             /** Id */
@@ -1382,7 +1477,10 @@ export interface components {
             /** Tax Year */
             tax_year?: number | null;
         };
-        /** BulkUpdateRequest */
+        /**
+         * BulkUpdateRequest
+         * @description Edit every listed transaction one time each (no rule, no merchant memory).
+         */
         BulkUpdateRequest: {
             /** Transaction Ids */
             transaction_ids: number[];
@@ -1431,6 +1529,11 @@ export interface components {
             job_id: string;
             /** Group Id */
             group_id: string;
+            /**
+             * Transaction Count
+             * @default 0
+             */
+            transaction_count: number;
         };
         /** ConflictResponse */
         ConflictResponse: {
@@ -1658,6 +1761,10 @@ export interface components {
             inserted?: number | null;
             /** Skipped Duplicates */
             skipped_duplicates?: number | null;
+            /** Restored Edits */
+            restored_edits?: number | null;
+            /** Unmatched Edits */
+            unmatched_edits?: number | null;
         };
         /** JobIdResponse */
         JobIdResponse: {
@@ -2009,6 +2116,41 @@ export interface components {
             /** Pii Terms */
             pii_terms: string[];
         };
+        /** ReviewAcceptRequest */
+        ReviewAcceptRequest: {
+            /** Transaction Id */
+            transaction_id: number;
+            /** Category Key */
+            category_key: string;
+            /** Subcategory Key */
+            subcategory_key: string;
+            /**
+             * Create Rule
+             * @default false
+             */
+            create_rule: boolean;
+            /** Similar Ids */
+            similar_ids?: number[];
+        };
+        /** ReviewAcceptResponse */
+        ReviewAcceptResponse: {
+            transaction: components["schemas"]["Transaction"];
+            /** Similar Ids */
+            similar_ids: number[];
+            undo: components["schemas"]["AcceptUndo"];
+        };
+        /** ReviewUndoResponse */
+        ReviewUndoResponse: {
+            /** Restored */
+            restored: number;
+            /** Skipped */
+            skipped?: number[];
+            /**
+             * Rule Skipped
+             * @default false
+             */
+            rule_skipped: boolean;
+        };
         /** Rule */
         Rule: {
             /** Id */
@@ -2022,6 +2164,38 @@ export interface components {
             kind?: components["schemas"]["Kind"] | null;
             /** Source */
             source: string;
+            /**
+             * Match Type
+             * @default contains
+             */
+            match_type: string;
+            /**
+             * Priority
+             * @default 100
+             */
+            priority: number;
+            /** Existing Matches */
+            existing_matches?: number | null;
+        };
+        /**
+         * RuleApplyPreview
+         * @description What `POST /rules/{id}/apply` would do right now, for the confirmation step.
+         */
+        RuleApplyPreview: {
+            /** Matches */
+            matches: number;
+            /** User Count */
+            user_count: number;
+            /** Kind Changes */
+            kind_changes: number;
+            /** All Users */
+            all_users: boolean;
+        };
+        /** RuleApplyResponse */
+        RuleApplyResponse: {
+            /** Updated */
+            updated: number;
+            undo: components["schemas"]["AcceptUndo"];
         };
         /** RuleCreate */
         RuleCreate: {
@@ -2038,6 +2212,29 @@ export interface components {
             /** Subcategory Key */
             subcategory_key: string;
             kind?: components["schemas"]["Kind"] | null;
+        };
+        /**
+         * RuleSnapshot
+         * @description The merchant's exact rule around an accept: `before=None` means the accept created it.
+         */
+        RuleSnapshot: {
+            /** Rule Id */
+            rule_id: number;
+            before?: components["schemas"]["RuleState"] | null;
+            after: components["schemas"]["RuleState"];
+        };
+        /** RuleState */
+        RuleState: {
+            /** Category Id */
+            category_id: number;
+            /** Subcategory Id */
+            subcategory_id: number;
+            kind_override?: components["schemas"]["Kind"] | null;
+            /**
+             * Enabled
+             * @default true
+             */
+            enabled: boolean;
         };
         /** RuleUpdate */
         RuleUpdate: {
@@ -2680,7 +2877,11 @@ export interface components {
             /** Total */
             total: number;
         };
-        /** TransactionPatch */
+        /**
+         * TransactionPatch
+         * @description A one-time edit of one transaction: it changes only that transaction and always wins over
+         *     every rule and re-run. Nothing is remembered about the merchant unless `create_rule` is set.
+         */
         TransactionPatch: {
             /** Category Key */
             category_key?: string | null;
@@ -2694,6 +2895,41 @@ export interface components {
              * @default false
              */
             create_rule: boolean;
+        };
+        /**
+         * TransactionSnapshot
+         * @description One transaction as the operation found it (`before`) and left it (`after`); sent back
+         *     unchanged to `POST /review/undo`, which restores `before` only if the row still equals
+         *     `after`.
+         */
+        TransactionSnapshot: {
+            /** Transaction Id */
+            transaction_id: number;
+            before: components["schemas"]["TransactionState"];
+            after: components["schemas"]["TransactionState"];
+        };
+        /**
+         * TransactionState
+         * @description The classification fields one accept (or "apply to existing") can change on a
+         *     transaction. Values are validated: a token naming an unknown kind or `classified_by` is
+         *     rejected.
+         */
+        TransactionState: {
+            /** Category Id */
+            category_id: number | null;
+            /** Subcategory Id */
+            subcategory_id: number | null;
+            /** Confidence */
+            confidence?: number | null;
+            /** Classified By */
+            classified_by: ("cache" | "user_rule" | "builtin_rule" | "issuer" | "llm" | "user" | "kind") | null;
+            /** Needs Review */
+            needs_review: boolean;
+            kind: components["schemas"]["Kind"];
+            /** Is Spend */
+            is_spend: boolean;
+            /** Merchant Canonical */
+            merchant_canonical: string | null;
         };
         /** User */
         User: {
@@ -3457,6 +3693,72 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["BulkUpdateResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    accept_review_api_review_accept_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReviewAcceptRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewAcceptResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    undo_review_api_review_undo_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AcceptUndo"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewUndoResponse"];
                 };
             };
             /** @description Validation Error */
@@ -4238,6 +4540,68 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Rule"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    preview_apply_rule_api_rules__rule_id__apply_preview_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                rule_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RuleApplyPreview"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    apply_rule_api_rules__rule_id__apply_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                rule_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RuleApplyResponse"];
                 };
             };
             /** @description Validation Error */
