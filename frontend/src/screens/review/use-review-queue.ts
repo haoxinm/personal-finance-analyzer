@@ -1,3 +1,4 @@
+import { useQueryClient } from "@tanstack/react-query";
 import * as React from "react";
 
 import { useToast } from "@/components/ui/use-toast";
@@ -62,6 +63,7 @@ export interface UseReviewQueueResult {
  */
 export function useReviewQueue(userIds?: number[], enabled = true): UseReviewQueueResult {
   const { toast } = useToast();
+  const queryClient = useQueryClient();
   const [queue, setQueue] = React.useState<Transaction[]>([]);
   const [status, setStatus] = React.useState<"loading" | "error" | "ready">("loading");
   const [error, setError] = React.useState<unknown>(null);
@@ -128,6 +130,13 @@ export function useReviewQueue(userIds?: number[], enabled = true): UseReviewQue
     [current],
   );
 
+  // Accepting or undoing changes categories, kinds and (via a rule) possibly other rows, so the
+  // Transactions grid and every analytics view that is cached elsewhere in the app are stale.
+  const invalidateClassificationQueries = React.useCallback(() => {
+    void queryClient.invalidateQueries({ queryKey: ["transactions"] });
+    void queryClient.invalidateQueries({ queryKey: ["analytics"] });
+  }, [queryClient]);
+
   const accept = React.useCallback(
     async ({ createRule = false }: { createRule?: boolean } = {}) => {
       const txn = current;
@@ -175,6 +184,7 @@ export function useReviewQueue(userIds?: number[], enabled = true): UseReviewQue
           },
         ];
         setCanUndo(true);
+        invalidateClassificationQueries();
         setStaged((prev) => {
           if (!(txn.id in prev)) return prev;
           const rest = { ...prev };
@@ -206,7 +216,16 @@ export function useReviewQueue(userIds?: number[], enabled = true): UseReviewQue
         setIsMutating(false);
       }
     },
-    [current, index, staged, queue, applyToSimilar, similarForCurrent, toast],
+    [
+      current,
+      index,
+      staged,
+      queue,
+      applyToSimilar,
+      similarForCurrent,
+      toast,
+      invalidateClassificationQueries,
+    ],
   );
 
   const undo = React.useCallback(async () => {
@@ -214,20 +233,38 @@ export function useReviewQueue(userIds?: number[], enabled = true): UseReviewQue
     if (!entry) return;
     setIsMutating(true);
     try {
-      await undoReview(entry.undo);
+      const outcome = await undoReview(entry.undo);
       undoStack.current = undoStack.current.slice(0, -1);
       setCanUndo(undoStack.current.length > 0);
+      invalidateClassificationQueries();
+      // A row edited elsewhere since the accept was left as the user set it: it stays out of the
+      // queue instead of being reverted and re-queued.
+      const skipped = new Set(outcome.skipped);
+      const reinstated = entry.removed.filter(({ transaction }) => !skipped.has(transaction.id));
       setQueue((prevQueue) => {
         // Ascending original positions put each row back where it sat before the accept.
         const restored = [...prevQueue];
-        for (const { queueIndex, transaction } of entry.removed) {
+        for (const { queueIndex, transaction } of reinstated) {
           restored.splice(Math.min(queueIndex, restored.length), 0, transaction);
         }
         return restored;
       });
-      setIndex(entry.removed[0]?.queueIndex ?? 0);
+      setIndex(reinstated[0]?.queueIndex ?? entry.removed[0]?.queueIndex ?? 0);
+      const notes: string[] = [];
+      if (outcome.skipped.length > 0) {
+        notes.push(
+          `${outcome.skipped.length} transaction${outcome.skipped.length === 1 ? " was" : "s were"} edited since, so ${outcome.skipped.length === 1 ? "it was" : "they were"} left as you set ${outcome.skipped.length === 1 ? "it" : "them"}.`,
+        );
+      }
+      if (outcome.ruleSkipped) notes.push("The rule was changed since, so it was left alone.");
       toast({
-        title: entry.removed.length > 1 ? `Undone — ${entry.removed.length} transactions restored` : "Undone",
+        title:
+          outcome.restored === 0
+            ? "Nothing to undo"
+            : reinstated.length > 1
+              ? `Undone — ${reinstated.length} transactions restored`
+              : "Undone",
+        description: notes.length > 0 ? notes.join(" ") : undefined,
       });
     } catch (caught) {
       toast({
@@ -238,7 +275,7 @@ export function useReviewQueue(userIds?: number[], enabled = true): UseReviewQue
     } finally {
       setIsMutating(false);
     }
-  }, [toast]);
+  }, [toast, invalidateClassificationQueries]);
 
   return {
     status,

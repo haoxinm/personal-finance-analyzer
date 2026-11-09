@@ -56,6 +56,12 @@ export function createApiFetchMock(state: {
   /** Override `POST /review/accept` (default: applies to every requested `similar_ids` row that
    *  is a pending row of the same merchant, like the real endpoint). */
   acceptBehavior?: (body: AcceptBody) => Response;
+  /** Override the body of `POST /review/undo` (default: restores every transaction in the token). */
+  undoBehavior?: (body: { transactions: unknown[] }) => {
+    restored: number;
+    skipped: number[];
+    rule_skipped: boolean;
+  };
   settings?: { llm: { mode: string } };
   /** What `GET /transactions?uncategorized=true` reports as `total`. */
   uncategorizedTotal?: number;
@@ -105,16 +111,20 @@ export function createApiFetchMock(state: {
           accepted !== undefined &&
           txn.merchant_key === accepted.merchant_key,
       );
-      const snapshot = (txn: Transaction) => ({
-        transaction_id: txn.id,
+      const stateOf = (txn: Transaction, needsReview: boolean) => ({
         category_id: null,
         subcategory_id: null,
         confidence: null,
         classified_by: null,
-        needs_review: txn.needs_review,
+        needs_review: needsReview,
         kind: txn.kind,
         is_spend: true,
         merchant_canonical: null,
+      });
+      const snapshot = (txn: Transaction) => ({
+        transaction_id: txn.id,
+        before: stateOf(txn, txn.needs_review),
+        after: stateOf(txn, false),
       });
       const primary = accepted ?? makeTransaction({ id: body.transaction_id });
       return jsonResponse({
@@ -127,7 +137,6 @@ export function createApiFetchMock(state: {
         similar_ids: applied.map((txn) => txn.id),
         undo: {
           transactions: [primary, ...applied].map(snapshot),
-          merchant_map: null,
           rule: null,
         },
       });
@@ -135,7 +144,9 @@ export function createApiFetchMock(state: {
 
     if (request.method === "POST" && url.pathname === "/api/review/undo") {
       const body = (await request.clone().json()) as { transactions: unknown[] };
-      return jsonResponse({ restored: body.transactions.length });
+      return jsonResponse(
+        state.undoBehavior?.(body) ?? { restored: body.transactions.length, skipped: [], rule_skipped: false },
+      );
     }
 
     if (request.method === "GET" && url.pathname === "/api/settings") {

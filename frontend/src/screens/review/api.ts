@@ -75,11 +75,27 @@ export async function acceptReview(body: {
   return data;
 }
 
-/** `POST /review/undo`: put back everything one accept changed. Returns rows restored. */
-export async function undoReview(undo: AcceptUndoToken): Promise<number> {
+export interface UndoOutcome {
+  /** Transactions put back. */
+  restored: number;
+  /** Transaction ids left alone because they were edited (or deleted) after the accept. */
+  skipped: number[];
+  /** The accept's rule was left alone because it was edited or deleted since. */
+  ruleSkipped: boolean;
+}
+
+/**
+ * `POST /review/undo`: put back everything one accept (or one "apply rule to existing") changed,
+ * except what was edited since: the server skips and reports those rather than overwrite them.
+ */
+export async function undoReview(undo: AcceptUndoToken): Promise<UndoOutcome> {
   const { data, error } = await apiClient.POST("/review/undo", { body: undo });
   throwIfError(error);
-  return data?.restored ?? 0;
+  return {
+    restored: data?.restored ?? 0,
+    skipped: data?.skipped ?? [],
+    ruleSkipped: data?.rule_skipped ?? false,
+  };
 }
 
 /**

@@ -15,15 +15,29 @@ import type { Transaction } from "./types";
 async function setup(options: {
   transactions: Transaction[];
   acceptBehavior?: (body: AcceptBody) => Response;
+  undoBehavior?: Parameters<typeof createApiFetchMock>[0]["undoBehavior"];
 }) {
   vi.resetModules();
   const fetchMock = vi.fn(
-    createApiFetchMock({ transactions: options.transactions, acceptBehavior: options.acceptBehavior }),
+    createApiFetchMock({
+      transactions: options.transactions,
+      acceptBehavior: options.acceptBehavior,
+      undoBehavior: options.undoBehavior,
+    }),
   );
   vi.stubGlobal("fetch", fetchMock);
   const { useReviewQueue } = await import("./use-review-queue");
   const { ToastContextProvider } = await import("@/components/ui/toast-provider");
-  return { fetchMock, useReviewQueue, wrapper: ToastContextProvider };
+  const { QueryClient, QueryClientProvider } = await import("@tanstack/react-query");
+  const React = await import("react");
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const wrapper = ({ children }: { children: React.ReactNode }) =>
+    React.createElement(
+      QueryClientProvider,
+      { client: queryClient },
+      React.createElement(ToastContextProvider, null, children),
+    );
+  return { fetchMock, useReviewQueue, wrapper, queryClient };
 }
 
 type FetchMock = Awaited<ReturnType<typeof setup>>["fetchMock"];
@@ -213,9 +227,12 @@ describe("useReviewQueue", () => {
     const undone = callsTo(fetchMock, "POST", "/api/review/undo");
     expect(undone).toHaveLength(1);
     const undoBody = await bodyOf(undone[0]);
-    expect(undoBody.transactions).toEqual([
-      expect.objectContaining({ transaction_id: 1, needs_review: true }),
-    ]);
+    expect(undoBody.transactions).toHaveLength(1);
+    expect((undoBody.transactions as unknown[])[0]).toMatchObject({
+      transaction_id: 1,
+      before: { needs_review: true },
+      after: { needs_review: false },
+    });
     expect(accepted).toHaveLength(1);
     expect(fetchMock.mock.calls.some((call) => (call[0] as Request).method === "PATCH")).toBe(false);
   });
@@ -252,6 +269,62 @@ describe("useReviewQueue", () => {
     expect(result.current.queue.map((t) => t.id)).toEqual([1, 2, 3, 4, 5, 6]);
   });
 
+  it("does not re-queue a row the server skipped because it was edited after the accept", async () => {
+    const { useReviewQueue, wrapper } = await setup({
+      transactions: [
+        makeTransaction({ id: 1, merchant_key: "trader joes", category_key: "groceries", subcategory_key: "supermarket" }),
+        makeTransaction({ id: 2, merchant_key: "trader joes" }),
+        makeTransaction({ id: 3, merchant_key: "trader joes" }),
+      ],
+      // Row 3 was re-categorized elsewhere after the accept: the server leaves it as it is.
+      undoBehavior: () => ({ restored: 2, skipped: [3], rule_skipped: false }),
+    });
+    const { ToastContext } = await import("@/components/ui/toast-context");
+    const React = await import("react");
+
+    const { result } = renderHook(
+      () => ({ queue: useReviewQueue(), toasts: React.useContext(ToastContext)?.toasts ?? [] }),
+      { wrapper },
+    );
+    await waitFor(() => expect(result.current.queue.status).toBe("ready"));
+    await act(async () => {
+      await result.current.queue.accept();
+    });
+    expect(result.current.queue.queue).toEqual([]);
+
+    await act(async () => {
+      await result.current.queue.undo();
+    });
+
+    expect(result.current.queue.queue.map((t) => t.id)).toEqual([1, 2]);
+    const last = result.current.toasts.at(-1);
+    expect(last?.title).toBe("Undone — 2 transactions restored");
+    const description = typeof last?.description === "string" ? last.description : "";
+    expect(description).toContain("1 transaction was edited since");
+  });
+
+  it("refreshes the Transactions and analytics caches after an accept and after an undo", async () => {
+    const { useReviewQueue, wrapper, queryClient } = await setup({
+      transactions: [makeTransaction({ id: 1 }), makeTransaction({ id: 2 })],
+    });
+    const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+
+    const { result } = renderHook(() => useReviewQueue(), { wrapper });
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    act(() => result.current.stage("dining", "restaurants"));
+    await act(async () => {
+      await result.current.accept();
+    });
+    const keys = () => invalidate.mock.calls.map((call) => JSON.stringify(call[0]?.queryKey));
+    expect(keys()).toEqual(expect.arrayContaining(['["transactions"]', '["analytics"]']));
+
+    invalidate.mockClear();
+    await act(async () => {
+      await result.current.undo();
+    });
+    expect(keys()).toEqual(expect.arrayContaining(['["transactions"]', '["analytics"]']));
+  });
+
   it("leaves the other rows alone when apply-to-similar is switched off", async () => {
     const { fetchMock, useReviewQueue, wrapper } = await setup({
       transactions: [
@@ -284,7 +357,7 @@ describe("useReviewQueue", () => {
         jsonResponse({
           transaction: makeTransaction({ id: 1, needs_review: false }),
           similar_ids: [2],
-          undo: { transactions: [], merchant_map: null, rule: null },
+          undo: { transactions: [], rule: null },
         }),
     });
 
