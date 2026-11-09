@@ -149,6 +149,9 @@ def _restore(request: Request, upload: Path, passphrase: str | None) -> archive.
         nonlocal quiesced
         gate.begin_exclusive()
         quiesced = True
+        # The gate also keeps the folder scan from starting; one already running must finish.
+        if not request.app.state.watch.wait_idle(15.0):
+            raise BackupBusyError("a folder scan is still running; try again in a moment")
         with Session(engine) as session:
             active = session.scalar(
                 select(func.count()).select_from(Job).where(Job.status.in_(("queued", "running")))

@@ -6896,6 +6896,145 @@
           }
         }
       }
+    },
+    "/watch/status": {
+      "get": {
+        "tags": [
+          "folder-imports"
+        ],
+        "summary": "Get Status",
+        "operationId": "get_status_api_watch_status_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WatchStatus"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/watch/scan": {
+      "post": {
+        "tags": [
+          "folder-imports"
+        ],
+        "summary": "Scan Now",
+        "description": "Scan the documents folder now (also when watching is off: this is the explicit request).\nReturns at once; ``started`` is false when a scan was already running.",
+        "operationId": "scan_now_api_watch_scan_post",
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WatchScanStarted"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/watch/files": {
+      "get": {
+        "tags": [
+          "folder-imports"
+        ],
+        "summary": "List Files",
+        "description": "``recent``: the newest imports (and files that were already in the app). ``problems``:\nfiles that need attention (failed, or not in a folder the app imports from).",
+        "operationId": "list_files_api_watch_files_get",
+        "parameters": [
+          {
+            "name": "view",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "recent",
+                "problems"
+              ],
+              "type": "string",
+              "default": "recent",
+              "title": "View"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 500,
+              "minimum": 1,
+              "default": 50,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WatchFileList"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/watch/files/{file_id}/retry": {
+      "post": {
+        "tags": [
+          "folder-imports"
+        ],
+        "summary": "Retry File",
+        "description": "Forget a problem so the next scan looks at the file again (after the cause is fixed).",
+        "operationId": "retry_file_api_watch_files__file_id__retry_post",
+        "parameters": [
+          {
+            "name": "file_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "File Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -10693,6 +10832,9 @@
           "tax": {
             "$ref": "#/components/schemas/TaxSettings"
           },
+          "watch": {
+            "$ref": "#/components/schemas/WatchSettings"
+          },
           "env_overrides": {
             "items": {
               "type": "string"
@@ -14377,6 +14519,334 @@
           "type"
         ],
         "title": "ValidationError"
+      },
+      "WatchFile": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "path": {
+            "type": "string",
+            "title": "Path"
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "imported",
+              "known",
+              "failed",
+              "ignored"
+            ],
+            "title": "Outcome"
+          },
+          "code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Code"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "hint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hint"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "statement",
+                  "tax"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kind"
+          },
+          "folder_person": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Folder Person"
+          },
+          "user_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User Id"
+          },
+          "statement_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Statement Id"
+          },
+          "tax_document_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tax Document Id"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Warnings"
+          },
+          "first_seen": {
+            "type": "string",
+            "title": "First Seen"
+          },
+          "last_seen": {
+            "type": "string",
+            "title": "Last Seen"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "path",
+          "outcome",
+          "first_seen",
+          "last_seen"
+        ],
+        "title": "WatchFile"
+      },
+      "WatchFileList": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/WatchFile"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items",
+          "total"
+        ],
+        "title": "WatchFileList"
+      },
+      "WatchScanStarted": {
+        "properties": {
+          "started": {
+            "type": "boolean",
+            "title": "Started"
+          },
+          "status": {
+            "$ref": "#/components/schemas/WatchStatus"
+          }
+        },
+        "type": "object",
+        "required": [
+          "started",
+          "status"
+        ],
+        "title": "WatchScanStarted"
+      },
+      "WatchScanSummary": {
+        "properties": {
+          "started_at": {
+            "type": "string",
+            "title": "Started At"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "scanned": {
+            "type": "integer",
+            "title": "Scanned"
+          },
+          "imported": {
+            "type": "integer",
+            "title": "Imported"
+          },
+          "known": {
+            "type": "integer",
+            "title": "Known"
+          },
+          "failed": {
+            "type": "integer",
+            "title": "Failed"
+          },
+          "ignored": {
+            "type": "integer",
+            "title": "Ignored"
+          },
+          "waiting": {
+            "type": "integer",
+            "title": "Waiting"
+          },
+          "busy": {
+            "type": "boolean",
+            "title": "Busy",
+            "default": false
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "started_at",
+          "scanned",
+          "imported",
+          "known",
+          "failed",
+          "ignored",
+          "waiting"
+        ],
+        "title": "WatchScanSummary"
+      },
+      "WatchSettings": {
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled",
+            "default": false
+          },
+          "interval_seconds": {
+            "type": "integer",
+            "title": "Interval Seconds",
+            "default": 60
+          },
+          "watched_folder": {
+            "type": "string",
+            "title": "Watched Folder",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "title": "WatchSettings",
+        "description": "`[watch]`: import PDFs put into the documents folder by hand, in the background."
+      },
+      "WatchStatus": {
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled"
+          },
+          "interval_seconds": {
+            "type": "integer",
+            "title": "Interval Seconds"
+          },
+          "documents_dir": {
+            "type": "string",
+            "title": "Documents Dir"
+          },
+          "running": {
+            "type": "boolean",
+            "title": "Running"
+          },
+          "next_scan_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Scan At"
+          },
+          "last_scan": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WatchScanSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "problem": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Problem"
+          }
+        },
+        "type": "object",
+        "required": [
+          "enabled",
+          "interval_seconds",
+          "documents_dir",
+          "running"
+        ],
+        "title": "WatchStatus"
       }
     }
   },
