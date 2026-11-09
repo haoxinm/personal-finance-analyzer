@@ -119,7 +119,7 @@ def test_each_layer_yields_its_own_candidate(session: Session, fake_llm: FakeLLM
     assert builtin.label == "COSTCO"
     assert (issuer.category_key, issuer.subcategory_key) == FLIGHTS
     assert issuer.label == "AIRLINES"
-    assert result.conflict is True
+    assert result.conflict is False  # the user's own rule wins: they already decided
     assert fake_llm.requests == []
 
 
@@ -150,6 +150,38 @@ def test_legacy_user_pin_ranks_below_user_rules_and_above_builtin(session: Sessi
 
     assert _sources(result) == ["user_rule", "user_rule", "builtin_rule"]
     assert [c.category_key for c in result.candidates] == ["restaurant", "fuel", "grocery"]
+
+
+def test_a_winning_user_rule_or_pin_settles_the_row_but_other_layers_still_conflict(
+    session: Session,
+) -> None:
+    """Regression: old LLM merchant-map rows and overridden built-ins kept rows the user had
+    settled with a rule flagged as conflicting."""
+    seed = base(session)
+    sync_builtin_rules(session)
+    _rule(session, seed, "costco", DINING)
+    _map(session, "costco whse", GAS, source="llm")
+    ruled = _txn(session, seed, 1, "costco whse")
+    pinned = _txn(session, seed, 2, "costco pin")
+    _map(session, "costco pin", GAS, source="user")
+    unruled = _txn(session, seed, 3, "costco other")
+    session.flush()
+    session.query(Rule).filter(Rule.source == "user").delete()  # unruled: builtin vs the LLM map
+    _map(session, "costco other", GAS, source="llm")
+    session.flush()
+
+    sets = candidates.candidates_for_transactions(session, [ruled, pinned, unruled])
+
+    assert sets[unruled.id].conflict is True  # builtin wins, the LLM cache disagrees
+    # re-create the user rule: now the same row is settled
+    _rule(session, seed, "costco", DINING)
+    sets = candidates.candidates_for_transactions(session, [ruled, pinned, unruled])
+    assert sets[ruled.id].conflict is False
+    assert sets[pinned.id].conflict is False
+    assert sets[unruled.id].conflict is False
+    assert len(sets[ruled.id].candidates) >= 2  # the chips are still offered
+    flags = candidates.conflict_flags(session, [Transaction.id > 0])
+    assert not any(flags[i] for i in (ruled.id, pinned.id, unruled.id))
 
 
 def test_conflict_needs_two_distinct_categories(session: Session) -> None:

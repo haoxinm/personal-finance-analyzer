@@ -380,7 +380,11 @@ class CandidateResolver:
                 found_current = True
             marked.append(candidate)
         distinct = {candidate.pair for candidate in marked}
-        return CandidateSet(candidates=tuple(marked), conflict=len(distinct) >= 2)
+        # A user rule (or user-pinned merchant) that wins already is the user's decision: the
+        # lower layers disagreeing with it is not something left to settle, so no conflict flag
+        # (the chips remain available).
+        settled = bool(marked) and marked[0].source == SOURCE_USER_RULE
+        return CandidateSet(candidates=tuple(marked), conflict=len(distinct) >= 2 and not settled)
 
     def conflict(self, f: TxnFacts) -> bool:
         """`resolve(f).conflict`, skipping the work for rows that can never conflict."""

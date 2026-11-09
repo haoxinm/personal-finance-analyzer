@@ -379,14 +379,19 @@ def _matching_ids(
     return [i for i in ids if flags.get(i, False) is filters.conflict]
 
 
+_IN_CHUNK = 500
+
+
 def _by_ids(session: Session, ids: Sequence[int]) -> list[Transaction]:
     """The transactions for `ids`, in `ids` order (ids that vanished are dropped)."""
     if not ids:
         return []
-    found = {
-        t.id: t
-        for t in session.execute(select(Transaction).where(Transaction.id.in_(ids))).scalars()
-    }
+    found: dict[int, Transaction] = {}
+    # Chunked: an unfiltered export can match more ids than SQLite's bound-variable limit.
+    for start in range(0, len(ids), _IN_CHUNK):
+        chunk = ids[start : start + _IN_CHUNK]
+        for t in session.execute(select(Transaction).where(Transaction.id.in_(chunk))).scalars():
+            found[t.id] = t
     return [found[i] for i in ids if i in found]
 
 
