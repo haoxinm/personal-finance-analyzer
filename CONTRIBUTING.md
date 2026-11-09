@@ -19,7 +19,7 @@ commands above are identical everywhere; on Windows use PowerShell or Git Bash, 
 `uv run <cmd>` rather than activating the virtualenv by hand (or run
 `.venv\Scripts\Activate.ps1`). Install Node.js 22+ only if you touch `frontend/` or build a wheel.
 Set `PYTHONUTF8=1` if you see encoding errors reading fixtures on Windows. The tests never touch a
-real credential store (`keyring` is mocked) or your real data directory (`SPEND_ANALYZER_HOME` is
+real credential store (`keyring` is mocked) or your real data directory (`PFA_HOME` is
 redirected per test), so no keyring backend is needed just to run the suite. When writing code,
 build paths with `pathlib` (never string-splitting on `/`), open text files with an explicit
 `encoding="utf-8"`, and don't rely on POSIX permission bits (`chmod`) or on replacing a file that
@@ -29,7 +29,7 @@ may be open — mark genuinely POSIX-only tests with
 ## Testing LLM code
 
 No test makes a network call. `tests/llm_fakes.py` provides `FakeLLM`, which replaces
-`spend_analyzer.llm.client._post`, records every request body, URL and header, and answers in
+`personal_finance_analyzer.llm.client._post`, records every request body, URL and header, and answers in
 whichever wire format the config asks for (`openai_chat`, `openai_responses`,
 `anthropic_messages`). Use `install(monkeypatch, fake)` to swap it in, `remote_cfg(...)` for an
 `LLMConfig` pointing at a fake remote host, and queue replies (a string, a `(status, body)` tuple, or
@@ -98,8 +98,8 @@ pre-commit hook (`scripts/check_no_statements.py`) that rejects any `.pdf` outsi
 
 This is the most likely contribution. A new layout needs, and needs only:
 
-1. **One parser file** under `src/spend_analyzer/ingest/parsers/`, implementing the
-   `StatementParser` protocol (`src/spend_analyzer/core/types.py`): an `id`, a `detect()` that
+1. **One parser file** under `src/personal_finance_analyzer/ingest/parsers/`, implementing the
+   `StatementParser` protocol (`src/personal_finance_analyzer/core/types.py`): an `id`, a `detect()` that
    scores a document by *structure* (never by bank name), and a `parse()` that returns a
    `ParsedStatement`. Reuse the shared primitives in `ingest/layout.py` for money parsing, row
    clustering, column bands, and year inference — never parse money or dates ad hoc.
@@ -130,7 +130,7 @@ Tax forms (W-2, 1099, 1040) have their own parser family, registry and fixtures,
 separate from statement parsers (see [docs/TAX.md](docs/TAX.md) for what the existing ones read).
 A new form needs:
 
-1. **One parser module** under `src/spend_analyzer/ingest/tax/parsers/` exposing a module-level
+1. **One parser module** under `src/personal_finance_analyzer/ingest/tax/parsers/` exposing a module-level
    `PARSER` object that satisfies the `TaxFormParser` protocol (`core/tax_types.py`): `id`,
    `version`, `form_types`, `detect(doc)` (a structure-based score in [0, 1]; it must never raise)
    and `parse(doc, *, tax_year=None)` returning a `ParsedTaxDocument`. A module whose name starts
@@ -175,7 +175,7 @@ rejected.
 
 A layout spec is the declarative (YAML), no-code alternative to a parser file — produced by the
 web UI's layout mapper, or written by hand and validated the same way. See
-`src/spend_analyzer/ingest/layout_spec.py` and `layout_spec.schema.json` for the format, and
+`src/personal_finance_analyzer/ingest/layout_spec.py` and `layout_spec.schema.json` for the format, and
 `tests/ingest/test_layout_spec.py` / `tests/ingest/specs/` for worked examples. A spec is
 validated against the JSON Schema and every regex in it is length-capped and screened for
 catastrophic backtracking before it is ever run — a spec is untrusted input even once approved, so

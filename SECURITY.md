@@ -2,7 +2,7 @@
 
 ## Threat model summary
 
-Spend Analyzer is a single-user, single-machine program: one local process, one local SQLite
+Personal Finance Analyzer is a single-user, single-machine program: one local process, one local SQLite
 database, one local web server. There is no multi-tenant deployment, no authentication beyond
 "whoever can reach `127.0.0.1` on this machine," and no server component running anywhere but the
 user's own computer (see the non-goals in the design record — hosted/multi-tenant deployment and
@@ -14,7 +14,7 @@ Given that, the threats this project actually defends against are:
    Binding `127.0.0.1` alone does not stop this — DNS rebinding lets a page's script address
    `127.0.0.1` directly once resolved, and a same-origin-looking `<form>` POST needs no CORS
    preflight. Mitigated by a `Host` header allowlist and a per-launch random token required on
-   every `/api` request (`src/spend_analyzer/api/security.py`).
+   every `/api` request (`src/personal_finance_analyzer/api/security.py`).
 2. **Statement or transaction data leaking more than intended to an LLM endpoint.** The core
    promise is that, by default, nothing leaves the machine, and that an LLM you enable sees only
    what you chose. There are exactly two egress seams: `classify/llm/egress.py` sends only
@@ -35,7 +35,7 @@ Given that, the threats this project actually defends against are:
    length-capped and screened for catastrophic backtracking before it is ever executed).
 4. **A secret (an LLM API key) ending up somewhere it shouldn't.** Mitigated by storing it only in
    the OS credential store (macOS Keychain, Windows Credential Manager, Linux Secret Service; or the
-   `SPEND_ANALYZER_LLM_API_KEY` environment variable on headless machines), never in the database
+   `PFA_LLM_API_KEY` environment variable on headless machines), never in the database
    or `config.toml`, and by a defensive log filter that
    redacts anything key-shaped even if it reached a log call by some other path.
 
@@ -46,7 +46,7 @@ Given that, the threats this project actually defends against are:
    database, logs or extract cache, and the uploaded PDF is deleted unless
    `[privacy] store_tax_pdf_copies` is turned on; balances are never exported or sent anywhere.
 
-6. **A backup file leaking.** `spend-analyzer backup create` and Settings -> Backup & restore bundle
+6. **A backup file leaking.** `pfa backup create` and Settings -> Backup & restore bundle
    the database, kept PDFs and settings into one file to carry to another machine, so the file holds
    everything the app knows. It is encrypted with a passphrase by default (scrypt + AES-256-GCM,
    authenticated, so tampering is detected), never contains the keychain API key or

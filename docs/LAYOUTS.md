@@ -1,8 +1,8 @@
 # Statement layouts
 
-Spend Analyzer identifies a statement's **layout** — its column and section structure — and keeps
+Personal Finance Analyzer identifies a statement's **layout** — its column and section structure — and keeps
 that separate from **who issued it**. No bank name is hard-coded anywhere in the code, fixtures,
-or tests; issuers are your own local data (`spend-analyzer issuers`), matched by substring against
+or tests; issuers are your own local data (`pfa issuers`), matched by substring against
 each issuer's `match_terms` on the statement's first page.
 
 Every layout, and the generic fallback, shares a few rules (owned by `ingest/layout.py`):
@@ -22,7 +22,7 @@ Every layout, and the generic fallback, shares a few rules (owned by `ingest/lay
 
 > **Layouts the templates don't handle.** The recommended path for a statement none of these
 > layouts (or a saved layout spec) fits is the **LLM extractor**: choose it for that statement in
-> Spending › Import, or `spend-analyzer import x.pdf --parser-id llm --pages 1-3`. It is opt-in per
+> Spending › Import, or `pfa import x.pdf --parser-id llm --pages 1-3`. It is opt-in per
 > statement, sends only the pages you select (redacted: card/account numbers masked, emails and PII
 > terms removed) to your configured endpoint — a local model keeps everything on your machine — and
 > is never auto-confirmed. See the [README](../README.md#using-an-llm-local-or-remote). The
@@ -86,7 +86,7 @@ confident, nothing is silently guessed:
 ## Adding a new built-in layout
 
 See [CONTRIBUTING.md](../CONTRIBUTING.md#adding-a-parser) for the full walkthrough. In short: one
-parser file under `src/spend_analyzer/ingest/parsers/`, one `LayoutBuilder` describing its column
+parser file under `src/personal_finance_analyzer/ingest/parsers/`, one `LayoutBuilder` describing its column
 bands, one golden fixture set, and one row added to the cross-`detect()` matrix that checks every
 parser scores every other layout's fixtures below its own — so a new layout can't accidentally
 start claiming another layout's statements.

@@ -1,18 +1,24 @@
 # CLI reference
 
 Every command reads/writes the local database in the data directory (see
-[INSTALL.md](INSTALL.md#data-location); override with `SPEND_ANALYZER_HOME`). None of them make a
+[INSTALL.md](INSTALL.md#data-location); override with `PFA_HOME`). None of them make a
 network call unless you've enabled an LLM and run `classify`, `import` with the LLM extractor,
 `doctor`, or `llm test`, or you run `tax params update` (one plain `GET` of the public tax
 parameter file, no user data). Commands work the same on Windows, macOS and Linux.
 
-Run `spend-analyzer --help` or `spend-analyzer <command> --help` at any time for the exact,
+The command is `pfa`; `personal-finance-analyzer` is the same program under its long name. The
+former name, `spend-analyzer`, still works as a deprecated alias that prints one line on stderr
+(`spend-analyzer has been renamed to pfa; ...`) and will be removed in a future release. Environment
+variables use the `PFA_` prefix (`PFA_HOME`, `PFA_LLM_API_KEY`, `PFA_LLM__MODEL`, `PFA_TAX__AUTO_UPDATE_PARAMS`,
+...); the old `SPEND_ANALYZER_` names are still read, and `PFA_` wins when both are set.
+
+Run `pfa --help` or `pfa <command> --help` at any time for the exact,
 current option list — this page shows the common case for each command.
 
 ## `migrate`
 
 ```console
-$ spend-analyzer migrate
+$ pfa migrate
 Database migrated and taxonomy synced.
 ```
 
@@ -23,8 +29,8 @@ run repeatedly, and required after every upgrade.
 ## `serve`
 
 ```console
-$ spend-analyzer serve
-Spend Analyzer is running at http://127.0.0.1:8756/?token=<per-launch token>
+$ pfa serve
+Personal Finance Analyzer is running at http://127.0.0.1:8756/?token=<per-launch token>
 ```
 
 Starts the local web server. Binds `127.0.0.1` only, mints a fresh random token for this one run,
@@ -34,7 +40,7 @@ and opens your browser to it automatically (`--no-open-browser` to skip that). S
 ## `import`
 
 ```console
-$ spend-analyzer import statement.pdf --user-id 1
+$ pfa import statement.pdf --user-id 1
 ```
 
 Imports one or more statement PDFs (globs are expanded by your shell, not by this command).
@@ -43,9 +49,9 @@ persists the transactions in the same step. When it isn't confident, the stateme
 `awaiting_extractor` and the exact confirming command is printed:
 
 ```console
-$ spend-analyzer import statement.pdf --user-id 1
+$ pfa import statement.pdf --user-id 1
 statement.pdf: statement #7 awaiting_extractor (detect_score=0.4); confirm with:
-  spend-analyzer import statement.pdf --user-id 1 --issuer-id 3 --parser-id layout_a_credit
+  pfa import statement.pdf --user-id 1 --issuer-id 3 --parser-id layout_a_credit
 ```
 
 Options: `--user-id`, `--issuer-id` / `--parser-id` / `--layout-spec-id` (pin the extractor
@@ -65,20 +71,20 @@ to that endpoint** after redaction (card/account numbers masked to the last 4, e
 auto-confirmed — you choose the pages and confirm explicitly:
 
 ```console
-$ spend-analyzer import odd-statement.pdf --user-id 1
+$ pfa import odd-statement.pdf --user-id 1
 odd-statement.pdf: statement #8 awaiting_extractor ...; confirm with:
-  spend-analyzer import odd-statement.pdf --user-id 1 --parser-id llm --pages 1-4
-$ spend-analyzer import odd-statement.pdf --user-id 1 --parser-id llm --pages 2-3
+  pfa import odd-statement.pdf --user-id 1 --parser-id llm --pages 1-4
+$ pfa import odd-statement.pdf --user-id 1 --parser-id llm --pages 2-3
 ```
 
 To see the exact text that would be sent first, use the Spending › Import screen's preview
-(`GET /api/statements/{id}/llm-preview`). Set `spend-analyzer llm set --default-extractor llm` to
+(`GET /api/statements/{id}/llm-preview`). Set `pfa llm set --default-extractor llm` to
 make the LLM the default for new imports.
 
 ## `classify`
 
 ```console
-$ spend-analyzer classify
+$ pfa classify
   40/40 classified ($0.0000)
 Classified 38 transaction(s); 2 need review; 1 LLM request(s); $0.0012 spent.
 ```
@@ -92,12 +98,12 @@ lands in the Review queue with `needs_review=true` instead.
 
 Configures the one LLM endpoint used for classification and (opt-in, per statement) statement
 parsing. Every subcommand edits `config.toml`, and **changes take effect immediately, even for a
-running `spend-analyzer serve`** — the file is re-read on every request. The same settings are on
+running `pfa serve`** — the file is re-read on every request. The same settings are on
 the web UI's Settings screen, and as `[llm]` in `config.toml` (README: [Using an LLM](../README.md#using-an-llm-local-or-remote)).
 
 ```console
-$ spend-analyzer llm show
-config file: /home/you/.local/share/spend-analyzer/config.toml
+$ pfa llm show
+config file: /home/you/.local/share/personal-finance-analyzer/config.toml
 enabled: true
 base_url: "http://localhost:11434"
 api_format: "openai_chat"
@@ -138,17 +144,17 @@ Changes only the options you pass.
 
 ```console
 # Local (nothing leaves this machine)
-$ spend-analyzer llm set --preset ollama --model llama3.1 --enable
-$ spend-analyzer llm set --preset lm-studio --model qwen2.5-7b-instruct --enable
+$ pfa llm set --preset ollama --model llama3.1 --enable
+$ pfa llm set --preset lm-studio --model qwen2.5-7b-instruct --enable
 
 # Remote
-$ spend-analyzer llm set --preset openai --model gpt-4.1-mini --enable
-$ spend-analyzer llm set-key
-$ spend-analyzer llm set --preset anthropic --model claude-sonnet-4-5 --max-tokens 4096 --enable
-$ spend-analyzer llm set-key
+$ pfa llm set --preset openai --model gpt-4.1-mini --enable
+$ pfa llm set-key
+$ pfa llm set --preset anthropic --model claude-sonnet-4-5 --max-tokens 4096 --enable
+$ pfa llm set-key
 
 # Any OpenAI-compatible server (vLLM, llama.cpp, a gateway) with a custom path and extras
-$ spend-analyzer llm set --base-url http://gpu-box:8000 --format openai_chat \
+$ pfa llm set --base-url http://gpu-box:8000 --format openai_chat \
       --path /openai/v1/chat/completions --model my-model --temperature 0 \
       --reasoning-effort low --extra-body '{"top_p": 0.9}' --extra-header X-Team=finance --enable
 ```
@@ -161,34 +167,34 @@ turns it off. While it is off, nothing is ever sent anywhere.
 ### `llm set-key` / `llm clear-key`
 
 ```console
-$ spend-analyzer llm set-key                       # hidden prompt, for the configured base URL
-$ printf '%s' "$KEY" | spend-analyzer llm set-key  # or from stdin
-$ spend-analyzer llm set-key --base-url https://api.openai.com
-$ spend-analyzer llm clear-key
+$ pfa llm set-key                       # hidden prompt, for the configured base URL
+$ printf '%s' "$KEY" | pfa llm set-key  # or from stdin
+$ pfa llm set-key --base-url https://api.openai.com
+$ pfa llm clear-key
 ```
 
 Stores/removes the API key in the OS credential store (macOS Keychain, Windows Credential Manager,
 Linux Secret Service), **one key per host**, so a key saved for one endpoint is never sent to
 another. Local servers usually need none. On a headless machine without a credential store, set
-the `SPEND_ANALYZER_LLM_API_KEY` environment variable instead.
+the `PFA_LLM_API_KEY` environment variable instead.
 
 ### `llm test`
 
 ```console
-$ spend-analyzer llm test
+$ pfa llm test
 OK  ...
 ```
 
 Makes one real round trip to the configured endpoint; exit code 1 on failure (the message says why:
 unreachable, 401, unknown model, wrong path/format, ...).
 
-Environment overrides (take precedence over `config.toml`): `SPEND_ANALYZER_LLM__<FIELD>` (for
-example `SPEND_ANALYZER_LLM__MODEL`), and `SPEND_ANALYZER_LLM_API_KEY`.
+Environment overrides (take precedence over `config.toml`): `PFA_LLM__<FIELD>` (for
+example `PFA_LLM__MODEL`), and `PFA_LLM_API_KEY`.
 
 ## `report`
 
 ```console
-$ spend-analyzer report --from 2026-01-01 --to 2026-01-31
+$ pfa report --from 2026-01-01 --to 2026-01-31
 Period   Category       Currency  Total   Count  Avg
 -------  -------------  --------  ------  -----  -----
 2026-01  groceries      USD       412.33  14     29.45
@@ -209,7 +215,7 @@ computed, is in [TAX.md](TAX.md).
 ### `tax import`
 
 ```console
-$ spend-analyzer tax import w2-2024.pdf composite-1099-2024.pdf return-2024.pdf
+$ pfa tax import w2-2024.pdf composite-1099-2024.pdf return-2024.pdf
 w2-2024.pdf: tax document #1 -> parsed (2024: w2) 3 income / 5 tax item(s)
 composite-1099-2024.pdf: tax document #2 -> parsed (2024: 1099-consolidated) 8 income / 1 tax item(s)
 return-2024.pdf: tax document #3 -> parsed (2024: 1040) 6 income / 7 tax item(s)
@@ -222,9 +228,9 @@ print its year) and `--no-llm` (skip the optional LLM fallback for this run; see
 different file is skipped:
 
 ```console
-$ spend-analyzer tax import w2-2024.pdf
+$ pfa tax import w2-2024.pdf
 w2-2024.pdf: tax document #1 -> duplicate
-$ spend-analyzer tax import w2-copy.pdf
+$ pfa tax import w2-copy.pdf
 w2-copy.pdf: tax document #4 -> parsed (2024: w2) 0 income / 0 tax item(s), skipped 1 duplicate form(s)
   warning: 1 form(s) in this file were already imported from another file and were skipped.
 ```
@@ -234,11 +240,11 @@ the command exits 1 (other files in the same call are still imported). A correct
 with a warning:
 
 ```console
-$ spend-analyzer tax import w2-corrected.pdf scanned.pdf
+$ pfa tax import w2-corrected.pdf scanned.pdf
 w2-corrected.pdf: tax document #5 -> parsed (2024: w2) 3 income / 5 tax item(s)
   warning: Form is marked as corrected; it may replace a form imported earlier.
 scanned.pdf: tax document #6 -> unsupported: This PDF doesn't look like a supported tax form (W-2, 1099, 1040).
-$ spend-analyzer tax import --tax-year 2024 no-year-printed.pdf
+$ pfa tax import --tax-year 2024 no-year-printed.pdf
 ```
 
 The uploaded PDF is not kept unless `[privacy] store_tax_pdf_copies = true` (see
@@ -248,7 +254,7 @@ pointer to this command instead of storing it.
 ### `tax list`
 
 ```console
-$ spend-analyzer tax list
+$ pfa tax list
 id  year  forms              status  warnings
 --  ----  -----------------  ------  --------
 3   2024  1040               parsed  0
@@ -263,7 +269,7 @@ with `tax delete`.
 ### `tax report`
 
 ```console
-$ spend-analyzer tax report --year 2024
+$ pfa tax report --year 2024
 Tax year 2024  (income basis: return; 3 document(s), 3 form(s))
   Income
     Wages and salary               90000.00
@@ -314,7 +320,7 @@ out; rates print `n/a` when they can't be computed. Options: `--year` (default: 
 a spreadsheet:
 
 ```console
-$ spend-analyzer tax report --year 2024 --csv
+$ pfa tax report --year 2024 --csv
 tax_year,section,category,amount_minor
 2024,income,salary_wages,8543210
 2024,income,interest,144456
@@ -352,7 +358,7 @@ report for those.
 ### `tax estimate`
 
 ```console
-$ spend-analyzer tax estimate --year 2024
+$ pfa tax estimate --year 2024
 Federal tax estimate 2024, user #1  (filing status single, from default; parameters v1, bundled)
   Income
     Wages and salary                                    85432.10
@@ -398,15 +404,15 @@ excess Social Security tax credit are listed under **payments**, not subtracted 
 ### `tax params`
 
 ```console
-$ spend-analyzer tax params show
+$ pfa tax params show
 Tax parameters in use: version 1 (bundled); bundled v1, downloaded none, imported none
 Years: 2022, 2023, 2024, 2025, 2026
 Last update check: never; automatic yearly check: off ([tax] auto_update_params)
-$ spend-analyzer tax params update
+$ pfa tax params update
 current: Parameters are up to date (version 1).
 ...
-$ spend-analyzer tax params import my-params.yaml
-$ spend-analyzer tax params clear
+$ pfa tax params import my-params.yaml
+$ pfa tax params clear
 ```
 
 The brackets, deductions and limits behind `tax estimate` and the 1040 split. `show` reports the
@@ -423,9 +429,9 @@ are described in
 ### `tax delete`
 
 ```console
-$ spend-analyzer tax delete 3
+$ pfa tax delete 3
 Deleted tax document #3.
-$ spend-analyzer tax delete 99
+$ pfa tax delete 99
 no tax document with id 99
 ```
 
@@ -436,7 +442,7 @@ corrected form.
 ## `export`
 
 ```console
-$ spend-analyzer export --output transactions.csv
+$ pfa export --output transactions.csv
 ```
 
 Exports transactions to CSV (default) or `--format json`, to a file or `-` for stdout.
@@ -447,15 +453,15 @@ the export; with neither, everything is exported.
 ## `backup`
 
 ```console
-$ spend-analyzer backup create ~/Desktop/
+$ pfa backup create ~/Desktop/
 Passphrase (needed to restore; there is no recovery if you lose it):
 Repeat for confirmation:
-Backup written to /Users/you/Desktop/spend-analyzer-2026-10-30.spendbackup (48.2 MB)
+Backup written to /Users/you/Desktop/pfa-2026-10-30.pfabackup (48.2 MB)
 Contains: 3 users, 7 accounts, 41 statements, 1893 transactions, 6 tax documents; 49 files.
-Not included: your LLM API key (it stays in this machine's keychain; run `spend-analyzer llm set-key` on the new one), the extract cache and logs.
+Not included: your LLM API key (it stays in this machine's keychain; run `pfa llm set-key` on the new one), the extract cache and logs.
 
-$ spend-analyzer backup inspect spend-analyzer-2026-10-30.spendbackup
-$ spend-analyzer backup restore spend-analyzer-2026-10-30.spendbackup
+$ pfa backup inspect pfa-2026-10-30.pfabackup
+$ pfa backup restore pfa-2026-10-30.pfabackup
 ```
 
 Moves all your data to another machine: `create` on the old one, copy the one file, `restore` on
@@ -463,7 +469,7 @@ the new one. See [Moving to another machine](../README.md#moving-to-another-mach
 
 - **`backup create OUT`** writes the database (a consistent snapshot, so it is safe while `serve`
   is running), the kept statement PDFs, layout specs and `config.toml`. `OUT` is a file, or a
-  directory to get a dated `spend-analyzer-YYYY-MM-DD.spendbackup` in. It is **encrypted with a
+  directory to get a dated `pfa-YYYY-MM-DD.pfabackup` in. It is **encrypted with a
   passphrase by default** (at least 8 characters; prompted twice, or read from the first line of
   `--passphrase-file`). `--no-encrypt` is the explicit opt-out: the file then holds your statements
   and tax forms in clear. An existing `OUT` is only replaced with `--force`. Never included: the
@@ -477,7 +483,7 @@ the new one. See [Moving to another machine](../README.md#moving-to-another-mach
   before anything is touched. If the data directory already holds data it refuses unless you pass
   `--replace`, which moves the current directory to `<name>.<timestamp>.before-restore` next to it
   (never deleted). A backup from an older version is migrated; one from a newer version is refused
-  with a message to upgrade. Stop `spend-analyzer serve` first: a database still open in another
+  with a message to upgrade. Stop `pfa serve` first: a database still open in another
   process stops the restore.
 
 All three exit 1 with a message on any problem (wrong passphrase, damaged or modified file, unknown
@@ -486,12 +492,12 @@ format). The web UI has the same two actions under Settings -> Backup & restore.
 ## `doctor`
 
 ```console
-$ spend-analyzer doctor
+$ pfa doctor
 PASS  Python version >= 3.12
 PASS  Data directory (...) writable
 PASS  Database migrated to head (0001_initial)
 PASS  Keychain read/write
-SKIP  LLM connectivity (disabled — run `spend-analyzer llm set ...` to configure)
+SKIP  LLM connectivity (disabled — run `pfa llm set ...` to configure)
 ```
 
 Diagnoses the local install: Python version, data directory permissions, migration state,
@@ -507,9 +513,9 @@ description → expected category) — used when tuning the built-in rules corpu
 ## `users`
 
 ```console
-$ spend-analyzer users list
-$ spend-analyzer users add "Alex"
-$ spend-analyzer users set-default 2
+$ pfa users list
+$ pfa users add "Alex"
+$ pfa users set-default 2
 ```
 
 Manage local users (D4: statements are imported against a user; the account itself is
@@ -519,8 +525,8 @@ auto-matched/auto-created). Most single-person installs never need this beyond t
 ## `issuers`
 
 ```console
-$ spend-analyzer issuers list
-$ spend-analyzer issuers add "My Credit Union" --match-term "MY CREDIT UNION" --match-term "MYCU"
+$ pfa issuers list
+$ pfa issuers add "My Credit Union" --match-term "MY CREDIT UNION" --match-term "MYCU"
 ```
 
 Manage issuers and their `match_terms` (§2f.4/§3.12a). Issuer names are **your own local data** —

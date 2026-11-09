@@ -1,22 +1,144 @@
-# Spend Analyzer
+# Personal Finance Analyzer
 
-Spend Analyzer turns your credit-card, debit-card, and bank-statement PDFs into a searchable,
-categorized spending history — on your own machine (macOS, Windows, or Linux). There is no account,
-no hosted service, and no server to trust with your statements. An LLM is optional, and can be a
-model running locally (Ollama, LM Studio) so nothing leaves your computer at all.
+Personal Finance Analyzer is a local-first app for understanding your own money. It turns your
+credit-card, debit-card and bank-statement PDFs into a searchable, categorized spending history;
+reads your W-2, 1099 and 1040 forms into an income and tax picture with a per-person federal tax
+estimate; tracks your net worth from the balances you enter and forecasts it forward; and can back
+everything up into one file to move to another machine. It runs entirely on your own computer
+(macOS, Windows or Linux): there is no account, no hosted service, no telemetry, and no server to
+trust with your documents. An LLM is optional, and can be a model running locally (Ollama, LM
+Studio) so that nothing leaves your computer at all.
 
 ```console
-$ pipx install spend-analyzer
-$ spend-analyzer migrate
-$ spend-analyzer import ~/Downloads/january-statement.pdf
-$ spend-analyzer classify
-$ spend-analyzer report --from 2026-01-01 --to 2026-01-31
-$ spend-analyzer serve       # opens the local web UI
+$ pipx install personal-finance-analyzer
+$ pfa migrate
+$ pfa import ~/Downloads/january-statement.pdf
+$ pfa classify
+$ pfa report --from 2026-01-01 --to 2026-01-31
+$ pfa serve       # opens the local web UI
 ```
+
+> **Upgrading from Spend Analyzer?** Your data, settings and API key carry over automatically; see
+> [Upgrading from Spend Analyzer](#upgrading-from-spend-analyzer).
+
+## What's in it
+
+The web UI is organized in four sections (plus a user bar, below); everything in it has a CLI
+counterpart except the layout mapper and the forecast.
+
+### Spending
+
+- **Import native digital PDF statements** (not scanned/OCR) from credit cards, debit cards and bank
+  accounts: one row per transaction with a signed amount in cents, a posted date and a normalized
+  merchant description. Pick which pages to keep and parse; for layouts the built-in templates
+  don't handle, map the columns by hand (a reusable layout spec) or opt in to the LLM extractor
+  for that statement. Re-importing a PDF or an overlapping period never creates duplicates.
+- **Classify every transaction** into a fixed two-level category taxonomy via a rules-first
+  cascade: kind detection, your own rules, ~120 built-in rules, the issuer's own category column,
+  a cache of past classifications, then an LLM only for what nothing local could resolve; the rest
+  lands in a **Review** queue.
+- **Keep two kinds of correction apart.** *Editing a transaction* (the edit popover, a bulk update,
+  or **Accept** on Review) changes only that transaction and always wins over every rule, the cache,
+  the LLM and any re-classify. *"Always categorize this merchant this way"* saves a rule for the
+  merchant's future transactions; it reaches existing ones only when you press "Apply to existing"
+  on the Rules screen, and never changes one you edited by hand. Precedence: one-time edits > your
+  rules > built-in rules > issuer category and merchant cache > LLM.
+- **Reconcile every import** against the statement's own printed totals and warn, rather than
+  silently accept numbers that don't add up; **never double-count a card payment** (a payment from
+  a tracked checking account is a transfer on both sides, not spend).
+- **Chart and report** spending by category over time, in the web UI or with `pfa report`.
+
+### Income & tax
+
+- **Import W-2, 1099-INT/DIV/B/NEC/MISC, consolidated 1099 and Form 1040 PDFs** (`pfa tax import`,
+  or **Income & tax › Import**) to see income by category and payer, withholding, refund or amount
+  owed, effective and all-in tax rates, and a year-over-year comparison. W-2 and 1099 forms are the
+  source of income and the 1040 the source of tax owed, so nothing is counted twice.
+- **Estimate** computes a per-person federal tax estimate ("Refund $X" / "Owe $X") from the forms
+  plus a few inputs you enter (filing status, deduction, credits, payments), with your filed 1040 as a
+  cross-check. It is a labelled estimate, not tax advice. See [docs/TAX.md](docs/TAX.md).
+
+### Net worth
+
+- **Track net worth** by entering monthly balances for checking, savings, investment and
+  credit-card accounts (several per category): a breakdown table, a pie of where your assets are
+  held, and trend lines per category and per account. A month with no entry carries the last
+  balance forward.
+- **Forecast** net worth to a year you choose from your balances, tax forms and spending, with
+  adjustable income growth, tax rate, spending growth, investment return, inflation, retirement and
+  one-off events; built-in and saved presets; nominal or starting-year dollars. A deterministic
+  illustration, not advice. See [docs/FORECAST.md](docs/FORECAST.md).
+
+### Settings
+
+- **LLM** (off by default; local or remote), **Privacy** (names and numbers to strip before any LLM
+  call), **Tax parameters** (the opt-in yearly check), and **Backup & restore**, which seals your
+  whole data directory into one passphrase-encrypted `.pfabackup` file for moving machines (see
+  [Moving to another machine](#moving-to-another-machine)).
+
+### Everyone gets their own view
+
+Every page except Settings has a user bar ("All users" plus one chip per user, a dropdown beyond
+six). The choice is kept in the `?user=` URL parameter, so a view can be bookmarked, and remembered
+in your browser between screens.
+
+## Quick start
+
+```console
+$ pipx install personal-finance-analyzer   # or: pip install personal-finance-analyzer
+$ pfa migrate               # create/upgrade the local database, sync the taxonomy
+$ pfa import statement.pdf  # extract + propose an issuer/parser; confirms automatically
+                            # when confident, otherwise prints the confirm command
+$ pfa import odd.pdf --pages 1-3,5 --parser-id llm   # optional: parse chosen pages
+                            # with your configured LLM (see "Using an LLM")
+$ pfa classify              # run the rules-first cascade over new transactions
+$ pfa report --from 2026-01-01 --to 2026-01-31
+$ pfa tax import w2-2025.pdf  # optional: income & tax from tax forms
+$ pfa serve                 # local web UI at http://127.0.0.1:<port>/?token=<token>
+```
+
+`pfa` is the command; `personal-finance-analyzer` is the same program under its long name. See
+[docs/INSTALL.md](docs/INSTALL.md) for requirements, upgrading, uninstalling and troubleshooting, and
+[docs/CLI.md](docs/CLI.md) for the full command reference.
+
+Running from a source checkout? After `git pull`, rebuild the web UI with
+`cd frontend && npm ci && npm run build` (an editable install never does; `serve` warns when the
+build is missing or stale).
+
+## Upgrading from Spend Analyzer
+
+This project was called *Spend Analyzer* (package and command `spend-analyzer`). Nothing needs to be
+exported or moved by hand. Replace the installed package, since the old and new ones both ship a
+`spend-analyzer` command:
+
+```console
+$ pipx uninstall spend-analyzer             # or: pip uninstall spend-analyzer
+$ pipx install personal-finance-analyzer    # or: pip install personal-finance-analyzer
+$ pfa migrate
+```
+
+What carries over automatically the first time you run a command that opens the database
+(`pfa migrate`, `pfa serve`, `pfa import`, ...). Read-only commands such as `pfa llm show` or
+`pfa backup inspect` never move anything; until the first of those commands runs they simply keep
+reading the old directory:
+
+| What | Before | Now |
+|---|---|---|
+| Data directory | `~/Library/Application Support/SpendAnalyzer` (macOS), `%LOCALAPPDATA%\SpendAnalyzer` (Windows), `~/.local/share/spend-analyzer` (Linux) | `.../PersonalFinanceAnalyzer`, `%LOCALAPPDATA%\PersonalFinanceAnalyzer`, `~/.local/share/personal-finance-analyzer`: the old directory is renamed in place (never copied). If that fails, or an old `spend-analyzer serve` still has the database open (stop it and restart), the old one keeps being used; if both exist the new one wins with a warning |
+| Database file | `spend.db` | `finance.db`, renamed inside whichever data directory you use |
+| Kept PDF copies | recorded by absolute path | the recorded paths are rewritten to the new directory, and copies are looked up under the current directory if a recorded path is stale |
+| LLM API key (OS credential store) | service `spend-analyzer` | service `personal-finance-analyzer`, copied on first read and the old entry deleted |
+| Environment variables | `SPEND_ANALYZER_HOME`, `SPEND_ANALYZER_LLM_API_KEY`, `SPEND_ANALYZER_<SECTION>__<FIELD>` | `PFA_HOME`, `PFA_LLM_API_KEY`, `PFA_<SECTION>__<FIELD>`; the old names still work, the new ones win |
+| Command | `spend-analyzer ...` | `pfa ...`; `spend-analyzer` remains as a deprecated alias that prints a one-line stderr notice |
+| Backups | `*.spendbackup` | `*.pfabackup`; old files can still be inspected and restored |
+| Web UI | remembered user selection | carried over in the browser |
+
+A directory you point at with `SPEND_ANALYZER_HOME` or `PFA_HOME` is never moved. Details and
+troubleshooting: [docs/INSTALL.md](docs/INSTALL.md#upgrading-from-spend-analyzer).
 
 ## Privacy model
 
-This is the reason to run this instead of a hosted budgeting app, so it comes first.
+This is the reason to run this instead of a hosted budgeting app.
 
 - **Everything runs locally.** PDF extraction, parsing, deduplication, the rules engine, the
   database, and the web UI all run as one program on your machine. There is no telemetry and no
@@ -62,13 +184,14 @@ This is the reason to run this instead of a hosted budgeting app, so it comes fi
   2026. If you set `[tax] auto_update_params = true` (**Settings › Tax parameters**, or the file), the first tax
   estimate or summary you open in a calendar year makes **one plain HTTPS `GET`** of a single
   public file, `federal_params.yaml`, from this project's GitHub repository
-  (`raw.githubusercontent.com/haoxinm/spending-analysis-from-bills/main/src/spend_analyzer/core/tax_data/federal_params.yaml`)
+  (`raw.githubusercontent.com/haoxinm/personal-finance-analyzer/main/src/personal_finance_analyzer/core/tax_data/federal_params.yaml`)
   and keeps a validated copy in your data directory, but only to ADD a tax year the app does not
   ship yet (each checked against the previous year); the figures of years the app ships are never
-  replaced. The date is stored so it is not asked again that year, whatever the outcome. The request has no query string, cookies, credentials or proxy
+  replaced. The date is stored so it is not asked again that year, whatever the outcome. The request
+  has no query string, cookies, credentials or proxy
   settings and carries none of your data (not your tax figures, not the installed version); GitHub
   sees your IP address like for any download. It never blocks the page and a network error is
-  ignored. `spend-analyzer tax params update` (or the **Check now** button in Settings › Tax parameters) does the same on
+  ignored. `pfa tax params update` (or the **Check now** button in Settings › Tax parameters) does the same on
   request, and you can instead supply your own file with `tax params import`. With the setting off,
   nothing is ever requested. See [docs/TAX.md](docs/TAX.md#where-the-parameters-come-from-and-the-opt-in-update).
 - **Tax forms stay local unless you opt in.** W-2, 1099 and 1040 PDFs are read by deterministic
@@ -90,7 +213,7 @@ This is the reason to run this instead of a hosted budgeting app, so it comes fi
   and saved presets) imports neither an LLM nor an HTTP client.
 - **Secrets** (an LLM API key) live only in your OS credential store (macOS Keychain, Windows
   Credential Manager, Linux Secret Service), keyed per host — never in the database, the config
-  file, or a log line. On a headless machine you can supply it as `SPEND_ANALYZER_LLM_API_KEY`.
+  file, or a log line. On a headless machine you can supply it as `PFA_LLM_API_KEY`.
 - **Backups are encrypted by default and never carry secrets.** `backup create` (and Settings ->
   Backup & restore) seals the archive with a passphrase (scrypt + AES-256-GCM); skipping that is an
   explicit `--no-encrypt`. The OS-keychain API key is never read into one. The archive is built
@@ -108,11 +231,11 @@ Switching computers should not mean re-importing every statement and tax form. B
 one, copy the single file, restore on the new one:
 
 ```console
-$ spend-analyzer backup create ~/Desktop/          # old machine; asks for a passphrase
-$ pipx install spend-analyzer                      # new machine
-$ spend-analyzer backup restore spend-analyzer-2026-10-30.spendbackup
-$ spend-analyzer llm set-key                       # only if you use a remote LLM that needs a key
-$ spend-analyzer serve
+$ pfa backup create ~/Desktop/          # old machine; asks for a passphrase
+$ pipx install personal-finance-analyzer                      # new machine
+$ pfa backup restore pfa-2026-10-30.pfabackup
+$ pfa llm set-key                       # only if you use a remote LLM that needs a key
+$ pfa serve
 ```
 
 The same two actions are in the web UI under **Settings -> Backup & restore**. A backup holds your
@@ -121,7 +244,7 @@ by default** because it contains everything the app knows about your finances (t
 recover a lost passphrase). It never contains your LLM API key: that stays in the OS credential
 store of the machine that made it, so enter it again on the new one. Restore checks the whole file
 before touching anything, migrates a backup made by an older version, and refuses one from a newer
-version. If the new machine already has data, `restore` needs `--replace`, which moves the existing
+version (including `.spendbackup` files made before the rename). If the new machine already has data, `restore` needs `--replace`, which moves the existing
 data directory aside to `<name>.<timestamp>.before-restore` instead of deleting it. See
 [docs/CLI.md](docs/CLI.md#backup).
 
@@ -129,9 +252,9 @@ data directory aside to `<name>.<timestamp>.before-restore` instead of deleting 
 
 The LLM is optional. It is used to classify leftover transactions and, if you choose, to parse
 statements whose layout the built-in templates don't handle. You can configure it **before or
-after `spend-analyzer serve` has started — no restart is needed.** `config.toml` is re-read on
+after `pfa serve` has started — no restart is needed.** `config.toml` is re-read on
 every request, so a running server picks up changes made from the Settings screen, from
-`spend-analyzer llm ...`, or by editing the file by hand.
+`pfa llm ...`, or by editing the file by hand.
 
 Pick whichever of these suits you; they all write the same settings.
 
@@ -139,17 +262,17 @@ Pick whichever of these suits you; they all write the same settings.
 single-model local servers such as llama.cpp or vLLM, but OpenAI and Anthropic require one):
 
 ```console
-$ spend-analyzer llm set --preset ollama --model llama3.1 --enable            # local, no key
-$ spend-analyzer llm set --preset lm-studio --model qwen2.5-7b-instruct --enable
-$ spend-analyzer llm set --preset openai --model gpt-4.1-mini --enable        # remote
-$ spend-analyzer llm set-key                                                  # prompts, hidden
-$ spend-analyzer llm set --preset anthropic --model claude-sonnet-4-5 --enable
-$ spend-analyzer llm set-key
-$ spend-analyzer llm test        # one real round trip; `llm show` prints the current settings
+$ pfa llm set --preset ollama --model llama3.1 --enable            # local, no key
+$ pfa llm set --preset lm-studio --model qwen2.5-7b-instruct --enable
+$ pfa llm set --preset openai --model gpt-4.1-mini --enable        # remote
+$ pfa llm set-key                                                  # prompts, hidden
+$ pfa llm set --preset anthropic --model claude-sonnet-4-5 --enable
+$ pfa llm set-key
+$ pfa llm test        # one real round trip; `llm show` prints the current settings
 ```
 
 Presets: `ollama`, `lm-studio`, `openai`, `openai-responses`, `anthropic`, `openrouter`. Use
-`spend-analyzer llm disable` to turn it off again.
+`pfa llm disable` to turn it off again.
 
 **2. `config.toml`** (see [INSTALL.md](docs/INSTALL.md#data-location) for where it lives):
 
@@ -171,9 +294,9 @@ default_extractor = "auto"            # "llm" makes the LLM the default for new 
 ```
 
 **3. Environment variables** override the file for one run (handy in CI or containers):
-`SPEND_ANALYZER_LLM__ENABLED=true`, `SPEND_ANALYZER_LLM__BASE_URL=...`,
-`SPEND_ANALYZER_LLM__MODEL=...` (pattern `SPEND_ANALYZER_LLM__<FIELD>`), and the API key via
-`SPEND_ANALYZER_LLM_API_KEY`.
+`PFA_LLM__ENABLED=true`, `PFA_LLM__BASE_URL=...`,
+`PFA_LLM__MODEL=...` (pattern `PFA_LLM__<FIELD>`), and the API key via
+`PFA_LLM_API_KEY`.
 
 **4. The Settings screen** in the web UI has the same fields. "Test connection" tests the values
 currently in the form, saved or not.
@@ -189,91 +312,30 @@ schema-constrained JSON and falls back automatically if the server rejects it. O
 `mode`/`provider`/`api_base` are migrated automatically. Full option list:
 [docs/CLI.md](docs/CLI.md#llm).
 
-## Quick start
+## Spending in detail
 
-```console
-$ pipx install spend-analyzer          # or: pip install spend-analyzer (Windows, macOS, Linux)
-$ spend-analyzer migrate               # create/upgrade the local database, sync the taxonomy
-$ spend-analyzer import statement.pdf  # extract + propose an issuer/parser; confirms automatically
-                                        # when confident, otherwise prints the confirm command
-$ spend-analyzer import odd.pdf --pages 1-3,5 --parser-id llm   # optional: parse chosen pages
-                                        # with your configured LLM (see "Using an LLM")
-$ spend-analyzer classify               # run the rules-first cascade over new transactions
-$ spend-analyzer report --from 2026-01-01 --to 2026-01-31
-$ spend-analyzer serve                 # local web UI at http://127.0.0.1:<port>/?token=<token>
-```
+The overview above covers what the Spending section does; the details that matter when something
+looks off:
 
-See [docs/INSTALL.md](docs/INSTALL.md) for requirements, upgrading, uninstalling, and
-troubleshooting, and [docs/CLI.md](docs/CLI.md) for the full command reference.
-
-Running from a source checkout? After `git pull`, rebuild the web UI with
-`cd frontend && npm ci && npm run build` (an editable install never does; `serve` warns when the
-build is missing or stale).
-
-## What it does
-
-- **Imports native digital PDF statements** (not scanned/OCR) from credit cards, debit cards, and
-  bank accounts, extracting one row per transaction with a signed amount in cents, a posted date,
-  and a normalized merchant description.
-- **Lets you choose what is parsed.** Pick which pages of a statement to keep and parse (the Import
-  screen shows page thumbnails; the CLI has `--pages 1-3,5`), and for layouts the templates don't
-  handle, parse them with an LLM — local or remote — after previewing the exact redacted text that
-  would be sent. Opt-in per statement; never auto-confirmed.
-- **Classifies every transaction** into a fixed two-level category/subcategory taxonomy via a
-  rules-first cascade: kind detection → your own rules → ~120 built-in high-precision rules → the
-  issuer's own category column, where the statement prints one → a cache of past classifications →
-  an LLM, only for what nothing local could resolve → an `others/uncategorized` fallback that
-  still needs your review.
-- **Keeps two kinds of correction apart.** *Editing a transaction* (the edit popover, a bulk
-  update, or **Accept** on the Review screen) is a one-time edit: it changes only that transaction,
-  it always wins over every rule, the cache, the LLM and any re-classify, and it teaches the app
-  nothing about the merchant or about future transactions. *"Always categorize “merchant” this
-  way"* (Review's second button, or "Also create a rule" in the edit popover) is the explicit
-  merchant-level action: it saves a rule for that merchant's future transactions. A rule reaches
-  transactions you already have only when you press "Apply to existing" on the Rules screen
+- **What is parsed is your choice.** The Import screen shows page thumbnails (the CLI has
+  `--pages 1-3,5`); an LLM parse previews the exact redacted text that would be sent, is opt-in per
+  statement, and is never auto-confirmed.
+- **The cascade ends in review.** Kind detection → your rules → ~120 built-in high-precision rules →
+  the issuer's own category column, where the statement prints one → a cache of past
+  classifications → an LLM, only for what nothing local could resolve → an `others/uncategorized`
+  fallback that still needs your review. The Review screen can re-run the cascade over everything
+  uncategorized.
+- **A one-time edit teaches the app nothing** about the merchant or future transactions. A rule
+  reaches transactions you already have only when you press "Apply to existing" on the Rules screen
   (which first shows how many rows it will change, and whether that spans several users or changes
-  kinds, then offers an Undo), and it never changes one you edited by hand. Undoing a Review accept
-  or a rule application never reverts something you edited afterwards. Precedence: one-time edits > your rules > built-in
-  rules > issuer category and merchant cache > LLM. Older versions silently pinned a merchant on
-  every single-transaction edit; on upgrade those pins become ordinary rules you can see, edit and
-  delete on the Rules screen (ranked after your other rules), and the transactions those pins had
-  classified are no longer treated as hand edits, so "Apply to existing" reaches them (an edit you made
-  by hand stays). The Review screen can re-run the
-  cascade over everything uncategorized.
-- **Reconciles every import** against the statement's own printed totals (section subtotals,
-  running balance, or the opening/closing balance equation, whichever the layout provides), and
-  banners a warning rather than silently accepting numbers that don't add up.
-- **Never double-counts a card payment.** A payment to a credit card from a tracked checking
-  account is classified as a transfer on both sides, not as spend — the purchase was already
-  counted on the card statement.
-- **Serves a local web UI and a CLI** for reviewing transactions, correcting categories, mapping an
-  unrecognized layout by hand, and charting spending by category over time — plus a `report`
-  command for the same numbers in a terminal.
-- **Analyzes income and taxes from your tax forms.** Import W-2, 1099-INT/DIV/B/NEC/MISC,
-  consolidated 1099 and Form 1040 PDFs (`spend-analyzer tax import`, or **Income & tax › Import** in the web UI)
-  to see income by category and payer, withholding, refund or amount owed, effective and all-in tax
-  rates, and a year-over-year comparison. W-2 and 1099 forms are the source of income, the 1040 the
-  source of tax owed, so nothing is double counted; the ordinary-versus-preferential split of
-  federal tax is a labelled estimate. **Income & tax › Estimate** computes a per-person federal tax
-  estimate ("Refund $X" / "Owe $X") from the forms plus a few inputs you enter (filing status,
-  deduction, credits, payments), with your filed 1040 as a cross-check, and the Overview says whether
-  federal tax is from the return, estimated or withholding only. See [docs/TAX.md](docs/TAX.md).
-- **Tracks net worth.** On the **Net worth** page, enter monthly balances for checking, savings, investment
-  and credit-card accounts (several accounts per category). Net worth is assets minus credit-card
-  balances, shown with a breakdown table, a pie of where your assets are held, and trend lines per
-  category and per account. A month with no entry carries the account's last balance forward.
-- **Forecasts net worth.** **Net worth › Forecast** projects net worth to a year you choose from your
-  balance entries, tax forms and spending, with adjustable income growth, tax rate, spending growth,
-  investment return, inflation, retirement and one-off events. Start from a built-in preset
-  (Conservative, Moderate, Aggressive) or save your own, enter net worth by hand for past years your
-  entries don't cover, and see the result nominal or in starting-year dollars. It is a deterministic
-  illustration, not advice. See [docs/FORECAST.md](docs/FORECAST.md).
-- **Gives each person their own view.** Every page except Settings has a user bar with user
-  chips ("All users" plus one per user, a dropdown beyond six users). Your choice is kept in the
-  `?user=` URL parameter, so a view can be bookmarked, and remembered in your browser between
-  screens.
-- **Deduplicates on import.** Re-importing the same PDF is a no-op; importing an overlapping
-  statement period never creates duplicate rows.
+  kinds, then offers an Undo), and it never changes one you edited by hand; undoing a Review accept
+  or a rule application never reverts something you edited afterwards. Older versions silently
+  pinned a merchant on every single-transaction edit; on upgrade those pins became ordinary rules
+  you can see, edit and delete on the Rules screen (ranked after your other rules), and the
+  transactions those pins had classified are no longer treated as hand edits, so "Apply to
+  existing" reaches them (an edit you made by hand stays).
+- **Reconciliation** uses whichever the layout provides: section subtotals, running balance, or
+  the opening/closing balance equation, and banners a warning when they don't add up.
 
 ## Supported statement layouts
 
@@ -300,7 +362,7 @@ the full per-layout specification and how to write one by hand.
 
 ## Supported tax forms
 
-Tax forms are a separate import path (`spend-analyzer tax import`) with their own parsers. Native
+Tax forms are a separate import path (`pfa tax import`) with their own parsers. Native
 digital, software-generated PDFs only, USD only.
 
 | Form | Role | What is read |
@@ -319,22 +381,22 @@ how they map to categories are in [docs/TAX.md](docs/TAX.md).
 ## CLI reference
 
 ```
-spend-analyzer migrate              create/upgrade the DB, sync the taxonomy and builtin rules
-spend-analyzer serve                start the local web server (binds 127.0.0.1, per-launch token)
-spend-analyzer import <pdf>...      import statement PDFs (--pages, --parser-id llm)
-spend-analyzer classify             run the classification cascade over unclassified transactions
-spend-analyzer report               print monthly category totals for a date range
-spend-analyzer export               export transactions to CSV/JSON (never includes account masks)
-spend-analyzer backup               move all data to another machine (create / inspect / restore)
-spend-analyzer llm                  configure the LLM (show / set / enable / disable / set-key / clear-key / test)
-spend-analyzer doctor               diagnose the local install: Python, data dir, DB, keychain, LLM
-spend-analyzer eval                 run the classifier evaluation harness against a labelled CSV
-spend-analyzer users                manage local users (list / add / set-default)
-spend-analyzer issuers              manage issuers (list / add), so later imports auto-confirm
-spend-analyzer tax                  income & tax analysis from tax forms (import / list / report / delete)
+pfa migrate              create/upgrade the DB, sync the taxonomy and builtin rules
+pfa serve                start the local web server (binds 127.0.0.1, per-launch token)
+pfa import <pdf>...      import statement PDFs (--pages, --parser-id llm)
+pfa classify             run the classification cascade over unclassified transactions
+pfa report               print monthly category totals for a date range
+pfa export               export transactions to CSV/JSON (never includes account masks)
+pfa backup               move all data to another machine (create / inspect / restore)
+pfa llm                  configure the LLM (show / set / enable / disable / set-key / clear-key / test)
+pfa doctor               diagnose the local install: Python, data dir, DB, keychain, LLM
+pfa eval                 run the classifier evaluation harness against a labelled CSV
+pfa users                manage local users (list / add / set-default)
+pfa issuers              manage issuers (list / add), so later imports auto-confirm
+pfa tax                  income & tax analysis from tax forms (import / list / report / delete)
 ```
 
-Run `spend-analyzer --help` or `spend-analyzer <command> --help` for full options; see
+Run `pfa --help` or `pfa <command> --help` for full options; see
 [docs/CLI.md](docs/CLI.md) for a worked example of each command.
 
 ## Documentation

@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "personal-finance-analyzer"
 version = "0.1.0"
-description = "Locally-run spend analysis for credit/debit card bills and bank statements"
+description = "Local-first personal finance: spending from statements, income and tax, net worth and forecast"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.12,<3.13"
