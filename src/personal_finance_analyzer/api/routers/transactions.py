@@ -15,6 +15,12 @@ P2-B) via `api/services/gateway.py`; a kind-only change goes through
 fields of the list, plus its `?conflict=` filter) expose what *each* classification layer would
 say about a row (`classify.candidates`), read-only and without any LLM call. Applying one is just
 a `PATCH` with that category: a one-time edit, undoable like any other.
+
+**Back to automatic.** A one-time edit is final for every automated pass, so it has an explicit
+way out: `POST /transactions/{id}/revert-to-automatic` (and `/transactions/bulk-revert-to-automatic`
+for many) drops the edit and re-runs the deterministic cascade for those rows, never the LLM
+(`classify.cascade.revert_to_automatic`). The response carries the same undo token as an accept;
+`POST /review/undo` puts the edit back.
 """
 
 from __future__ import annotations
@@ -27,9 +33,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from personal_finance_analyzer.api import schemas
-from personal_finance_analyzer.api.deps import SessionDep
+from personal_finance_analyzer.api.deps import SessionDep, SettingsDep
 from personal_finance_analyzer.api.services import crud, gateway
 from personal_finance_analyzer.classify import candidates as suggestions
+from personal_finance_analyzer.classify import cascade
 from personal_finance_analyzer.db.models import Transaction
 
 router = APIRouter(tags=["transactions"])
@@ -47,6 +54,7 @@ def _candidates_response(
             label=c.label,
             rule_id=c.rule_id,
             is_current=c.is_current,
+            is_automatic=c.is_automatic,
         )
         for c in candidate_set.candidates
     ]
@@ -243,6 +251,54 @@ def patch_transaction(
         session.commit()
 
     return _transaction_response(session, txn)
+
+
+@router.post(
+    "/transactions/{id}/revert-to-automatic", response_model=schemas.RevertToAutomaticResponse
+)
+def revert_transaction_to_automatic(
+    id: int,  # keep the name "id": the generated frontend path key derives from it
+    session: SessionDep,
+    settings: SettingsDep,
+) -> schemas.RevertToAutomaticResponse:
+    """Drop this transaction's one-time edit and re-run the deterministic cascade for it (your
+    rules, built-in rules, the issuer's label, the learned cache; uncategorized and flagged for
+    review if none answers). Never calls the LLM. 409 if the row is not currently edited by hand.
+    The undo token goes to `POST /review/undo` to restore the edit."""
+    txn = crud.get_transaction(session, id)
+    if txn is None:
+        raise HTTPException(status_code=404, detail="transaction not found")
+    result = cascade.revert_to_automatic(
+        session, [id], confidence_threshold=settings.llm.confidence_threshold
+    )
+    if not result.reverted_ids:
+        session.rollback()
+        raise HTTPException(status_code=409, detail="transaction has no one-time edit to revert")
+    session.commit()
+    session.refresh(txn)
+    return schemas.RevertToAutomaticResponse(
+        transaction=_transaction_response(session, txn),
+        undo=schemas.AcceptUndo.model_validate(result.undo, from_attributes=True),
+    )
+
+
+@router.post("/transactions/bulk-revert-to-automatic", response_model=schemas.BulkRevertResponse)
+def bulk_revert_to_automatic(
+    body: schemas.BulkRevertRequest, session: SessionDep, settings: SettingsDep
+) -> schemas.BulkRevertResponse:
+    """`revert-to-automatic` for many rows. Rows that are not edited by hand, or no longer exist,
+    are skipped and counted; the rest go back to automatic classification (no LLM call)."""
+    result = cascade.revert_to_automatic(
+        session,
+        body.transaction_ids,
+        confidence_threshold=settings.llm.confidence_threshold,
+    )
+    session.commit()
+    return schemas.BulkRevertResponse(
+        reverted=len(result.reverted_ids),
+        skipped=len(result.skipped_ids),
+        undo=schemas.AcceptUndo.model_validate(result.undo, from_attributes=True),
+    )
 
 
 @router.post("/transactions/bulk-update", response_model=schemas.BulkUpdateResponse)

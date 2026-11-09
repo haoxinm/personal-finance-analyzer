@@ -26,6 +26,10 @@ Guarantees:
 - **No drift.** Matching uses the cascade's own `first_matching_rule`, `issuer_match`,
   `USER_PIN_SOURCES` and `CACHE_SOURCES`; a test asserts the first candidate equals what the
   cascade assigns.
+- **`is_automatic`** marks the first layer's candidate: what the cascade assigns, and so what
+  `cascade.revert_to_automatic` gives an edited row back. For an edited row it is the "Automatic:
+  ..." chip next to the one-time edit; the row is handed back through that action, never by
+  clicking a chip (a chip click is always a new one-time edit).
 - **`conflict`** is true when the layers (not counting a one-time edit) name at least two distinct
   category/subcategory pairs for a row that has not been edited by hand. An edit settles the
   disagreement, so an edited row is never flagged.
@@ -88,6 +92,10 @@ class Candidate:
     label: str
     rule_id: int | None
     is_current: bool
+    #: This is the answer the row gets (or would get) with no one-time edit: the winning layer,
+    #: what "Revert to automatic" files an edited row under. Always the first layer's chip, and
+    #: absent when no layer has an answer (the row would fall back to uncategorized).
+    is_automatic: bool = False
 
     @property
     def pair(self) -> tuple[str, str]:
@@ -349,6 +357,8 @@ class CandidateResolver:
 
     def resolve(self, f: TxnFacts) -> CandidateSet:
         layers = self._layers(f)
+        if layers:
+            layers[0] = replace(layers[0], is_automatic=True)
         edited = f.classified_by == USER_CLASSIFIED
         stored = self._pair(f.category_id, f.subcategory_id)
 

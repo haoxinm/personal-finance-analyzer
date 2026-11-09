@@ -1583,6 +1583,91 @@
         }
       }
     },
+    "/transactions/{id}/revert-to-automatic": {
+      "post": {
+        "tags": [
+          "transactions"
+        ],
+        "summary": "Revert Transaction To Automatic",
+        "description": "Drop this transaction's one-time edit and re-run the deterministic cascade for it (your\nrules, built-in rules, the issuer's label, the learned cache; uncategorized and flagged for\nreview if none answers). Never calls the LLM. 409 if the row is not currently edited by hand.\nThe undo token goes to `POST /review/undo` to restore the edit.",
+        "operationId": "revert_transaction_to_automatic_api_transactions__id__revert_to_automatic_post",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RevertToAutomaticResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/transactions/bulk-revert-to-automatic": {
+      "post": {
+        "tags": [
+          "transactions"
+        ],
+        "summary": "Bulk Revert To Automatic",
+        "description": "`revert-to-automatic` for many rows. Rows that are not edited by hand, or no longer exist,\nare skipped and counted; the rest go back to automatic classification (no LLM call).",
+        "operationId": "bulk_revert_to_automatic_api_transactions_bulk_revert_to_automatic_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BulkRevertRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BulkRevertResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/transactions/bulk-update": {
       "post": {
         "tags": [
@@ -7428,6 +7513,45 @@
         ],
         "title": "BuiltinForecastPreset"
       },
+      "BulkRevertRequest": {
+        "properties": {
+          "transaction_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Transaction Ids"
+          }
+        },
+        "type": "object",
+        "required": [
+          "transaction_ids"
+        ],
+        "title": "BulkRevertRequest"
+      },
+      "BulkRevertResponse": {
+        "properties": {
+          "reverted": {
+            "type": "integer",
+            "title": "Reverted"
+          },
+          "skipped": {
+            "type": "integer",
+            "title": "Skipped"
+          },
+          "undo": {
+            "$ref": "#/components/schemas/AcceptUndo"
+          }
+        },
+        "type": "object",
+        "required": [
+          "reverted",
+          "skipped",
+          "undo"
+        ],
+        "title": "BulkRevertResponse",
+        "description": "`reverted` rows had an edit and went back to automatic; `skipped` were not edited by hand\n(or no longer exist) and are untouched. `undo` restores every reverted row."
+      },
       "BulkUpdateRequest": {
         "properties": {
           "transaction_ids": {
@@ -9984,6 +10108,23 @@
           "pii_terms"
         ],
         "title": "PrivacySettings"
+      },
+      "RevertToAutomaticResponse": {
+        "properties": {
+          "transaction": {
+            "$ref": "#/components/schemas/Transaction"
+          },
+          "undo": {
+            "$ref": "#/components/schemas/AcceptUndo"
+          }
+        },
+        "type": "object",
+        "required": [
+          "transaction",
+          "undo"
+        ],
+        "title": "RevertToAutomaticResponse",
+        "description": "`POST /transactions/{id}/revert-to-automatic`: the row, handed back to automatic\nclassification (never an LLM call), and the same undo token an accept carries\n(`POST /review/undo` puts the one-time edit back)."
       },
       "ReviewAcceptRequest": {
         "properties": {
@@ -13828,6 +13969,11 @@
           "is_current": {
             "type": "boolean",
             "title": "Is Current"
+          },
+          "is_automatic": {
+            "type": "boolean",
+            "title": "Is Automatic",
+            "default": false
           }
         },
         "type": "object",

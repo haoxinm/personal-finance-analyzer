@@ -247,6 +247,9 @@ class TransactionCandidate(_Model):
     rule_id: int | None = None
     #: This is the answer the row is filed under now (the one-time edit, for an edited row).
     is_current: bool
+    #: This is what the row gets (or, for an edited row, would get) with no one-time edit: the
+    #: winning layer. "Revert to automatic" files an edited row under it.
+    is_automatic: bool = False
 
 
 class TransactionCandidates(_Model):
@@ -400,6 +403,28 @@ class BulkUpdateRequest(_Model):
 
 class BulkUpdateResponse(_Model):
     updated: int
+
+
+class RevertToAutomaticResponse(_Model):
+    """`POST /transactions/{id}/revert-to-automatic`: the row, handed back to automatic
+    classification (never an LLM call), and the same undo token an accept carries
+    (`POST /review/undo` puts the one-time edit back)."""
+
+    transaction: Transaction
+    undo: AcceptUndo
+
+
+class BulkRevertRequest(_Model):
+    transaction_ids: list[int]
+
+
+class BulkRevertResponse(_Model):
+    """`reverted` rows had an edit and went back to automatic; `skipped` were not edited by hand
+    (or no longer exist) and are untouched. `undo` restores every reverted row."""
+
+    reverted: int
+    skipped: int
+    undo: AcceptUndo
 
 
 # --- Classify --------------------------------------------------------------------------------------

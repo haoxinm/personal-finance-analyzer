@@ -320,6 +320,50 @@ export interface paths {
         patch: operations["patch_transaction_api_transactions__id__patch"];
         trace?: never;
     };
+    "/transactions/{id}/revert-to-automatic": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Revert Transaction To Automatic
+         * @description Drop this transaction's one-time edit and re-run the deterministic cascade for it (your
+         *     rules, built-in rules, the issuer's label, the learned cache; uncategorized and flagged for
+         *     review if none answers). Never calls the LLM. 409 if the row is not currently edited by hand.
+         *     The undo token goes to `POST /review/undo` to restore the edit.
+         */
+        post: operations["revert_transaction_to_automatic_api_transactions__id__revert_to_automatic_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/transactions/bulk-revert-to-automatic": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Bulk Revert To Automatic
+         * @description `revert-to-automatic` for many rows. Rows that are not edited by hand, or no longer exist,
+         *     are skipped and counted; the rest go back to automatic classification (no LLM call).
+         */
+        post: operations["bulk_revert_to_automatic_api_transactions_bulk_revert_to_automatic_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/transactions/bulk-update": {
         parameters: {
             query?: never;
@@ -1818,6 +1862,23 @@ export interface components {
             description: string;
             params: components["schemas"]["ForecastParams"];
         };
+        /** BulkRevertRequest */
+        BulkRevertRequest: {
+            /** Transaction Ids */
+            transaction_ids: number[];
+        };
+        /**
+         * BulkRevertResponse
+         * @description `reverted` rows had an edit and went back to automatic; `skipped` were not edited by hand
+         *     (or no longer exist) and are untouched. `undo` restores every reverted row.
+         */
+        BulkRevertResponse: {
+            /** Reverted */
+            reverted: number;
+            /** Skipped */
+            skipped: number;
+            undo: components["schemas"]["AcceptUndo"];
+        };
         /**
          * BulkUpdateRequest
          * @description Edit every listed transaction one time each (no rule, no merchant memory).
@@ -2685,6 +2746,16 @@ export interface components {
             store_extract_cache: boolean;
             /** Pii Terms */
             pii_terms: string[];
+        };
+        /**
+         * RevertToAutomaticResponse
+         * @description `POST /transactions/{id}/revert-to-automatic`: the row, handed back to automatic
+         *     classification (never an LLM call), and the same undo token an accept carries
+         *     (`POST /review/undo` puts the one-time edit back).
+         */
+        RevertToAutomaticResponse: {
+            transaction: components["schemas"]["Transaction"];
+            undo: components["schemas"]["AcceptUndo"];
         };
         /** ReviewAcceptRequest */
         ReviewAcceptRequest: {
@@ -4051,6 +4122,11 @@ export interface components {
             rule_id?: number | null;
             /** Is Current */
             is_current: boolean;
+            /**
+             * Is Automatic
+             * @default false
+             */
+            is_automatic: boolean;
         };
         /**
          * TransactionCandidates
@@ -4901,6 +4977,70 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Transaction"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    revert_transaction_to_automatic_api_transactions__id__revert_to_automatic_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RevertToAutomaticResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    bulk_revert_to_automatic_api_transactions_bulk_revert_to_automatic_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BulkRevertRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BulkRevertResponse"];
                 };
             };
             /** @description Validation Error */

@@ -44,6 +44,10 @@ Precedence, highest first: one-time edit > your rules > built-in rules > merchan
    provider configured at all, D2) lands in `others/uncategorized` with `needs_review=True` —
    step 8's fallback is already built into that result, so there is no separate step here.
 
+A one-time edit (`classified_by='user'`) sits above all of these and is final for every pass of
+`classify_transactions`. The one way out is `revert_to_automatic`: it clears the edit and runs steps
+1-6 (never the LLM) for that row.
+
 "Always categorize this merchant this way" (`create_rule`) updates the merchant's own exact rule
 instead of stacking a second one, so the newest choice wins; it also patches the transaction it
 was chosen on.
@@ -900,6 +904,82 @@ def accept_review(
         transaction_id=transaction_id,
         similar_ids=tuple(applied),
         undo=AcceptUndo(transactions=tuple(snapshots), rule=rule_snapshot),
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class RevertResult:
+    """The outcome of `revert_to_automatic`: which rows went back to automatic classification,
+    which were left alone, and the token (`AcceptUndo`, so `undo_accept` replays it) that puts
+    every reverted row back as the one-time edit it was (only if it still equals what the revert
+    left: an edit made afterwards is never overwritten)."""
+
+    reverted_ids: tuple[int, ...]
+    skipped_ids: tuple[int, ...]
+    undo: AcceptUndo
+
+
+def revert_to_automatic(
+    session: Session, transaction_ids: Sequence[int], *, confidence_threshold: float
+) -> RevertResult:
+    """Hand one-time-edited rows back to automatic classification. Does not commit.
+
+    A one-time edit (`classified_by='user'`) is otherwise final: no rule change, re-classify or
+    re-import ever reconsiders the row. This is the one explicit way out. For each listed row that
+    carries an edit, the edit is dropped and the **deterministic** cascade (steps 1-6: kind,
+    your rules, legacy pins, built-in rules, issuer label, learned merchant cache / saved LLM
+    answer) is run for that row alone and its answer written with the usual provenance
+    (`user_rule`, `builtin_rule`, ..., `cache`). If no deterministic layer has an answer, the row
+    gets what the LLM phase writes for a row it could not place: `others/uncategorized`,
+    confidence 0, `needs_review=True` (a later "Re-classify" may still ask the model, because
+    that is a separate, explicit action). **This never calls the LLM or any network service**,
+    and it writes no `merchant_map` row and no hit count (`dry_run`), so the undo token is exact.
+
+    `kind` is not reverted: the parser's original kind is not stored, so a kind you changed by
+    hand stays; a rule's kind override still applies, as it would in a normal run. Ids that do
+    not exist, or are not currently edited by hand, are skipped (reported in `skipped_ids`).
+    `confidence_threshold` is the LLM setting `needs_review` is judged against.
+    """
+    user_rules, builtin_rules = _load_rule_sets(session)
+    reverted: list[int] = []
+    skipped: list[int] = []
+    snapshots: list[TransactionSnapshot] = []
+    for transaction_id in dict.fromkeys(transaction_ids):
+        txn = session.get(Transaction, transaction_id)
+        if txn is None or txn.classified_by != USER_CLASSIFIED:
+            skipped.append(transaction_id)
+            continue
+        before = _state_of(txn)
+        outcome = _classify_deterministic(
+            session, txn, user_rules=user_rules, builtin_rules=builtin_rules, dry_run=True
+        )
+        if outcome is None:
+            outcome = _Outcome(
+                category_key=_UNCATEGORIZED_CATEGORY,
+                subcategory_key=_UNCATEGORIZED_SUBCATEGORY,
+                confidence=0.0,
+                classified_by="llm",
+                needs_review_override=True,
+            )
+        below_threshold = (
+            outcome.confidence is not None and outcome.confidence < confidence_threshold
+        )
+        # The edit is dropped first so the row is an ordinary automatic one even if the write
+        # below raises half-way (the caller rolls the session back in that case).
+        txn.classified_by = None
+        _write_outcome(
+            session,
+            txn,
+            outcome,
+            needs_review=outcome.needs_review_override or below_threshold,
+        )
+        snapshots.append(TransactionSnapshot(txn.id, before, _state_of(txn)))
+        reverted.append(txn.id)
+    session.flush()
+    return RevertResult(
+        reverted_ids=tuple(reverted),
+        skipped_ids=tuple(skipped),
+        undo=AcceptUndo(transactions=tuple(snapshots), rule=None),
     )
 
 
