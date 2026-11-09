@@ -22,19 +22,25 @@ export function estimateCalc(over: Partial<TaxEstimateCalc> = {}): TaxEstimateCa
     agi_minor: 10314000,
     deduction_mode: "standard",
     deduction_minor: 1460000,
+    senior_deduction_minor: 0,
     taxable_income_minor: 8854000,
     preferential_income_minor: 180000,
     income_tax_minor: 1600000,
     ordinary_tax_minor: 1573000,
     preferential_tax_minor: 27000,
     nonrefundable_credits_minor: 0,
+    nonrefundable_credits_entered_minor: 0,
     se_tax_minor: 0,
+    net_investment_income_tax_minor: 0,
+    additional_medicare_tax_minor: 0,
     other_taxes_minor: 0,
-    refundable_credits_minor: 0,
     total_tax_minor: 1600000,
     federal_withheld_minor: 1423040,
     estimated_payments_minor: 0,
     other_payments_minor: 0,
+    refundable_credits_minor: 0,
+    additional_medicare_withheld_minor: 0,
+    excess_social_security_credit_minor: 0,
     total_payments_minor: 1423040,
     result_minor: -176960,
     refund_minor: 0,
@@ -58,6 +64,7 @@ export function taxProfile(over: Partial<TaxProfile> = {}): TaxProfile {
     deduction_mode: "standard",
     itemized_deductions_minor: 0,
     age65_or_blind_count: 0,
+    age65_count: 0,
     adjustments_minor: 0,
     other_income_minor: 0,
     capital_loss_carryover_minor: 0,
@@ -71,8 +78,8 @@ export function taxProfile(over: Partial<TaxProfile> = {}): TaxProfile {
 }
 
 export const NOT_MODELED = [
-  "alternative minimum tax",
-  "net investment income tax and Additional Medicare Tax",
+  "Alternative minimum tax.",
+  "Qualified business income deduction.",
 ];
 
 /** An individual estimate (no profile, no return) that owes $1,769.60. */
@@ -94,6 +101,7 @@ export function estimate(over: Partial<TaxEstimate> = {}): TaxEstimate {
       result_minor: calc.result_minor,
       refund_minor: calc.refund_minor,
       owed_minor: calc.owed_minor,
+      additional_medicare_withheld_minor: calc.additional_medicare_withheld_minor,
     },
     cross_check: null,
     profile: null,
@@ -146,6 +154,7 @@ export function householdEstimate(over: Partial<TaxEstimate> = {}): TaxEstimate 
       result_minor: 40000,
       refund_minor: 40000,
       owed_minor: 0,
+      additional_medicare_withheld_minor: 0,
     },
     warnings: [
       "Married filing jointly: the household's tax is computed once and allocated to each spouse by share of gross income. The allocated figure is not a separate liability.",

@@ -62,7 +62,8 @@ export function TaxParametersSection({ settings, onSave, saving }: TaxParameters
           </label>
           <p className="text-xs text-muted-foreground">
             Off by default. When on, the first tax estimate or summary you open in a calendar year checks this
-            project&apos;s GitHub repository for a newer parameter file, at most once per calendar year. The
+            project&apos;s GitHub repository for tax years the app does not have yet (it never replaces a year
+            the app already has), at most once per calendar year. The
             request sends no personal data (no tax figures, no version, no cookies); GitHub sees your IP address
             like for any download. A network error is ignored. With it off, the app never contacts anyone for
             this.

@@ -41,8 +41,8 @@ export function lastCheckedLabel(lastChecked: string | null): string {
 }
 
 const CHECK_OUTCOME_LABELS: Record<string, string> = {
-  updated: "Updated to newer figures",
-  current: "Already up to date",
+  updated: "Added new tax years",
+  current: "No new tax years",
   rejected: "Download rejected (failed validation)",
   unreachable: "Could not reach GitHub",
   pending: "Check started, not finished",

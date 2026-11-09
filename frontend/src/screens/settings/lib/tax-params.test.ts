@@ -30,8 +30,8 @@ describe("labels", () => {
 describe("checkOutcomeLabel", () => {
   it("maps every stored outcome to readable text", () => {
     expect(["updated", "current", "rejected", "unreachable", "pending"].map(checkOutcomeLabel)).toEqual([
-      "Updated to newer figures",
-      "Already up to date",
+      "Added new tax years",
+      "No new tax years",
       "Download rejected (failed validation)",
       "Could not reach GitHub",
       "Check started, not finished",

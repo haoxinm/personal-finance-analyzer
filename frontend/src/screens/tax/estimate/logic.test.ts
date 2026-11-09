@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 
 import { estimateCalc, taxProfile } from "./test-fixtures";
 import {
+  ageLimits,
   breakdownSections,
+  clampAge,
   draftFromProfile,
   draftToBody,
   filingStatusLabel,
@@ -64,7 +66,13 @@ describe("money fields", () => {
 describe("profile draft", () => {
   it("starts from the estimate's assumption without a profile", () => {
     const d = draftFromProfile(null, { filingStatus: "mfj", spouseId: 2 });
-    expect(d).toMatchObject({ filingStatus: "mfj", spouseId: 2, deductionMode: "standard", age65OrBlind: 0 });
+    expect(d).toMatchObject({
+      filingStatus: "mfj",
+      spouseId: 2,
+      deductionMode: "standard",
+      age65OrBlind: 0,
+      age65: 0,
+    });
     expect(d.money.adjustments_minor).toBe("");
   });
 
@@ -113,6 +121,47 @@ describe("profile draft", () => {
   });
 });
 
+describe("age counts", () => {
+  it("mirrors the API limits: boxes 2 (4 jointly), people aged 65 or older 1 (2 jointly)", () => {
+    expect(ageLimits("single")).toEqual({ boxes: 2, age65: 1 });
+    expect(ageLimits("hoh")).toEqual({ boxes: 2, age65: 1 });
+    expect(ageLimits("mfs")).toEqual({ boxes: 2, age65: 1 });
+    expect(ageLimits("qss")).toEqual({ boxes: 2, age65: 1 });
+    expect(ageLimits("mfj")).toEqual({ boxes: 4, age65: 2 });
+  });
+
+  it("reads the saved count and sends it in the body", () => {
+    const d = draftFromProfile(taxProfile({ age65_or_blind_count: 3, age65_count: 2, filing_status: "mfj" }), FALLBACK);
+    expect(d).toMatchObject({ age65OrBlind: 3, age65: 2 });
+    const result = draftToBody(d);
+    expect("body" in result && result.body).toMatchObject({ age65_or_blind_count: 3, age65_count: 2 });
+  });
+
+  it("clamps a draft that a change of status made invalid, and leaves a valid one alone", () => {
+    const joint = { ...draftFromProfile(null, FALLBACK), filingStatus: "mfj" as const, age65OrBlind: 4, age65: 2 };
+    expect(clampAge(joint)).toBe(joint);
+    expect(clampAge({ ...joint, filingStatus: "single" })).toMatchObject({ age65OrBlind: 2, age65: 1 });
+    // The people aged 65 or older are a subset of the boxes.
+    expect(clampAge({ ...joint, age65OrBlind: 1 })).toMatchObject({ age65OrBlind: 1, age65: 1 });
+  });
+
+  it("refuses counts the API would refuse", () => {
+    const base = draftFromProfile(null, FALLBACK);
+    const tooMany = draftToBody({ ...base, age65OrBlind: 3 });
+    expect("errors" in tooMany && tooMany.errors.age65OrBlind).toMatch(/At most 2 for single/);
+    const tooManySeniors = draftToBody({ ...base, age65OrBlind: 2, age65: 2 });
+    expect("errors" in tooManySeniors && tooManySeniors.errors.age65).toMatch(/At most 1 for single/);
+    const notSubset = draftToBody({ ...base, filingStatus: "mfj", age65OrBlind: 0, age65: 1 });
+    expect("errors" in notSubset && notSubset.errors.age65).toMatch(/subset/);
+    expect("body" in draftToBody({ ...base, filingStatus: "mfj", age65OrBlind: 4, age65: 2 })).toBe(true);
+  });
+
+  it("is part of what makes two drafts the same", () => {
+    const a = draftFromProfile(null, FALLBACK);
+    expect(sameDraft({ ...a, age65OrBlind: 1, age65: 1 }, { ...a, age65OrBlind: 1, age65: 0 })).toBe(false);
+  });
+});
+
 describe("breakdownSections", () => {
   const keys = (calc = estimateCalc()) =>
     breakdownSections(calc).flatMap((s) => s.lines.map((l) => l.key));
@@ -147,6 +196,42 @@ describe("breakdownSections", () => {
     );
     expect(k).toEqual(expect.arrayContaining(["capital", "stg", "carry-in"]));
     expect(k).not.toContain("ltg");
+  });
+
+  it("shows the senior deduction, NIIT, Additional Medicare Tax and the payments that are not withholding", () => {
+    const calc = estimateCalc({
+      senior_deduction_minor: 600000,
+      nonrefundable_credits_minor: 100,
+      nonrefundable_credits_entered_minor: 500,
+      net_investment_income_tax_minor: 76000,
+      additional_medicare_tax_minor: 90000,
+      refundable_credits_minor: 300000,
+      additional_medicare_withheld_minor: 45000,
+      excess_social_security_credit_minor: 20000,
+    });
+    const sections = breakdownSections(calc);
+    const keysOf = (section: string) => sections.find((s) => s.key === section)!.lines.map((l) => l.key);
+    expect(keysOf("taxable")).toContain("senior-deduction");
+    expect(keysOf("tax")).toEqual(
+      expect.arrayContaining(["nonrefundable", "nonrefundable-entered", "niit", "additional-medicare"]),
+    );
+    // Refundable credits are payments (never a subtraction in the tax section).
+    expect(keysOf("tax")).not.toContain("refundable");
+    expect(keysOf("payments")).toEqual([
+      "withheld",
+      "refundable",
+      "additional-medicare-withheld",
+      "excess-ss",
+      "payments",
+    ]);
+    const lines = sections.flatMap((s) => s.lines);
+    const by = (k: string) => lines.find((l) => l.key === k)!;
+    expect(by("senior-deduction")).toMatchObject({ minus: true, minor: 600000 });
+    expect(by("nonrefundable")).toMatchObject({ minus: true, minor: 100 });
+    expect(by("nonrefundable-entered")).toMatchObject({ kind: "memo", minor: 500 });
+    expect(by("refundable").minus).toBeUndefined();
+    expect(by("excess-ss")).toMatchObject({ source: "computed", minor: 20000 });
+    expect(by("additional-medicare-withheld")).toMatchObject({ source: "documents", minor: 45000 });
   });
 
   it("attributes inputs and marks subtractions", () => {

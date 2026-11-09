@@ -136,6 +136,65 @@ describe("TaxEstimateScreen", () => {
     expect(screen.queryByTestId("estimate-line-nonrefundable")).not.toBeInTheDocument();
   });
 
+  it("shows the senior deduction, NIIT, Additional Medicare Tax and the credits and payments that go with them", async () => {
+    // Refundable credits ($3,000), Additional Medicare Tax withheld ($450) and an excess Social
+    // Security credit ($200) are payments; they are not taken off the tax. $25,000 of nonrefundable
+    // credits were entered but only the $10,000 income tax can use them.
+    const calc = estimateCalc({
+      filing_status: "mfj",
+      senior_deduction_minor: 600000,
+      income_tax_minor: 1000000,
+      nonrefundable_credits_minor: 1000000,
+      nonrefundable_credits_entered_minor: 2500000,
+      net_investment_income_tax_minor: 76000,
+      additional_medicare_tax_minor: 90000,
+      other_taxes_minor: 50000,
+      // 0 (income tax less the credits) + 760 + 900 + 500 = 2,160.
+      total_tax_minor: 216000,
+      refundable_credits_minor: 300000,
+      additional_medicare_withheld_minor: 45000,
+      excess_social_security_credit_minor: 20000,
+      federal_withheld_minor: 100000,
+      // 1,000 + 3,000 + 450 + 200 = 4,650.
+      total_payments_minor: 465000,
+      result_minor: 249000,
+      refund_minor: 249000,
+      owed_minor: 0,
+    });
+    mockApi({ estimates: { 1: estimate({ calc }) } });
+    renderScreen();
+    await screen.findByTestId("estimate-breakdown");
+    const tax = within(screen.getByTestId("estimate-section-tax"));
+    const payments = within(screen.getByTestId("estimate-section-payments"));
+    expect(line("senior-deduction")).toHaveTextContent("Senior deduction");
+    expect(line("senior-deduction")).toHaveTextContent("$6,000.00");
+    expect(line("nonrefundable")).toHaveTextContent("Nonrefundable credits used");
+    expect(line("nonrefundable")).toHaveTextContent("$10,000.00");
+    expect(line("nonrefundable-entered")).toHaveTextContent("$25,000.00");
+    expect(line("niit")).toHaveTextContent("$760.00");
+    expect(line("additional-medicare")).toHaveTextContent("$900.00");
+    expect(line("total-tax")).toHaveTextContent("$2,160.00");
+    // Refundable credits are payments, not a subtraction from the tax.
+    expect(tax.queryByText("Refundable credits")).not.toBeInTheDocument();
+    expect(payments.getByText("Refundable credits")).toBeInTheDocument();
+    expect(line("refundable")).toHaveTextContent("$3,000.00");
+    expect(line("additional-medicare-withheld")).toHaveTextContent("$450.00");
+    expect(line("excess-ss")).toHaveTextContent("$200.00");
+    expect(line("payments")).toHaveTextContent("$4,650.00");
+    expect(line("result")).toHaveTextContent("Refund $2,490.00");
+    // The cards show the server's total tax as is (never reduced by the refundable credits).
+    expect(screen.getByTestId("estimate-tax-card")).toHaveTextContent("$2,160.00");
+  });
+
+  it("leaves out the entered-credits note when the credits were all used", async () => {
+    const calc = estimateCalc({ nonrefundable_credits_minor: 200000, nonrefundable_credits_entered_minor: 200000 });
+    mockApi({ estimates: { 1: estimate({ calc }) } });
+    renderScreen();
+    await screen.findByTestId("estimate-breakdown");
+    expect(line("nonrefundable")).toHaveTextContent("$2,000.00");
+    expect(screen.queryByTestId("estimate-line-nonrefundable-entered")).not.toBeInTheDocument();
+  });
+
   it("renders a refund", async () => {
     mockApi({ estimates: { 1: estimate({ calc: REFUND_CALC }) } });
     renderScreen();
@@ -150,6 +209,7 @@ describe("TaxEstimateScreen", () => {
       profile_other_income_minor: 500000,
       adjustments_minor: 100000,
       nonrefundable_credits_minor: 200000,
+      nonrefundable_credits_entered_minor: 200000,
       estimated_payments_minor: 300000,
       self_employment_minor: 2000000,
       se_tax_minor: 282000,
@@ -286,7 +346,7 @@ describe("TaxEstimateScreen", () => {
     expect(notModeled).not.toHaveAttribute("open");
     await userEvent.click(within(notModeled).getByText(/Not modeled \(2\)/));
     expect(notModeled).toHaveAttribute("open");
-    expect(notModeled).toHaveTextContent("alternative minimum tax");
+    expect(notModeled).toHaveTextContent("Alternative minimum tax.");
 
     const footnote = screen.getByTestId("estimate-parameters");
     expect(footnote).toHaveTextContent("Rev. Proc. 2023-34");
@@ -403,6 +463,7 @@ describe("profile form", () => {
     await userEvent.selectOptions(screen.getByLabelText("Deduction"), "itemized");
     await userEvent.type(screen.getByLabelText("Itemized deductions"), "$25,000");
     await userEvent.selectOptions(screen.getByLabelText("Age 65 or older / blind boxes checked"), "2");
+    await userEvent.selectOptions(screen.getByLabelText(/People aged 65 or older/), "2");
     await userEvent.type(screen.getByLabelText("Adjustments to income"), "1,234.50");
     await userEvent.type(screen.getByLabelText("Other income"), "100");
     await userEvent.type(screen.getByLabelText("Capital loss carryover"), "3000.5");
@@ -422,6 +483,7 @@ describe("profile form", () => {
         deduction_mode: "itemized",
         itemized_deductions_minor: 2500000,
         age65_or_blind_count: 2,
+        age65_count: 2,
         adjustments_minor: 123450,
         other_income_minor: 10000,
         capital_loss_carryover_minor: 300050,
@@ -435,6 +497,43 @@ describe("profile form", () => {
     // The estimate is refetched after a save.
     await waitFor(() =>
       expect(get.mock.calls.filter(([p]) => p === "/tax/estimate").length).toBeGreaterThan(1),
+    );
+  });
+
+  it("limits the age counts to what the API accepts and brings them back when the status changes", async () => {
+    mockApi({ estimates: { 1: estimate() } });
+    renderScreen();
+    const boxes = await screen.findByLabelText("Age 65 or older / blind boxes checked");
+    const seniors = screen.getByLabelText(/People aged 65 or older/);
+    const values = (el: HTMLElement) =>
+      within(el)
+        .getAllByRole("option")
+        .map((o) => o.textContent);
+    // One person: at most 2 boxes, and at most 1 person aged 65 or older (within the boxes).
+    expect(values(boxes)).toEqual(["0", "1", "2"]);
+    expect(values(seniors)).toEqual(["0"]);
+    await userEvent.selectOptions(boxes, "2");
+    expect(values(seniors)).toEqual(["0", "1"]);
+    await userEvent.selectOptions(seniors, "1");
+
+    // Jointly: up to 4 boxes and 2 seniors.
+    await userEvent.selectOptions(screen.getByLabelText("Filing status"), "mfj");
+    expect(values(boxes)).toEqual(["0", "1", "2", "3", "4"]);
+    await userEvent.selectOptions(boxes, "4");
+    expect(values(seniors)).toEqual(["0", "1", "2"]);
+    await userEvent.selectOptions(seniors, "2");
+
+    // Back to one person: the counts are clamped, never left at a value the API would refuse.
+    await userEvent.selectOptions(screen.getByLabelText("Filing status"), "single");
+    expect(boxes).toHaveValue("2");
+    expect(seniors).toHaveValue("1");
+    await userEvent.click(screen.getByRole("button", { name: "Save profile" }));
+    await waitFor(() => expect(put).toHaveBeenCalledTimes(1));
+    expect(put).toHaveBeenCalledWith(
+      "/tax/profiles/{user_id}/{tax_year}",
+      expect.objectContaining({
+        body: expect.objectContaining({ age65_or_blind_count: 2, age65_count: 1 }) as unknown,
+      }),
     );
   });
 

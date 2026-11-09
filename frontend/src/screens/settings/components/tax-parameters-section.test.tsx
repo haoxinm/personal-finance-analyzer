@@ -62,6 +62,9 @@ function parameters(over: Partial<TaxParameters> = {}): TaxParameters {
     elective_deferral_limit_minor: 0,
     niit_threshold_minor: {},
     additional_medicare_threshold_minor: {},
+    senior_deduction_minor: 0,
+    senior_phaseout_rate_bp: 0,
+    senior_phaseout_threshold_minor: {},
   });
   return {
     source: "bundled",
@@ -137,7 +140,7 @@ describe("TaxParametersSection", () => {
     expect(status).toHaveTextContent("Downloaded update");
     expect(status).toHaveTextContent("4 (bundled 3, downloaded 4)");
     expect(status).toHaveTextContent("Mar 1, 2026");
-    expect(status).toHaveTextContent("Updated to newer figures");
+    expect(status).toHaveTextContent("Added new tax years");
     expect(status).toHaveTextContent("2022-2026");
   });
 
@@ -160,7 +163,7 @@ describe("TaxParametersSection", () => {
       // The server now has the new file: later reads (the refetch after the check) report it.
       get.mockResolvedValue({ data: updated, error: undefined });
       return Promise.resolve({
-        data: { outcome: "updated", detail: "Updated to parameter version 4.", parameters: updated },
+        data: { outcome: "updated", detail: "Added tax year(s) 2027.", parameters: updated },
         error: undefined,
       });
     });
@@ -169,7 +172,7 @@ describe("TaxParametersSection", () => {
     await userEvent.click(screen.getByRole("button", { name: "Check now" }));
     await waitFor(() => expect(post).toHaveBeenCalledWith("/tax/parameters/refresh"));
     const result = await screen.findByTestId("tax-parameters-refresh-result");
-    expect(result).toHaveTextContent("Updated. Updated to parameter version 4.");
+    expect(result).toHaveTextContent("Updated. Added tax year(s) 2027.");
     await waitFor(() =>
       expect(within(screen.getByTestId("tax-parameters-status")).getByText("Downloaded update")).toBeInTheDocument(),
     );

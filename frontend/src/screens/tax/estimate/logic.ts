@@ -91,7 +91,7 @@ export const MONEY_FIELDS: readonly MoneyFieldSpec[] = [
   {
     key: "nonrefundable_credits_minor",
     label: "Nonrefundable credits",
-    help: "The part of your credits that can only reduce income tax to zero: the child tax credit or credit for other dependents (CTC/ODC), education credits, and so on. Enter the refundable part (ACTC, EITC, refundable AOTC) under refundable credits instead.",
+    help: "The part of your credits that can only reduce income tax to zero: the child tax credit or credit for other dependents (CTC/ODC), education credits, and so on. The estimate uses at most your income tax, so the excess is not refunded. Enter the refundable part (ACTC, EITC, refundable AOTC) under refundable credits instead.",
   },
   {
     key: "refundable_credits_minor",
@@ -122,7 +122,10 @@ export interface ProfileDraft {
   deductionMode: DeductionMode;
   /** The itemized total, as typed. */
   itemized: string;
+  /** Boxes checked for the additional standard deduction (age 65 or older, blind). */
   age65OrBlind: number;
+  /** How many of the people on the return are 65 or older (the 2025-2028 senior deduction). */
+  age65: number;
   /** The other dollar fields, as typed (blank = 0). */
   money: Record<MoneyKey, string>;
 }
@@ -147,18 +150,38 @@ export function draftFromProfile(
     deductionMode: profile?.deduction_mode ?? "standard",
     itemized: toInput(profile?.itemized_deductions_minor ?? 0),
     age65OrBlind: profile?.age65_or_blind_count ?? 0,
+    age65: profile?.age65_count ?? 0,
     money,
   };
 }
 
 export const MONEY_ERROR = "Enter a dollar amount of 0 or more";
 
+/** What the API accepts: boxes checked for the additional standard deduction (age 65 or older,
+ * blind) are at most 2 for one person and 4 for a joint return (both spouses); the number of
+ * people aged 65 or older is at most 1 (2 jointly) and never more than the boxes. */
+export function ageLimits(status: EstimateFilingStatus): { boxes: number; age65: number } {
+  const joint = status === "mfj";
+  return { boxes: joint ? 4 : 2, age65: joint ? 2 : 1 };
+}
+
+/** The draft's age counts brought back within the limits of its filing status (a change from a
+ * joint to another status must not leave a count the API would refuse). */
+export function clampAge(draft: ProfileDraft): ProfileDraft {
+  const limits = ageLimits(draft.filingStatus);
+  const age65OrBlind = Math.min(draft.age65OrBlind, limits.boxes);
+  const age65 = Math.min(draft.age65, limits.age65, age65OrBlind);
+  return age65OrBlind === draft.age65OrBlind && age65 === draft.age65
+    ? draft
+    : { ...draft, age65OrBlind, age65 };
+}
+
 /** Dollars as typed to cents: blank is 0, anything unreadable or negative is `null`. */
 export function parseMoneyField(raw: string): number | null {
   return raw.trim() === "" ? 0 : parseBalanceInput(raw);
 }
 
-export type DraftErrors = Partial<Record<MoneyKey | "itemized", string>>;
+export type DraftErrors = Partial<Record<MoneyKey | "itemized" | "age65OrBlind" | "age65", string>>;
 
 /** The `PUT` body for a draft (cents), or a message per unreadable field. */
 export function draftToBody(
@@ -167,6 +190,16 @@ export function draftToBody(
   const errors: DraftErrors = {};
   const itemized = parseMoneyField(draft.itemized);
   if (itemized === null) errors.itemized = MONEY_ERROR;
+  const limits = ageLimits(draft.filingStatus);
+  const status = filingStatusLabel(draft.filingStatus).toLowerCase();
+  if (draft.age65OrBlind > limits.boxes) {
+    errors.age65OrBlind = `At most ${limits.boxes} for ${status}`;
+  }
+  if (draft.age65 > limits.age65) {
+    errors.age65 = `At most ${limits.age65} for ${status}`;
+  } else if (draft.age65 > draft.age65OrBlind) {
+    errors.age65 = "Cannot be more than the boxes checked (it is a subset)";
+  }
   const money = {} as Record<MoneyKey, number>;
   for (const key of PLAIN_KEYS) {
     const value = parseMoneyField(draft.money[key]);
@@ -181,6 +214,7 @@ export function draftToBody(
       deduction_mode: draft.deductionMode,
       itemized_deductions_minor: itemized ?? 0,
       age65_or_blind_count: draft.age65OrBlind,
+      age65_count: draft.age65,
       ...money,
     },
   };
@@ -195,6 +229,7 @@ export function sameDraft(a: ProfileDraft, b: ProfileDraft): boolean {
       d.deductionMode,
       parseMoneyField(d.itemized) ?? `raw:${d.itemized}`,
       d.age65OrBlind,
+      d.age65,
       PLAIN_KEYS.map((k) => parseMoneyField(d.money[k]) ?? `raw:${d.money[k]}`),
     ]);
   return norm(a) === norm(b);
@@ -324,6 +359,9 @@ export function breakdownSections(c: TaxEstimateCalc): BreakdownSection[] {
           itemized ? "profile" : "computed",
           { minus: true, always: true },
         ),
+        ...line("senior-deduction", "Senior deduction (2025-2028)", c.senior_deduction_minor, "computed", {
+          minus: true,
+        }),
         ...total("taxable", "Taxable income", c.taxable_income_minor),
         ...memo(
           "preferential",
@@ -344,14 +382,22 @@ export function breakdownSections(c: TaxEstimateCalc): BreakdownSection[] {
           "computed",
         ),
         ...total("income-tax", "Income tax before credits", c.income_tax_minor),
-        ...line("nonrefundable", "Nonrefundable credits", c.nonrefundable_credits_minor, "profile", {
+        // The credits actually used: capped at the income tax (the server's `nonrefundable_credits_minor`).
+        ...line("nonrefundable", "Nonrefundable credits used", c.nonrefundable_credits_minor, "profile", {
           minus: true,
         }),
+        ...(c.nonrefundable_credits_entered_minor > c.nonrefundable_credits_minor
+          ? memo(
+              "nonrefundable-entered",
+              "entered, more than the income tax: the excess is not refunded",
+              c.nonrefundable_credits_entered_minor,
+              "profile",
+            )
+          : []),
         ...line("se-tax", "Self-employment tax", c.se_tax_minor, "computed"),
+        ...line("niit", "Net investment income tax", c.net_investment_income_tax_minor, "computed"),
+        ...line("additional-medicare", "Additional Medicare Tax", c.additional_medicare_tax_minor, "computed"),
         ...line("other-taxes", "Other taxes", c.other_taxes_minor, "profile"),
-        ...line("refundable", "Refundable credits", c.refundable_credits_minor, "profile", {
-          minus: true,
-        }),
         ...total("total-tax", "Total tax", c.total_tax_minor, "total"),
       ],
     },
@@ -362,6 +408,20 @@ export function breakdownSections(c: TaxEstimateCalc): BreakdownSection[] {
         ...line("withheld", "Federal tax withheld", c.federal_withheld_minor, "documents", { always: true }),
         ...line("estimated", "Estimated tax payments", c.estimated_payments_minor, "profile"),
         ...line("other-payments", "Other payments", c.other_payments_minor, "profile"),
+        // Refundable credits are payments (1040 lines 27-31), never negative tax.
+        ...line("refundable", "Refundable credits", c.refundable_credits_minor, "profile"),
+        ...line(
+          "additional-medicare-withheld",
+          "Additional Medicare Tax withheld",
+          c.additional_medicare_withheld_minor,
+          "documents",
+        ),
+        ...line(
+          "excess-ss",
+          "Excess Social Security tax credit",
+          c.excess_social_security_credit_minor,
+          "computed",
+        ),
         ...total("payments", "Total payments", c.total_payments_minor, "total"),
       ],
     },

@@ -10,6 +10,8 @@ import { FILING_STATUS_OPTIONS, errorMessage } from "../logic";
 import { useDeleteTaxProfile, useSaveTaxProfile } from "./hooks";
 import {
   MONEY_FIELDS,
+  ageLimits,
+  clampAge,
   draftFromProfile,
   draftToBody,
   sameDraft,
@@ -28,10 +30,10 @@ const DEDUCTION_OPTIONS: Array<{ value: DeductionMode; label: string }> = [
   { value: "itemized", label: "Itemized deductions" },
 ];
 
-const AGE_BLIND_OPTIONS = [0, 1, 2, 3, 4].map((n) => ({
-  value: String(n),
-  label: String(n),
-}));
+/** 0 through `max`, as select options. */
+function countOptions(max: number) {
+  return Array.from({ length: max + 1 }, (_, n) => ({ value: String(n), label: String(n) }));
+}
 
 export interface ProfileFormProps {
   userId: number;
@@ -67,9 +69,12 @@ export function ProfileForm({ userId, year, users, profile, fallback }: ProfileF
   const spouses = users.filter((u) => u.id !== userId);
 
   function patch(next: Partial<ProfileDraft>) {
-    setDraft((d) => ({ ...d, ...next }));
+    // The age counts have limits that depend on the filing status: keep them valid as it changes.
+    setDraft((d) => clampAge({ ...d, ...next }));
+    setErrors((e) => ({ ...e, age65OrBlind: undefined, age65: undefined }));
     setSaveError(null);
   }
+  const limits = ageLimits(draft.filingStatus);
   function setMoney(key: (typeof MONEY_FIELDS)[number]["key"], value: string) {
     setDraft((d) => ({ ...d, money: { ...d.money, [key]: value } }));
     setErrors((e) => ({ ...e, [key]: undefined }));
@@ -162,10 +167,26 @@ export function ProfileForm({ userId, year, users, profile, fallback }: ProfileF
             <SelectField<string>
               label="Age 65 or older / blind boxes checked"
               value={String(draft.age65OrBlind)}
-              options={AGE_BLIND_OPTIONS}
+              options={countOptions(limits.boxes)}
               onChange={(v) => patch({ age65OrBlind: Number(v) })}
             />
+            <SelectField<string>
+              label="People aged 65 or older (senior deduction, 2025-2028)"
+              value={String(draft.age65)}
+              options={countOptions(Math.min(limits.age65, draft.age65OrBlind))}
+              onChange={(v) => patch({ age65: Number(v) })}
+            />
           </div>
+          <p className="-mt-2 text-xs text-muted-foreground">
+            Check a box for each person who is 65 or older or blind. Of those, count the people who are 65 or
+            older again in the second field: only they qualify for the senior deduction. It is at most{" "}
+            {limits.age65} for {draft.filingStatus === "mfj" ? "a joint return" : "this filing status"}.
+          </p>
+          {errors.age65OrBlind || errors.age65 ? (
+            <p role="alert" className="text-xs text-destructive">
+              {errors.age65OrBlind ?? errors.age65}
+            </p>
+          ) : null}
           {draft.deductionMode === "itemized" ? (
             <MoneyField
               label="Itemized deductions"
