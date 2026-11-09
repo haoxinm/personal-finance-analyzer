@@ -11,6 +11,7 @@ import {
   useTaxParametersQuery,
 } from "../lib/hooks";
 import {
+  checkOutcomeLabel,
   coveredYearsLabel,
   lastCheckedLabel,
   parameterSourceLabel,
@@ -93,7 +94,7 @@ export function TaxParametersSection({ settings, onSave, saving }: TaxParameters
               <dt className="text-muted-foreground">Last checked</dt>
               <dd>{lastCheckedLabel(data.last_checked)}</dd>
               <dt className="text-muted-foreground">Last check outcome</dt>
-              <dd>{data.last_check_outcome ?? "—"}</dd>
+              <dd>{checkOutcomeLabel(data.last_check_outcome)}</dd>
               <dt className="text-muted-foreground">Tax years covered</dt>
               <dd>{coveredYearsLabel(data.years.map((y) => y.tax_year))}</dd>
             </dl>

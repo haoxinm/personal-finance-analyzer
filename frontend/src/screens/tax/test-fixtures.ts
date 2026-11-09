@@ -90,7 +90,7 @@ export function summary(over: Partial<TaxSummary> = {}): TaxSummary {
     amount_owed_minor: null,
     refund_or_owed_derived: false,
     federal_effective_rate: 0.1319,
-    all_in_rate: 0.2537,
+    all_in_rate: 0.2527,
     withholding_rate: 0.1261,
     document_count: 3,
     form_count: 4,

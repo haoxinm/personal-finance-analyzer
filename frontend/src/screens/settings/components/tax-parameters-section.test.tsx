@@ -137,7 +137,7 @@ describe("TaxParametersSection", () => {
     expect(status).toHaveTextContent("Downloaded update");
     expect(status).toHaveTextContent("4 (bundled 3, downloaded 4)");
     expect(status).toHaveTextContent("Mar 1, 2026");
-    expect(status).toHaveTextContent("updated");
+    expect(status).toHaveTextContent("Updated to newer figures");
     expect(status).toHaveTextContent("2022-2026");
   });
 

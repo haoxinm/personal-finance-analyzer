@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { coveredYearsLabel, lastCheckedLabel, parameterSourceLabel } from "./tax-params";
+import { checkOutcomeLabel, coveredYearsLabel, lastCheckedLabel, parameterSourceLabel } from "./tax-params";
 
 describe("coveredYearsLabel", () => {
   it("collapses runs of consecutive years", () => {
@@ -24,5 +24,19 @@ describe("labels", () => {
       "Downloaded update",
       "Your own file",
     ]);
+  });
+});
+
+describe("checkOutcomeLabel", () => {
+  it("maps every stored outcome to readable text", () => {
+    expect(["updated", "current", "rejected", "unreachable", "pending"].map(checkOutcomeLabel)).toEqual([
+      "Updated to newer figures",
+      "Already up to date",
+      "Download rejected (failed validation)",
+      "Could not reach GitHub",
+      "Check started, not finished",
+    ]);
+    expect(checkOutcomeLabel(null)).toBe("—");
+    expect(checkOutcomeLabel("weird")).toBe("weird");
   });
 });

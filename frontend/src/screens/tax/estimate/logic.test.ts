@@ -6,6 +6,7 @@ import {
   draftFromProfile,
   draftToBody,
   filingStatusLabel,
+  MONEY_FIELDS,
   parseMoneyField,
   resultKind,
   resultWord,
@@ -14,6 +15,16 @@ import {
 } from "./logic";
 
 const FALLBACK = { filingStatus: "single", spouseId: null } as const;
+
+describe("credit help text", () => {
+  const help = (key: string) => MONEY_FIELDS.find((f) => f.key === key)!.help;
+  it("sends the refundable part of a credit to the refundable field", () => {
+    expect(help("nonrefundable_credits_minor")).toMatch(/CTC\/ODC/);
+    expect(help("nonrefundable_credits_minor")).toMatch(/refundable part \(ACTC, EITC, refundable AOTC\)/);
+    expect(help("refundable_credits_minor")).toMatch(/^Refundable credits \(treated like payments\)/);
+    expect(help("refundable_credits_minor")).toMatch(/ACTC/);
+  });
+});
 
 describe("result wording", () => {
   it("is a refund when payments exceed tax, owe when they fall short", () => {

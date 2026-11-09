@@ -117,8 +117,12 @@ export function SummaryCards({ summary }: { summary: TaxSummary }) {
       </StatCard>
       <StatCard
         label="All-in rate"
-        title="Federal, FICA and state tax combined, divided by total income. Federal is the return's tax when there is one, otherwise what was withheld."
-        hint="Federal + FICA + state ÷ income"
+        title="The Total tax figure (federal + FICA + state, on the same basis as that card) divided by total income."
+        hint={
+          tax
+            ? `Total tax ÷ income (federal ${headlineBasisLabel(tax.federalBasis)})`
+            : "Total tax ÷ income"
+        }
         testId="all-in-rate-card"
       >
         {formatRate(summary.all_in_rate)}

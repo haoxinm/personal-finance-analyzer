@@ -40,6 +40,20 @@ export function lastCheckedLabel(lastChecked: string | null): string {
   return date.toLocaleDateString("en-US", { dateStyle: "medium", timeZone: "UTC" });
 }
 
+const CHECK_OUTCOME_LABELS: Record<string, string> = {
+  updated: "Updated to newer figures",
+  current: "Already up to date",
+  rejected: "Download rejected (failed validation)",
+  unreachable: "Could not reach GitHub",
+  pending: "Check started, not finished",
+};
+
+/** The stored result of the last update check as a phrase ("—" when none; unknown values pass through). */
+export function checkOutcomeLabel(outcome: string | null): string {
+  if (!outcome) return "—";
+  return CHECK_OUTCOME_LABELS[outcome] ?? outcome;
+}
+
 /** The versions of each file found, e.g. "bundled 3, downloaded 4". */
 export function versionsLabel(p: TaxParameters): string {
   const parts = [`bundled ${p.bundled_version}`];

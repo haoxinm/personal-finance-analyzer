@@ -91,12 +91,12 @@ export const MONEY_FIELDS: readonly MoneyFieldSpec[] = [
   {
     key: "nonrefundable_credits_minor",
     label: "Nonrefundable credits",
-    help: "Total of credits that can only reduce income tax to zero, such as the child tax credit or education credits.",
+    help: "The part of your credits that can only reduce income tax to zero: the child tax credit or credit for other dependents (CTC/ODC), education credits, and so on. Enter the refundable part (ACTC, EITC, refundable AOTC) under refundable credits instead.",
   },
   {
     key: "refundable_credits_minor",
     label: "Refundable credits",
-    help: "Total of credits paid out even beyond your tax, such as the earned income credit.",
+    help: "Refundable credits (treated like payments): the part of your credits paid out even beyond your tax, such as the additional child tax credit (ACTC), the earned income credit (EITC) and the refundable part of the American opportunity credit.",
   },
   {
     key: "other_taxes_minor",

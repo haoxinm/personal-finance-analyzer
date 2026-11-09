@@ -86,8 +86,13 @@ describe("TaxOverviewScreen", () => {
       within(screen.getByTestId("effective-rate-card")).getByText("13.19%"),
     ).toBeInTheDocument();
     expect(
-      within(screen.getByTestId("all-in-rate-card")).getByText("25.37%"),
+      within(screen.getByTestId("all-in-rate-card")).getByText("25.27%"),
     ).toBeInTheDocument();
+    // The all-in card names the same federal basis as the Total tax card next to it.
+    expect(screen.getByTestId("all-in-rate-card")).toHaveTextContent(
+      "Total tax ÷ income (federal from return)",
+    );
+    expect(screen.getByTestId("federal-basis")).toHaveTextContent("from return");
     expect(screen.getByTestId("basis-banner")).toHaveTextContent(
       /differ from the 1040/,
     );
