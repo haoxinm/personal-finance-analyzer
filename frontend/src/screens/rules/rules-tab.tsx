@@ -10,13 +10,13 @@ import { EmptyState, ErrorState, LoadingState } from "@/components/primitives/st
 import { cn } from "@/utils";
 
 import {
-  useApplyRule,
   useCreateRule,
   useDeleteRule,
   useRules,
   useTaxonomy,
   useUpdateRule,
 } from "./hooks";
+import { useApplyRuleFlow } from "./use-apply-rule-flow";
 import { MAX_PATTERN_LENGTH, type RuleMatchType, validatePattern } from "./rule-matching";
 import { useRuleMatchPreview } from "./use-rule-match-preview";
 
@@ -112,20 +112,18 @@ function CategorySubcategorySelect({
   );
 }
 
-/** What a rule's `Apply` reported, as a toast. */
-function applyResultTitle(updated: number): string {
-  return updated === 0
-    ? "Nothing to update"
-    : `Updated ${updated} existing transaction${updated === 1 ? "" : "s"}`;
-}
-
 function RuleCreateForm({ options }: { options: CategoryOption[] }) {
   const [form, setForm] = React.useState<RuleFormState>(EMPTY_FORM);
   // A just-created rule that would change transactions already imported: offer to apply it.
-  const [offer, setOffer] = React.useState<{ id: number; pattern: string; matches: number } | null>(null);
+  const [offer, setOffer] = React.useState<{
+    id: number;
+    pattern: string;
+    kind: string | null;
+    matches: number;
+  } | null>(null);
   const createRule = useCreateRule();
-  const applyRule = useApplyRule();
   const { toast } = useToast();
+  const applyFlow = useApplyRuleFlow(() => setOffer(null));
 
   const validation = validatePattern(form.pattern, form.matchType);
   const canSubmit = validation.valid && form.categorySubcategory !== "";
@@ -148,7 +146,11 @@ function RuleCreateForm({ options }: { options: CategoryOption[] }) {
           toast({ title: "Rule created", variant: "success" });
           setForm(EMPTY_FORM);
           const matches = rule?.existing_matches ?? 0;
-          setOffer(rule && matches > 0 ? { id: rule.id, pattern: rule.pattern, matches } : null);
+          setOffer(
+            rule && matches > 0
+              ? { id: rule.id, pattern: rule.pattern, kind: rule.kind ?? null, matches }
+              : null,
+          );
         },
         onError: (err) => {
           toast({
@@ -226,30 +228,17 @@ function RuleCreateForm({ options }: { options: CategoryOption[] }) {
           <Button
             type="button"
             size="sm"
-            disabled={applyRule.isPending}
-            onClick={() =>
-              applyRule.mutate(offer.id, {
-                onSuccess: (updated) => {
-                  toast({ title: applyResultTitle(updated), variant: "success" });
-                  setOffer(null);
-                },
-                onError: (err) => {
-                  toast({
-                    title: "Could not apply the rule",
-                    description: err instanceof Error ? err.message : String(err),
-                    variant: "destructive",
-                  });
-                },
-              })
-            }
+            disabled={applyFlow.busy}
+            onClick={() => applyFlow.start(offer)}
           >
-            {applyRule.isPending ? "Applying…" : `Apply to ${offer.matches} existing`}
+            {applyFlow.busy ? "Checking…" : `Apply to ${offer.matches} existing`}
           </Button>
           <Button type="button" size="sm" variant="ghost" onClick={() => setOffer(null)}>
             Not now
           </Button>
         </div>
       ) : null}
+      {applyFlow.dialog}
     </form>
   );
 }
@@ -262,23 +251,10 @@ function RuleRow({ rule, options }: { rule: Rule; options: CategoryOption[] }) {
   );
   const updateRule = useUpdateRule();
   const deleteRule = useDeleteRule();
-  const applyRule = useApplyRule();
+  const applyFlow = useApplyRuleFlow();
   const { toast } = useToast();
 
   const editable = rule.source === "user";
-
-  function applyToExisting() {
-    applyRule.mutate(rule.id, {
-      onSuccess: (updated) => toast({ title: applyResultTitle(updated), variant: "success" }),
-      onError: (err) => {
-        toast({
-          title: "Could not apply the rule",
-          description: err instanceof Error ? err.message : String(err),
-          variant: "destructive",
-        });
-      },
-    });
-  }
 
   function startEdit() {
     setPattern(rule.pattern);
@@ -344,7 +320,8 @@ function RuleRow({ rule, options }: { rule: Rule; options: CategoryOption[] }) {
   }
 
   return (
-    <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border py-3 last:border-b-0">
+    <div className="flex flex-col gap-2 border-b border-border py-3 last:border-b-0">
+    <div className="flex flex-wrap items-center justify-between gap-2">
       <div className="flex flex-col gap-1">
         <div className="flex items-center gap-2">
           <span className="font-mono text-sm">{rule.pattern}</span>
@@ -363,8 +340,8 @@ function RuleRow({ rule, options }: { rule: Rule; options: CategoryOption[] }) {
           <Button
             size="sm"
             variant="outline"
-            onClick={applyToExisting}
-            disabled={applyRule.isPending}
+            onClick={() => applyFlow.start(rule)}
+            disabled={applyFlow.busy}
             title="Apply this rule to transactions you have already imported"
           >
             Apply to existing
@@ -379,6 +356,8 @@ function RuleRow({ rule, options }: { rule: Rule; options: CategoryOption[] }) {
       ) : (
         <span className="text-xs text-muted-foreground">Built-in rules are managed in the corpus, not here.</span>
       )}
+    </div>
+      {applyFlow.dialog}
     </div>
   );
 }
