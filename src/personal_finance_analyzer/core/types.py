@@ -15,11 +15,18 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import date
-from typing import Literal, Protocol, runtime_checkable
+from typing import Literal, Protocol, get_args, runtime_checkable
 
 #: `Transaction.classified_by` for a one-time edit by the user. A transaction carrying it is final:
 #: no rule, re-run, cache or LLM pass may change it (I6). It is never used for a merchant rule.
 USER_CLASSIFIED = "user"
+
+#: Every value `Transaction.classified_by` can hold: the single source of truth. The cascade writes
+#: these (a row the LLM phase could not place is `llm` too: batching's placeholder is an
+#: `Item`, so the import path and "Revert to automatic" agree), and the API's `ClassifiedBy`
+#: type and the undo-token validation (`CLASSIFIED_BY_VALUES`) both derive from it.
+ClassifiedBy = Literal["cache", "user_rule", "builtin_rule", "issuer", "llm", "user", "kind"]
+CLASSIFIED_BY_VALUES: frozenset[str] = frozenset(get_args(ClassifiedBy))
 
 #: Minimum median page character count for a document to be considered to have a text layer.
 TEXT_LAYER_MIN_CHARS = 50

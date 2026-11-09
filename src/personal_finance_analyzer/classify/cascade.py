@@ -82,7 +82,7 @@ from personal_finance_analyzer.classify.rules import (
 from personal_finance_analyzer.classify.taxonomy import is_dynamic
 from personal_finance_analyzer.config import LLMConfig
 from personal_finance_analyzer.core.errors import ConfigError
-from personal_finance_analyzer.core.types import USER_CLASSIFIED, Kind
+from personal_finance_analyzer.core.types import CLASSIFIED_BY_VALUES, USER_CLASSIFIED, Kind
 from personal_finance_analyzer.db.models import (
     Category,
     Classification,
@@ -773,11 +773,8 @@ class AcceptResult:
     undo: AcceptUndo
 
 
-#: The values `Transaction.classified_by` can hold (see `_Outcome.classified_by`); an undo token
-#: naming anything else is forged or corrupt.
-CLASSIFIED_BY_VALUES: frozenset[str] = frozenset(
-    {"cache", "user_rule", "builtin_rule", "issuer", "llm", "user", "kind"}
-)
+# `CLASSIFIED_BY_VALUES` (imported from `core.types`) is the set an undo token may name; anything
+# else is forged or corrupt.
 _KIND_VALUES: frozenset[str] = frozenset(
     {"purchase", "refund", "payment", "transfer", "fee", "interest", "adjustment"}
 )
@@ -958,6 +955,8 @@ def revert_to_automatic(
                 category_key=_UNCATEGORIZED_CATEGORY,
                 subcategory_key=_UNCATEGORIZED_SUBCATEGORY,
                 confidence=0.0,
+                # Same provenance the import path writes for a row the LLM phase could not
+                # place (batching's placeholder `Item` goes through `_outcome_from_item`).
                 classified_by="llm",
                 needs_review_override=True,
             )
