@@ -140,6 +140,58 @@ describe("PresetBar", () => {
     await waitFor(() => expect(screen.getByRole("combobox", { name: "Preset" })).toHaveValue(""));
   });
 
+  it("tells a shared preset from a personal one with the same name", () => {
+    render(
+      <Wrapper>
+        <PresetBar
+          userId={1}
+          builtin={BUILTIN}
+          saved={[{ ...MINE, name: "Plan" }, { ...SHARED, name: "Plan" }]}
+          selected={null}
+          state={INITIAL_STATE}
+          resolved={resolved}
+          onSelect={() => undefined}
+          onSaved={() => undefined}
+        />
+      </Wrapper>,
+    );
+    expect(screen.getAllByRole("option").map((o) => o.textContent)).toEqual(["Custom", "Moderate", "Plan", "Plan (shared)"]);
+  });
+
+  it("lists presets that cannot be loaded and deletes them", async () => {
+    mutate("DELETE").mockResolvedValue({ error: undefined });
+    render(
+      <Wrapper>
+        <PresetBar
+          userId={1}
+          builtin={BUILTIN}
+          saved={[MINE]}
+          invalid={[{ id: 9, user_id: null, name: "Old plan" }]}
+          selected={null}
+          state={INITIAL_STATE}
+          resolved={resolved}
+          onSelect={() => undefined}
+          onSaved={() => undefined}
+        />
+      </Wrapper>,
+    );
+    expect(screen.getByText(/“Old plan” \(shared\) cannot be loaded/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Delete unusable preset Old plan" }));
+    await waitFor(() =>
+      expect(mutate("DELETE")).toHaveBeenCalledWith("/net-worth/forecast/presets/{id}", { params: { path: { id: 9 } } }),
+    );
+  });
+
+  it("saves the starting year with the preset", async () => {
+    mutate("POST").mockResolvedValue({ data: { ...MINE, id: 8, name: "New" }, error: undefined });
+    renderBar({ state: { ...INITIAL_STATE, baseYear: 2020 } });
+    await userEvent.click(screen.getByRole("button", { name: "Save as preset…" }));
+    await userEvent.type(screen.getByLabelText("Preset name"), "New");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(mutate("POST")).toHaveBeenCalledTimes(1));
+    expect((bodyOf(mutate("POST").mock.calls[0] as unknown[]) as { params: unknown }).params).toMatchObject({ base_year: 2020 });
+  });
+
   it("saves as shared without a checkbox when no user is selected", async () => {
     renderBar({ userId: null });
     await userEvent.click(screen.getByRole("button", { name: "Save as preset…" }));

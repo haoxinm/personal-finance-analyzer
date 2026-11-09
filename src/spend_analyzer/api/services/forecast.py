@@ -76,21 +76,40 @@ def preset_to_schema(row: ForecastPreset) -> schemas.ForecastPreset:
     )
 
 
-def saved_presets_to_schema(rows: list[ForecastPreset]) -> list[schemas.ForecastPreset]:
-    """Convert stored presets for the list endpoint, skipping any whose stored JSON no longer
-    validates (hand-edited, or written by a build with looser limits) so one bad row cannot take
-    the whole list down. The row is left in the database and a warning names its id."""
-    out: list[schemas.ForecastPreset] = []
+def invalid_preset_to_schema(row: ForecastPreset) -> schemas.InvalidForecastPreset:
+    return schemas.InvalidForecastPreset(id=row.id, user_id=row.user_id, name=row.name)
+
+
+def is_valid_preset(row: ForecastPreset) -> bool:
+    """True when the stored parameters still pass validation."""
+    try:
+        schemas.ForecastParams.model_validate_json(row.params)
+    except ValidationError:
+        return False
+    return True
+
+
+def split_saved_presets(
+    rows: list[ForecastPreset],
+) -> tuple[list[schemas.ForecastPreset], list[schemas.InvalidForecastPreset]]:
+    """Convert stored presets for the list endpoint. A preset whose stored JSON no longer
+    validates (hand-edited, or written by a build with looser limits) cannot be loaded, so one bad
+    row cannot take the whole list down: it is returned separately (name only) so it can still be
+    renamed, repaired with new parameters or deleted. The row stays in the database and a warning
+    names its id."""
+    valid: list[schemas.ForecastPreset] = []
+    invalid: list[schemas.InvalidForecastPreset] = []
     for row in rows:
         try:
-            out.append(preset_to_schema(row))
+            valid.append(preset_to_schema(row))
         except ValidationError as exc:
             _log.warning(
-                "skipping forecast preset id=%s: stored parameters are invalid (%d error(s))",
+                "forecast preset id=%s: stored parameters are invalid (%d error(s))",
                 row.id,
                 exc.error_count(),
             )
-    return out
+            invalid.append(invalid_preset_to_schema(row))
+    return valid, invalid
 
 
 def get_preset(session: Session, preset_id: int) -> ForecastPreset | None:
@@ -113,13 +132,14 @@ def _check_name(
 ) -> None:
     if is_builtin_name(name):
         raise PresetNameConflict(f"{name!r} is the name of a built-in preset")
-    stmt = select(ForecastPreset.id).where(func.lower(ForecastPreset.name) == name.lower())
+    stmt = select(ForecastPreset).where(func.lower(ForecastPreset.name) == name.lower())
     stmt = stmt.where(
         ForecastPreset.user_id.is_(None) if user_id is None else ForecastPreset.user_id == user_id
     )
     if exclude_id is not None:
         stmt = stmt.where(ForecastPreset.id != exclude_id)
-    if session.scalar(stmt) is not None:
+    # A preset whose stored parameters no longer validate is not usable, so its name can be reused.
+    if any(is_valid_preset(other) for other in session.scalars(stmt)):
         raise PresetNameConflict(f"a preset named {name!r} already exists")
 
 

@@ -64,7 +64,7 @@ export function useForecastPresets(userId: number | null) {
         params: { query: { user_id: userId ?? undefined } },
       });
       throwIfError(error);
-      return data && !Array.isArray(data) ? data : { builtin: [], saved: [] };
+      return data && !Array.isArray(data) ? data : { builtin: [], saved: [], invalid: [] };
     },
   });
 }

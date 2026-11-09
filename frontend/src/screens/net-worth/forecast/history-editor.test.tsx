@@ -21,6 +21,7 @@ const row = (year: number, over: Partial<HistoryRow> = {}): HistoryRow => ({
   manual_net_worth_minor: null,
   manual_note: null,
   income_minor: null,
+  earned_income_minor: null,
   tax_minor: null,
   income_basis: null,
   spending_minor: null,

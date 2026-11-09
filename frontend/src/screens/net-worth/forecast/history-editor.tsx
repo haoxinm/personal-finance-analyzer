@@ -18,7 +18,11 @@ export interface HistoryEditorProps {
   history: readonly HistoryRow[];
 }
 
-const SOURCE_LABEL: Record<string, string> = { entries: "Balance entries", manual: "Manual" };
+const SOURCE_LABEL: Record<string, string> = {
+  entries: "Balance entries",
+  manual: "Manual",
+  mixed: "Mixed (per person)",
+};
 
 /** Year-end net worth per year: what the balance entries give, with a manual value for years
  * they don't cover (or that predate them). Entries take precedence over a manual value. The same
@@ -98,7 +102,12 @@ function HistoryTableRow({ row, userId }: { row: HistoryRow; userId: number | nu
           dash
         )}
       </td>
-      <td className="py-2 pr-3 text-right tabular-nums">{usd(row.income_minor)}</td>
+      <td className="py-2 pr-3 text-right tabular-nums">
+        {usd(row.income_minor)}
+        {row.earned_income_minor != null && row.earned_income_minor !== row.income_minor ? (
+          <span className="block text-xs text-muted-foreground">{formatUsd(row.earned_income_minor)} earned</span>
+        ) : null}
+      </td>
       <td className="py-2 pr-3 text-right tabular-nums">{usd(row.tax_minor)}</td>
       <td className="py-2 pr-3 text-right tabular-nums">
         {usd(row.spending_minor)}

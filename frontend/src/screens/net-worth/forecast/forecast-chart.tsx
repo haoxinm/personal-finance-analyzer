@@ -48,7 +48,7 @@ export function ForecastChart({ history, rows, baseYear, startNetWorthMinor, tar
   };
   const label = `Net worth by year, ${data[0]?.year ?? baseYear} to ${targetYear}${
     last ? `; projected ${formatUsd(last.netWorth)} in ${last.year}` : ""
-  } (${mode === "real" ? "today's dollars" : "nominal dollars"}).`;
+  } (${mode === "real" ? `${baseYear} dollars` : "nominal dollars"}).`;
 
   return (
     <div className="h-80 w-full" role="img" aria-label={label} data-testid="forecast-chart">
@@ -89,7 +89,7 @@ export function ForecastChart({ history, rows, baseYear, startNetWorthMinor, tar
           <Line
             type="monotone"
             dataKey="projection"
-            name={mode === "real" ? "Projected (today's dollars)" : "Projected"}
+            name={mode === "real" ? `Projected (${baseYear} dollars)` : "Projected"}
             stroke={CHART_NET_WORTH}
             strokeWidth={3}
             strokeDasharray="6 4"

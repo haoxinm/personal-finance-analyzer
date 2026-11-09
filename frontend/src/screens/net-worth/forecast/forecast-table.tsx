@@ -7,19 +7,21 @@ export interface ForecastTableProps {
   /** Rows in the dollars of `mode`. */
   rows: readonly ForecastRow[];
   mode: DollarMode;
+  /** The starting year: "real" values are in its dollars. */
+  baseYear: number;
 }
 
 const HEAD = "py-2 pr-3 text-right font-medium";
 
 /** The projection year by year: income, tax, spending, savings, investment return, one-off
  * events and the resulting net worth. */
-export function ForecastTable({ rows, mode }: ForecastTableProps) {
+export function ForecastTable({ rows, mode, baseYear }: ForecastTableProps) {
   const usd = (n: number) => formatUsd(Math.round(n));
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-sm" data-testid="forecast-table">
         <caption className="sr-only">
-          Year-by-year projection in {mode === "real" ? "today's" : "nominal"} dollars
+          Year-by-year projection in {mode === "real" ? `${baseYear}` : "nominal"} dollars
         </caption>
         <thead>
           <tr className="border-b border-border text-xs text-muted-foreground">

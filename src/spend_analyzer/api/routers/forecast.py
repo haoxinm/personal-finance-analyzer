@@ -82,9 +82,11 @@ def delete_history(user_id: _UserId, year: _Year, session: SessionDep) -> None:
 def list_presets(session: SessionDep, user_id: int | None = None) -> schemas.ForecastPresetList:
     """Built-in presets plus the saved ones visible to `user_id`: shared presets and that user's
     own. Without `user_id` (the all-users view), shared presets only. A saved preset whose stored
-    parameters no longer validate is left out (and logged) rather than failing the list."""
+    parameters no longer validate is listed under `invalid` (name only, and logged) rather than
+    failing the list; it can be renamed, repaired by saving new parameters, or deleted."""
     if user_id is not None and not service.user_exists(session, user_id):
         raise HTTPException(status_code=404, detail="user not found")
+    saved, invalid = service.split_saved_presets(service.list_presets(session, user_id))
     return schemas.ForecastPresetList(
         builtin=[
             schemas.BuiltinForecastPreset(
@@ -100,7 +102,8 @@ def list_presets(session: SessionDep, user_id: int | None = None) -> schemas.For
             )
             for p in BUILTIN_PRESETS
         ],
-        saved=service.saved_presets_to_schema(service.list_presets(session, user_id)),
+        saved=saved,
+        invalid=invalid,
     )
 
 
@@ -120,10 +123,16 @@ def create_preset(
     return service.preset_to_schema(row)
 
 
-@router.put("/net-worth/forecast/presets/{id}", response_model=schemas.ForecastPreset)
+@router.put(
+    "/net-worth/forecast/presets/{id}",
+    response_model=schemas.ForecastPreset | schemas.InvalidForecastPreset,
+)
 def update_preset(
     id: int, body: schemas.ForecastPresetUpdate, session: SessionDep
-) -> schemas.ForecastPreset:
+) -> schemas.ForecastPreset | schemas.InvalidForecastPreset:
+    """Rename and/or replace the parameters. A preset whose stored parameters are invalid can be
+    renamed (the response is then the name-only `InvalidForecastPreset`) or repaired by sending
+    new `params`."""
     row = service.get_preset(session, id)
     if row is None:
         raise HTTPException(status_code=404, detail="preset not found")
@@ -134,6 +143,8 @@ def update_preset(
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from None
     session.commit()
+    if not service.is_valid_preset(row):
+        return service.invalid_preset_to_schema(row)
     return service.preset_to_schema(row)
 
 

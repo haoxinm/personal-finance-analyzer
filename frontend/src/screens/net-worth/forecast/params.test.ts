@@ -6,10 +6,12 @@ import {
   INITIAL_STATE,
   applyBuiltin,
   applySaved,
+  checkDollars,
   formatPct,
   formatUsd,
   isModified,
   parseDollars,
+  rebaseAmount,
   resolveInputs,
   toApiParams,
   type BuiltinPreset,
@@ -73,6 +75,90 @@ describe("resolveInputs", () => {
     // 90,000 income - 22.5% tax - 40,000 spending = 29,750 saved on top of 50,000.
     expect(rows).toHaveLength(2);
     expect(rows[1]!.netWorth).toBeCloseTo(5_000_000 + 2 * 2_975_000, 6);
+  });
+});
+
+describe("rebasing the data defaults to the starting year", () => {
+  it("rebaseAmount grows or shrinks compound per year, in either direction", () => {
+    expect(rebaseAmount(1_000_000, 2023, 2023, 3)).toBe(1_000_000);
+    expect(rebaseAmount(1_000_000, 2023, 2025, 10)).toBe(1_210_000);
+    expect(rebaseAmount(1_210_000, 2025, 2023, 10)).toBe(1_000_000); // earlier start: deflate
+    expect(rebaseAmount(1_000_000, 2023, 2024, -50)).toBe(500_000);
+    expect(rebaseAmount(10 ** 12, 1900, 2300, 50)).toBeLessThan(10 ** 13); // clamped, never Infinity
+  });
+
+  it("brings income from an older tax year up to the starting year at the income growth rate", () => {
+    const defaults = { ...DEFAULTS, annual_income_minor: 10_000_000, income_year: 2022 };
+    const r = resolveInputs({ ...INITIAL_STATE, incomeGrowthPct: 5 }, defaults, 2026);
+    expect(r.baseYear).toBe(2024); // latest net worth year
+    // 100,000 in 2022 -> 2023 -> 2024 at 5%: 110,250. Not 100,000, which would lose two years.
+    expect(r.data.incomeMinor).toBe(11_025_000);
+    expect(r.inputs.annualIncomeMinor).toBe(11_025_000);
+    // Spending is from the same year as the start: untouched.
+    expect(r.data.spendingMinor).toBe(4_000_000);
+  });
+
+  it("deflates spending measured after the starting year, and leaves typed values alone", () => {
+    const defaults = { ...DEFAULTS, annual_spending_minor: 4_100_000, spending_year: 2026 };
+    const r = resolveInputs({ ...INITIAL_STATE, spendingGrowthPct: 10 }, defaults, 2026);
+    expect(r.data.spendingMinor).toBe(3_388_430); // 41,000 / 1.1^2 = 33,884.30
+    const typed = resolveInputs({ ...INITIAL_STATE, annualSpendingMinor: 5_000_000 }, defaults, 2026);
+    expect(typed.inputs.annualSpendingMinor).toBe(5_000_000);
+  });
+
+  it("follows a chosen starting year, and has no data to rebase when there is none", () => {
+    const defaults = { ...DEFAULTS, annual_income_minor: 9_000_000, income_year: 2024 };
+    const r = resolveInputs({ ...INITIAL_STATE, baseYear: 2026, incomeGrowthPct: 10 }, defaults, 2026);
+    expect(r.data.incomeMinor).toBe(10_890_000);
+    const none = resolveInputs(INITIAL_STATE, undefined, 2026);
+    expect(none.data).toEqual({ incomeMinor: null, spendingMinor: null });
+  });
+});
+
+describe("saved presets keep the starting year", () => {
+  const resolved = { baseYear: 2020, targetYear: 2040 };
+
+  it("round-trips an explicit starting year, so the target does not shift on reload", () => {
+    const state = { ...INITIAL_STATE, baseYear: 2020, targetYear: 2040 };
+    const api = toApiParams(state, resolved);
+    expect(api).toMatchObject({ base_year: 2020, horizon_years: 20 });
+    // The data's latest year (2024) is not what the preset's horizon is relative to.
+    const loaded = applySaved(INITIAL_STATE, api, 2024);
+    expect(loaded.baseYear).toBe(2020);
+    expect(loaded.targetYear).toBe(2040);
+  });
+
+  it("a preset saved on 'latest year with data' goes back to it", () => {
+    const api = toApiParams({ ...INITIAL_STATE, targetYear: 2034 }, { baseYear: 2024, targetYear: 2034 });
+    expect(api.base_year).toBeNull();
+    const loaded = applySaved({ ...INITIAL_STATE, baseYear: 2010 }, api, 2025);
+    expect(loaded.baseYear).toBeNull();
+    expect(loaded.targetYear).toBe(2035);
+  });
+
+  it("counts a changed starting year as a modification", () => {
+    const preset: SavedPreset = {
+      id: 1,
+      user_id: null,
+      name: "P",
+      params: toApiParams({ ...INITIAL_STATE, baseYear: 2020 }, resolved),
+      created_at: "",
+      updated_at: "",
+    };
+    expect(isModified({ ...INITIAL_STATE, baseYear: 2020, targetYear: 2040 }, resolved, preset)).toBe(false);
+    expect(isModified({ ...INITIAL_STATE, baseYear: 2021, targetYear: 2040 }, resolved, preset)).toBe(true);
+  });
+});
+
+describe("checkDollars", () => {
+  it("rejects amounts the API would refuse, saying why", () => {
+    expect(checkDollars("99,999,999,999.99")).toEqual({ minor: 9_999_999_999_999 });
+    expect(checkDollars("100,000,000,000")).toEqual({ problem: "range" });
+    expect(checkDollars("-100,000,000,000", true)).toEqual({ problem: "range" });
+    expect(checkDollars("99999999999999999999999")).toEqual({ problem: "range" }); // beyond exact integers
+    expect(checkDollars("abc")).toEqual({ problem: "format" });
+    expect(checkDollars("-5")).toEqual({ problem: "format" });
+    expect(parseDollars("100000000000")).toBeNull();
   });
 });
 
@@ -171,6 +257,7 @@ describe("chartData", () => {
     manual_net_worth_minor: null,
     manual_note: null,
     income_minor: null,
+    earned_income_minor: null,
     tax_minor: null,
     income_basis: null,
     spending_minor: null,

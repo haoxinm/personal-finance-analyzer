@@ -215,7 +215,7 @@ build is missing or stale).
   balance entries, tax forms and spending, with adjustable income growth, tax rate, spending growth,
   investment return, inflation, retirement and one-off events. Start from a built-in preset
   (Conservative, Moderate, Aggressive) or save your own, enter net worth by hand for past years your
-  entries don't cover, and see the result nominal or in today's dollars. It is a deterministic
+  entries don't cover, and see the result nominal or in starting-year dollars. It is a deterministic
   illustration, not advice. See [docs/FORECAST.md](docs/FORECAST.md).
 - **Gives each person their own view.** Every page except Settings has a user bar with user
   chips ("All users" plus one per user, a dropdown beyond six users). Your choice is kept in the

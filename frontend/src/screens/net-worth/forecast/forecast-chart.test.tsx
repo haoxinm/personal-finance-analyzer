@@ -16,6 +16,7 @@ const history: HistoryRow[] = [2022, 2023, 2024].map((year, i) => ({
   manual_net_worth_minor: null,
   manual_note: null,
   income_minor: null,
+  earned_income_minor: null,
   tax_minor: null,
   income_basis: null,
   spending_minor: null,
@@ -48,8 +49,8 @@ describe("ForecastChart", () => {
     expect(chart.getAttribute("aria-label")).toMatch(/Net worth by year, 2022 to 2030; projected \$40,203 in 2030 \(nominal dollars\)\./);
   });
 
-  it("labels today's-dollars mode", () => {
+  it("labels starting-year-dollars mode", () => {
     render(<ForecastChart history={[]} rows={rows} baseYear={2024} startNetWorthMinor={3_000_000} targetYear={2030} mode="real" />);
-    expect(screen.getByTestId("forecast-chart").getAttribute("aria-label")).toContain("today's dollars");
+    expect(screen.getByTestId("forecast-chart").getAttribute("aria-label")).toContain("2024 dollars");
   });
 });

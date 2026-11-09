@@ -13,6 +13,7 @@ import {
   type ForecastState,
   type PresetRef,
   type Resolved,
+  type InvalidPreset,
   type SavedPreset,
 } from "./params";
 
@@ -21,6 +22,8 @@ export interface PresetBarProps {
   userId: number | null;
   builtin: readonly BuiltinPreset[];
   saved: readonly SavedPreset[];
+  /** Saved presets whose stored parameters no longer validate: listed so they can be deleted. */
+  invalid?: readonly InvalidPreset[];
   selected: PresetRef | null;
   state: ForecastState;
   resolved: Pick<Resolved, "baseYear" | "targetYear">;
@@ -35,7 +38,7 @@ const SELECT =
 
 /** The preset picker (built-ins and saved) with save, update, rename and delete for saved ones,
  * and a "modified" mark once the scenario drifts from the chosen preset. */
-export function PresetBar({ userId, builtin, saved, selected, state, resolved, onSelect, onSaved }: PresetBarProps) {
+export function PresetBar({ userId, builtin, saved, invalid = [], selected, state, resolved, onSelect, onSaved }: PresetBarProps) {
   const uid = React.useId();
   const { toast } = useToast();
   const create = useCreatePreset();
@@ -186,6 +189,34 @@ export function PresetBar({ userId, builtin, saved, selected, state, resolved, o
           ) : null}
         </div>
       </div>
+
+      {invalid.length > 0 ? (
+        <ul className="flex flex-col gap-1" aria-label="Presets that cannot be loaded">
+          {invalid.map((p) => (
+            <li key={p.id} className="flex flex-wrap items-center gap-2 text-xs text-destructive">
+              <span>
+                “{p.name}”{p.user_id === null ? " (shared)" : ""} cannot be loaded: its saved parameters are no longer valid.
+              </span>
+              <Button
+                type="button"
+                variant="link"
+                size="sm"
+                className="h-auto p-0 text-xs"
+                disabled={remove.isPending}
+                aria-label={`Delete unusable preset ${p.name}`}
+                onClick={() =>
+                  remove.mutate(p.id, {
+                    onSuccess: () => toast({ variant: "success", title: "Preset deleted", description: p.name }),
+                    onError: (err) => fail("Could not delete preset", err),
+                  })
+                }
+              >
+                Delete
+              </Button>
+            </li>
+          ))}
+        </ul>
+      ) : null}
 
       {current && "key" in current ? (
         <p className="text-xs text-muted-foreground">

@@ -1158,7 +1158,9 @@ class NetWorthHistory(_Model):
     updated_at: str
 
 
-ForecastNetWorthSource = Literal["entries", "manual"]
+#: "mixed" only in the all-users view, when some people's year came from entries and others'
+#: from a manual value (the choice is made per person per year, then summed).
+ForecastNetWorthSource = Literal["entries", "manual", "mixed"]
 
 
 class ForecastHistoryRow(_Model):
@@ -1173,6 +1175,8 @@ class ForecastHistoryRow(_Model):
     manual_note: str | None
     #: Gross income on the imported tax forms, and all-in tax (federal + state + local + FICA).
     income_minor: int | None
+    #: The wages + self-employment part of `income_minor` (interest, dividends and gains excluded).
+    earned_income_minor: int | None
     tax_minor: int | None
     income_basis: TaxIncomeBasis | None
     #: Net spending (purchases, fees, interest, refunds netted) and the months it covers.
@@ -1183,12 +1187,18 @@ class ForecastHistoryRow(_Model):
 
 
 class ForecastDefaults(_Model):
-    """Values suggested from history; each is None when the data does not support it."""
+    """Values suggested from history; each is None when the data does not support it.
+
+    Each level is as of its own `*_year`, and the years can differ; the screen rebases income and
+    spending to the chosen starting year."""
 
     net_worth_minor: int | None
     net_worth_year: int | None
+    #: Earned income (wages + self-employment) in `income_year`; investment income is left out
+    #: because the forecast's investment return already models it.
     annual_income_minor: int | None
     income_year: int | None
+    #: All-in tax / earned income in `income_year`, capped at 100.
     effective_tax_rate_pct: float | None
     annual_spending_minor: int | None
     spending_year: int | None
@@ -1216,8 +1226,10 @@ class ForecastEvent(_Model):
 class ForecastParams(_Model):
     """One forecast scenario. A None starting value means "use the figure derived from history"."""
 
-    #: Years after the base year to project; None (built-ins) keeps the user's current target.
+    #: Years after the starting year to project; None (built-ins) keeps the user's current target.
     horizon_years: int | None = Field(default=None, ge=1, le=MAX_HORIZON_YEARS)
+    #: The starting year the horizon is relative to; None = the latest year with data.
+    base_year: int | None = Field(default=None, ge=MIN_YEAR, le=MAX_YEAR)
     start_net_worth_minor: int | None = Field(
         default=None, gt=-MAX_AMOUNT_MINOR, lt=MAX_AMOUNT_MINOR
     )
@@ -1254,9 +1266,19 @@ class ForecastPreset(_Model):
     updated_at: str
 
 
+class InvalidForecastPreset(_Model):
+    """A saved preset whose stored parameters no longer validate: only identity is returned."""
+
+    id: int
+    user_id: int | None
+    name: str
+
+
 class ForecastPresetList(_Model):
     builtin: list[BuiltinForecastPreset]
     saved: list[ForecastPreset]
+    #: Saved presets that cannot be loaded; they can still be renamed, repaired or deleted.
+    invalid: list[InvalidForecastPreset] = Field(default_factory=list)
 
 
 class ForecastPresetCreate(_Model):

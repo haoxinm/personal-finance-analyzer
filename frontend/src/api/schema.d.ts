@@ -995,7 +995,9 @@ export interface paths {
         /**
          * List Presets
          * @description Built-in presets plus the saved ones visible to `user_id`: shared presets and that user's
-         *     own. Without `user_id` (the all-users view), shared presets only.
+         *     own. Without `user_id` (the all-users view), shared presets only. A saved preset whose stored
+         *     parameters no longer validate is listed under `invalid` (name only, and logged) rather than
+         *     failing the list; it can be renamed, repaired by saving new parameters, or deleted.
          */
         get: operations["list_presets_api_net_worth_forecast_presets_get"];
         put?: never;
@@ -1015,7 +1017,12 @@ export interface paths {
             cookie?: never;
         };
         get?: never;
-        /** Update Preset */
+        /**
+         * Update Preset
+         * @description Rename and/or replace the parameters. A preset whose stored parameters are invalid can be
+         *     renamed (the response is then the name-only `InvalidForecastPreset`) or repaired by sending
+         *     new `params`.
+         */
         put: operations["update_preset_api_net_worth_forecast_presets__id__put"];
         post?: never;
         /** Delete Preset */
@@ -1688,6 +1695,9 @@ export interface components {
         /**
          * ForecastDefaults
          * @description Values suggested from history; each is None when the data does not support it.
+         *
+         *     Each level is as of its own `*_year`, and the years can differ; the screen rebases income and
+         *     spending to the chosen starting year.
          */
         ForecastDefaults: {
             /** Net Worth Minor */
@@ -1732,7 +1742,7 @@ export interface components {
             /** Net Worth Minor */
             net_worth_minor: number | null;
             /** Source */
-            source: ("entries" | "manual") | null;
+            source: ("entries" | "manual" | "mixed") | null;
             /** As Of */
             as_of: string | null;
             /** Manual Net Worth Minor */
@@ -1741,6 +1751,8 @@ export interface components {
             manual_note: string | null;
             /** Income Minor */
             income_minor: number | null;
+            /** Earned Income Minor */
+            earned_income_minor: number | null;
             /** Tax Minor */
             tax_minor: number | null;
             /** Income Basis */
@@ -1759,6 +1771,8 @@ export interface components {
         ForecastParams: {
             /** Horizon Years */
             horizon_years?: number | null;
+            /** Base Year */
+            base_year?: number | null;
             /** Start Net Worth Minor */
             start_net_worth_minor?: number | null;
             /** Annual Income Minor */
@@ -1830,6 +1844,8 @@ export interface components {
             builtin: components["schemas"]["BuiltinForecastPreset"][];
             /** Saved */
             saved: components["schemas"]["ForecastPreset"][];
+            /** Invalid */
+            invalid?: components["schemas"]["InvalidForecastPreset"][];
         };
         /**
          * ForecastPresetUpdate
@@ -1934,6 +1950,18 @@ export interface components {
             date_format_hints: string[];
             /** Default Currency */
             default_currency: string;
+        };
+        /**
+         * InvalidForecastPreset
+         * @description A saved preset whose stored parameters no longer validate: only identity is returned.
+         */
+        InvalidForecastPreset: {
+            /** Id */
+            id: number;
+            /** User Id */
+            user_id: number | null;
+            /** Name */
+            name: string;
         };
         /** Issuer */
         Issuer: {
@@ -5620,7 +5648,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ForecastPreset"];
+                    "application/json": components["schemas"]["ForecastPreset"] | components["schemas"]["InvalidForecastPreset"];
                 };
             };
             /** @description Validation Error */

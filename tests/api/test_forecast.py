@@ -199,12 +199,74 @@ def test_list_skips_saved_presets_with_invalid_stored_params(
         r = client.get(PRESETS)
     assert r.status_code == 200
     assert [p["id"] for p in r.json()["saved"]] == [good["id"]]
+    # They are not lost from view: listed by name so they can be renamed, repaired or deleted.
+    assert {p["id"]: p["name"] for p in r.json()["invalid"]} == {
+        bad["id"]: "Bad",
+        broken["id"]: "Broken JSON",
+    }
     assert len(r.json()["builtin"]) > 0
     assert str(bad["id"]) in caplog.text and str(broken["id"]) in caplog.text
     # The rows are kept, so nothing is lost; the user can still replace the parameters.
     assert session.get(ForecastPreset, bad["id"]) is not None
     assert client.put(f"{PRESETS}/{bad['id']}", json={"params": _params()}).status_code == 200
     assert [p["name"] for p in client.get(PRESETS).json()["saved"]] == ["Bad", "Good"]
+
+
+def test_invalid_preset_can_be_renamed_deleted_and_its_name_reused(
+    client: TestClient, session: Session
+) -> None:
+    bad = client.post(PRESETS, json={"name": "Old plan", "params": _params()}).json()
+    session.get(ForecastPreset, bad["id"]).params = '{"horizon_years": 9999}'  # type: ignore[union-attr]
+    session.commit()
+
+    # Its hidden name does not block a new preset with the same name.
+    fresh = client.post(PRESETS, json={"name": "old plan", "params": _params()})
+    assert fresh.status_code == 201
+
+    # Renaming it works (no 500) and returns the name-only form; the row is still invalid.
+    renamed = client.put(f"{PRESETS}/{bad['id']}", json={"name": "Archived"})
+    assert renamed.status_code == 200
+    assert renamed.json() == {"id": bad["id"], "user_id": None, "name": "Archived"}
+    listing = client.get(PRESETS).json()
+    assert [p["name"] for p in listing["invalid"]] == ["Archived"]
+    assert [p["name"] for p in listing["saved"]] == ["old plan"]
+
+    # A valid preset's name still conflicts, and a repair brings the preset back.
+    assert client.put(f"{PRESETS}/{bad['id']}", json={"name": "Old Plan"}).status_code == 409
+    fixed = client.put(f"{PRESETS}/{bad['id']}", json={"params": _params()})
+    assert fixed.status_code == 200 and fixed.json()["params"]["horizon_years"] == 20
+    assert client.get(PRESETS).json()["invalid"] == []
+
+    other = client.post(PRESETS, json={"name": "Other", "params": _params()}).json()
+    session.get(ForecastPreset, other["id"]).params = "not json"  # type: ignore[union-attr]
+    session.commit()
+    assert client.delete(f"{PRESETS}/{other['id']}").status_code == 204
+    assert client.get(PRESETS).json()["invalid"] == []
+
+
+def test_preset_keeps_the_starting_year(client: TestClient) -> None:
+    created = client.post(
+        PRESETS, json={"name": "From 2020", "params": _params(base_year=2020)}
+    ).json()
+    assert created["params"]["base_year"] == 2020
+    assert client.get(PRESETS).json()["saved"][0]["params"]["base_year"] == 2020
+    plain = client.post(PRESETS, json={"name": "Latest", "params": _params()}).json()
+    assert plain["params"]["base_year"] is None  # None = the latest year with data
+    bad = client.post(PRESETS, json={"name": "Bad", "params": _params(base_year=1800)})
+    assert bad.status_code == 422
+
+
+def test_baseline_all_users_mixes_entries_and_manual_per_person(
+    client: TestClient, session: Session
+) -> None:
+    alex, sam = add_user(session, "Alex"), add_user(session, "Sam")
+    add_balance(session, alex, "savings", "A", 2024, 12, 100_000)
+    session.commit()
+    assert client.put(f"{HIST}/{sam}/2024", json={"amount_minor": 5_000_000}).status_code == 201
+    body = client.get("/api/net-worth/forecast/baseline").json()
+    row = {r["year"]: r for r in body["history"]}[2024]
+    assert (row["net_worth_minor"], row["source"]) == (5_100_000, "mixed")
+    assert body["defaults"]["net_worth_minor"] == 5_100_000
 
 
 def test_preset_name_uniqueness_per_scope(client: TestClient) -> None:

@@ -74,6 +74,7 @@ function ForecastBody({ userId }: { userId: number | null }) {
 
   const builtin = presetsQuery.data?.builtin ?? [];
   const saved = presetsQuery.data?.saved ?? [];
+  const invalid = presetsQuery.data?.invalid ?? [];
   const patch = (p: Partial<ForecastState>) => setState((s) => ({ ...s, ...p }));
 
   function selectPreset(ref: PresetRef | null) {
@@ -84,7 +85,7 @@ function ForecastBody({ userId }: { userId: number | null }) {
       if (p) setState((s) => applyBuiltin(s, p.params));
     } else {
       const p = saved.find((x) => x.id === ref.id);
-      if (p) setState((s) => applySaved(s, p.params, resolved.baseYear));
+      if (p) setState((s) => applySaved(s, p.params, defaults?.net_worth_year ?? currentYear));
     }
   }
   const onSaved = (p: SavedPreset) => setPreset({ kind: "saved", id: p.id });
@@ -113,6 +114,7 @@ function ForecastBody({ userId }: { userId: number | null }) {
               userId={userId}
               builtin={builtin}
               saved={saved}
+              invalid={invalid}
               selected={preset}
               state={state}
               resolved={resolved}
@@ -145,7 +147,7 @@ function ForecastBody({ userId }: { userId: number | null }) {
             <Card>
               <CardHeader className="flex-row flex-wrap items-center justify-between gap-3">
                 <CardTitle className="text-base">Net worth to {summary.targetYear}</CardTitle>
-                <DollarToggle mode={mode} onChange={setMode} />
+                <DollarToggle mode={mode} onChange={setMode} baseYear={inputs.baseYear} />
               </CardHeader>
               <CardContent>
                 <ForecastChart
@@ -163,7 +165,7 @@ function ForecastBody({ userId }: { userId: number | null }) {
                 <CardTitle className="text-base">Year by year</CardTitle>
               </CardHeader>
               <CardContent>
-                <ForecastTable rows={shown} mode={mode} />
+                <ForecastTable rows={shown} mode={mode} baseYear={inputs.baseYear} />
               </CardContent>
             </Card>
           </>
@@ -179,10 +181,19 @@ function ForecastBody({ userId }: { userId: number | null }) {
   );
 }
 
-function DollarToggle({ mode, onChange }: { mode: DollarMode; onChange: (m: DollarMode) => void }) {
+function DollarToggle({
+  mode,
+  onChange,
+  baseYear,
+}: {
+  mode: DollarMode;
+  onChange: (m: DollarMode) => void;
+  baseYear: number;
+}) {
+  // "Real" values are in starting-year dollars (the model's base year), not necessarily today's.
   const options: Array<{ value: DollarMode; label: string }> = [
     { value: "nominal", label: "Nominal" },
-    { value: "real", label: "Today's dollars" },
+    { value: "real", label: `${baseYear} dollars` },
   ];
   return (
     <div role="radiogroup" aria-label="Dollars" className="inline-flex gap-1 rounded-full bg-muted p-1">

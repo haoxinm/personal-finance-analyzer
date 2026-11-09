@@ -4513,7 +4513,7 @@
           "net-worth"
         ],
         "summary": "List Presets",
-        "description": "Built-in presets plus the saved ones visible to `user_id`: shared presets and that user's\nown. Without `user_id` (the all-users view), shared presets only.",
+        "description": "Built-in presets plus the saved ones visible to `user_id`: shared presets and that user's\nown. Without `user_id` (the all-users view), shared presets only. A saved preset whose stored\nparameters no longer validate is listed under `invalid` (name only, and logged) rather than\nfailing the list; it can be renamed, repaired by saving new parameters, or deleted.",
         "operationId": "list_presets_api_net_worth_forecast_presets_get",
         "parameters": [
           {
@@ -4602,6 +4602,7 @@
           "net-worth"
         ],
         "summary": "Update Preset",
+        "description": "Rename and/or replace the parameters. A preset whose stored parameters are invalid can be\nrenamed (the response is then the name-only `InvalidForecastPreset`) or repaired by sending\nnew `params`.",
         "operationId": "update_preset_api_net_worth_forecast_presets__id__put",
         "parameters": [
           {
@@ -4630,7 +4631,15 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForecastPreset"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForecastPreset"
+                    },
+                    {
+                      "$ref": "#/components/schemas/InvalidForecastPreset"
+                    }
+                  ],
+                  "title": "Response Update Preset Api Net Worth Forecast Presets  Id  Put"
                 }
               }
             }
@@ -7218,7 +7227,7 @@
           "savings_rate_pct"
         ],
         "title": "ForecastDefaults",
-        "description": "Values suggested from history; each is None when the data does not support it."
+        "description": "Values suggested from history; each is None when the data does not support it.\n\nEach level is as of its own `*_year`, and the years can differ; the screen rebases income and\nspending to the chosen starting year."
       },
       "ForecastEvent": {
         "properties": {
@@ -7271,7 +7280,8 @@
                 "type": "string",
                 "enum": [
                   "entries",
-                  "manual"
+                  "manual",
+                  "mixed"
                 ]
               },
               {
@@ -7323,6 +7333,17 @@
               }
             ],
             "title": "Income Minor"
+          },
+          "earned_income_minor": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Earned Income Minor"
           },
           "tax_minor": {
             "anyOf": [
@@ -7388,6 +7409,7 @@
           "manual_net_worth_minor",
           "manual_note",
           "income_minor",
+          "earned_income_minor",
           "tax_minor",
           "income_basis",
           "spending_minor",
@@ -7410,6 +7432,19 @@
               }
             ],
             "title": "Horizon Years"
+          },
+          "base_year": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 2300.0,
+                "minimum": 1900.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base Year"
           },
           "start_net_worth_minor": {
             "anyOf": [
@@ -7620,6 +7655,13 @@
             },
             "type": "array",
             "title": "Saved"
+          },
+          "invalid": {
+            "items": {
+              "$ref": "#/components/schemas/InvalidForecastPreset"
+            },
+            "type": "array",
+            "title": "Invalid"
           }
         },
         "type": "object",
@@ -7962,6 +8004,37 @@
           "default_currency"
         ],
         "title": "IngestSettings"
+      },
+      "InvalidForecastPreset": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "user_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "user_id",
+          "name"
+        ],
+        "title": "InvalidForecastPreset",
+        "description": "A saved preset whose stored parameters no longer validate: only identity is returned."
       },
       "Issuer": {
         "properties": {

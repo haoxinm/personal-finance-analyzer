@@ -21,7 +21,7 @@ export interface ParametersPanelProps {
   onChange: (patch: Partial<ForecastState>) => void;
   /** History-derived suggestions; undefined while loading or with no data. */
   defaults: Defaults | undefined;
-  resolved: Pick<Resolved, "baseYear" | "targetYear">;
+  resolved: Pick<Resolved, "baseYear" | "targetYear" | "data">;
   onResetAll: () => void;
 }
 
@@ -35,14 +35,21 @@ export function ParametersPanel({ state, onChange, defaults, resolved, onResetAl
   const d = defaults;
   const base = resolved.baseYear;
   const netWorthText =
-    d?.net_worth_minor != null ? `Data: ${formatUsd(d.net_worth_minor)}${d.net_worth_year ? ` (${d.net_worth_year})` : ""}` : null;
+    d?.net_worth_minor != null
+      ? `Data: ${formatUsd(d.net_worth_minor)}${d.net_worth_year ? ` (${d.net_worth_year})` : ""}` +
+        (d.net_worth_year && d.net_worth_year !== base
+          ? `. Not adjusted: the starting year is ${base}, so check this figure is as of ${base}.`
+          : "")
+      : null;
   const incomeText =
     d?.annual_income_minor != null
-      ? `Data: ${formatUsd(d.annual_income_minor)}${d.income_year ? ` (${d.income_year}, gross, from tax forms)` : ""}`
+      ? `Data: ${formatUsd(d.annual_income_minor)}${d.income_year ? ` (${d.income_year}, wages and self-employment from tax forms)` : ""}` +
+        rebasedNote(d.income_year, base, resolved.data.incomeMinor, state.incomeGrowthPct, "income growth")
       : null;
   const spendingText =
     d?.annual_spending_minor != null
-      ? `Data: ${formatUsd(d.annual_spending_minor)}${d.spending_year ? ` (${d.spending_year}${d.spending_annualized ? ", scaled up from a partial year" : ""})` : ""}`
+      ? `Data: ${formatUsd(d.annual_spending_minor)}${d.spending_year ? ` (${d.spending_year}${d.spending_annualized ? ", scaled up from a partial year" : ""})` : ""}` +
+        rebasedNote(d.spending_year, base, resolved.data.spendingMinor, state.spendingGrowthPct, "spending growth")
       : null;
   const observed = (v: number | null | undefined) => (v != null ? `Observed: ${formatPct(v)}/yr` : null);
 
@@ -90,10 +97,10 @@ export function ParametersPanel({ state, onChange, defaults, resolved, onResetAl
         <section aria-label="Income" className={SECTION}>
           <h3 className={SECTION_TITLE}>Income</h3>
           <MoneyField
-            label="Annual gross income"
+            label="Annual earned income"
             value={state.annualIncomeMinor}
             nullable
-            placeholder={d?.annual_income_minor != null ? (d.annual_income_minor / 100).toFixed(2) : "0.00"}
+            placeholder={resolved.data.incomeMinor != null ? (resolved.data.incomeMinor / 100).toFixed(2) : "0.00"}
             dataText={incomeText}
             onChange={(v) => onChange({ annualIncomeMinor: v })}
             onReset={() => onChange({ annualIncomeMinor: null })}
@@ -116,7 +123,7 @@ export function ParametersPanel({ state, onChange, defaults, resolved, onResetAl
             min={0}
             max={100}
             placeholder={d?.effective_tax_rate_pct != null ? String(d.effective_tax_rate_pct) : "0"}
-            dataText={d?.effective_tax_rate_pct != null ? `Data: ${formatPct(d.effective_tax_rate_pct)} (all-in tax / gross income)` : null}
+            dataText={d?.effective_tax_rate_pct != null ? `Data: ${formatPct(d.effective_tax_rate_pct)} (all-in tax / earned income)` : null}
             onChange={(v) => onChange({ taxRatePct: v })}
             onReset={() => onChange({ taxRatePct: null })}
           />
@@ -128,7 +135,7 @@ export function ParametersPanel({ state, onChange, defaults, resolved, onResetAl
             label="Annual spending"
             value={state.annualSpendingMinor}
             nullable
-            placeholder={d?.annual_spending_minor != null ? (d.annual_spending_minor / 100).toFixed(2) : "0.00"}
+            placeholder={resolved.data.spendingMinor != null ? (resolved.data.spendingMinor / 100).toFixed(2) : "0.00"}
             dataText={spendingText}
             onChange={(v) => onChange({ annualSpendingMinor: v })}
             onReset={() => onChange({ annualSpendingMinor: null })}
@@ -188,7 +195,7 @@ export function ParametersPanel({ state, onChange, defaults, resolved, onResetAl
             label="Retirement income per year"
             value={state.retirementIncomeMinor}
             onChange={(v) => onChange({ retirementIncomeMinor: v ?? 0 })}
-            dataText="In today's dollars, before tax; grows with inflation."
+            dataText={`In ${base} dollars (the starting year), before tax; grows with inflation.`}
           />
         </section>
 
@@ -196,6 +203,18 @@ export function ParametersPanel({ state, onChange, defaults, resolved, onResetAl
       </CardContent>
     </Card>
   );
+}
+
+/** " Shown as $X in 2025 at 3%/yr income growth." when the data's year is not the starting year. */
+function rebasedNote(
+  dataYear: number | null | undefined,
+  base: number,
+  rebasedMinor: number | null,
+  growthPct: number,
+  growthName: string,
+): string {
+  if (!dataYear || dataYear === base || rebasedMinor === null) return "";
+  return `. Rebased to ${base}: ${formatUsd(rebasedMinor)} (${dataYear} to ${base} at ${formatPct(growthPct)}/yr ${growthName}).`;
 }
 
 function EventsEditor({

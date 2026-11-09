@@ -48,8 +48,16 @@ def add_balance(
     session.flush()
 
 
-def add_w2(session: Session, user_id: int, year: int, wages: int, taxes: dict[str, int]) -> None:
-    """A W-2 with `wages` in box 1 and the given tax items (all-in rate = sum(taxes) / wages)."""
+def add_w2(
+    session: Session,
+    user_id: int,
+    year: int,
+    wages: int,
+    taxes: dict[str, int],
+    other_income: dict[str, int] | None = None,
+) -> None:
+    """A W-2 with `wages` in box 1 and the given tax items (all-in rate = sum(taxes) / total
+    income). `other_income` adds non-wage lines (interest, dividends, ...) to the same form."""
     n = next(_seq)
     doc = TaxDocument(
         user_id=user_id,
@@ -80,6 +88,17 @@ def add_w2(session: Session, user_id: int, year: int, wages: int, taxes: dict[st
             source_form="W2",
         )
     )
+    for category, amount in (other_income or {}).items():
+        session.add(
+            IncomeItem(
+                form_id=form.id,
+                user_id=user_id,
+                tax_year=year,
+                category=category,
+                amount_minor=amount,
+                source_form="W2",
+            )
+        )
     for category, amount in taxes.items():
         session.add(
             TaxItem(

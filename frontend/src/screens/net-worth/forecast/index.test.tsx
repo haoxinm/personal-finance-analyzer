@@ -196,8 +196,8 @@ describe("ForecastScreen", () => {
     renderScreen();
     await screen.findByTestId("forecast-summary");
     expect(screen.getByText("Data: $50,000 (2024)")).toBeInTheDocument();
-    expect(screen.getByText("Data: $90,000 (2024, gross, from tax forms)")).toBeInTheDocument();
-    expect(screen.getByText("Data: 22.5% (all-in tax / gross income)")).toBeInTheDocument();
+    expect(screen.getByText("Data: $90,000 (2024, wages and self-employment from tax forms)")).toBeInTheDocument();
+    expect(screen.getByText("Data: 22.5% (all-in tax / earned income)")).toBeInTheDocument();
     expect(screen.getByText("Data: $40,000 (2024)")).toBeInTheDocument();
     expect(screen.getByText("Observed: 12.5%/yr")).toBeInTheDocument();
     // 2036: the later of base (2024) and the current year (2026), plus ten.
@@ -214,17 +214,80 @@ describe("ForecastScreen", () => {
     expect(within(screen.getByTestId("forecast-table")).getAllByRole("row")).toHaveLength(3); // header + 2025, 2026
   });
 
+  it("shows each default's source year and rebases income and spending to the starting year", async () => {
+    mockApi({
+      "/net-worth/forecast/baseline": {
+        ...BASELINE,
+        defaults: {
+          ...BASELINE.defaults,
+          annual_income_minor: 10_000_000,
+          income_year: 2023, // tax forms lag a year behind the net worth
+          annual_spending_minor: 4_000_000,
+          spending_year: 2026,
+          spending_annualized: true,
+        },
+      },
+    });
+    renderScreen();
+    await screen.findByTestId("forecast-summary");
+    // Default growth: income 3%, spending 2.5%; the starting year is 2024 (latest net worth).
+    expect(
+      screen.getByText(
+        "Data: $100,000 (2023, wages and self-employment from tax forms). Rebased to 2024: $103,000 (2023 to 2024 at 3%/yr income growth).",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Data: $40,000 (2026, scaled up from a partial year). Rebased to 2024: $38,073 (2026 to 2024 at 2.5%/yr spending growth).",
+      ),
+    ).toBeInTheDocument();
+    expect(field("Annual earned income")).toHaveAttribute("placeholder", "103000.00");
+    expect(field("Annual spending")).toHaveAttribute("placeholder", "38072.58");
+  });
+
+  it("warns when the starting year is not the year of the net worth figure", async () => {
+    mockApi({ "/net-worth/forecast/baseline": BASELINE });
+    renderScreen();
+    await screen.findByTestId("forecast-summary");
+    expect(screen.queryByText(/Not adjusted/)).not.toBeInTheDocument();
+    await replace(screen.getByLabelText("Starting year"), "2026");
+    expect(
+      screen.getByText("Data: $50,000 (2024). Not adjusted: the starting year is 2026, so check this figure is as of 2026."),
+    ).toBeInTheDocument();
+  });
+
+  it("rejects a money amount above the API's bound with a message instead of failing on save", async () => {
+    mockApi({ "/net-worth/forecast/baseline": BASELINE });
+    renderScreen();
+    await screen.findByTestId("forecast-summary");
+    const input = field("Starting net worth");
+    await userEvent.type(input, "100000000000");
+    expect(await screen.findByText("Enter an amount below $100,000,000,000.")).toBeInTheDocument();
+    expect(input).toHaveAttribute("aria-invalid", "true");
+    // The oversized value was not applied: the projection still starts from the data's $50,000.
+    expect(screen.getByTestId("forecast-summary")).toBeInTheDocument();
+  });
+
+  it("explains opposite-sign savings and growth instead of a percentage", async () => {
+    mockApi({ "/net-worth/forecast/baseline": BASELINE });
+    renderScreen();
+    await screen.findByTestId("forecast-summary");
+    // Spending far above income: a drawdown that investment growth only partly offsets.
+    await userEvent.type(field("Annual spending"), "100000");
+    expect(screen.getByTestId("forecast-growth-note").textContent).toMatch(/^Offsets \$[\d,]+ of net withdrawals/);
+  });
+
   it("overrides a default and puts the data value back with 'Reset to data'", async () => {
     mockApi({ "/net-worth/forecast/baseline": BASELINE });
     renderScreen();
     await screen.findByTestId("forecast-summary");
-    const income = field("Annual gross income");
+    const income = field("Annual earned income");
     expect(income).toHaveValue("");
     expect(income).toHaveAttribute("placeholder", "90000.00");
-    expect(screen.queryByRole("button", { name: "Reset Annual gross income to data" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Reset Annual earned income to data" })).not.toBeInTheDocument();
 
     await userEvent.type(income, "120000");
-    await userEvent.click(screen.getByRole("button", { name: "Reset Annual gross income to data" }));
+    await userEvent.click(screen.getByRole("button", { name: "Reset Annual earned income to data" }));
     expect(income).toHaveValue("");
 
     // A rate resets to the observed one, and only offers the reset while it differs.
@@ -259,7 +322,7 @@ describe("ForecastScreen", () => {
     expect(screen.getByRole("slider", { name: "Investment return per year slider" })).toHaveValue("4");
   });
 
-  it("switches to today's dollars", async () => {
+  it("switches to starting-year dollars", async () => {
     mockApi({ "/net-worth/forecast/baseline": BASELINE });
     renderScreen();
     await screen.findByTestId("forecast-summary");
@@ -267,10 +330,10 @@ describe("ForecastScreen", () => {
     const realTile = screen.getByTestId("forecast-real").textContent;
     expect(realTile).not.toBe(nominal);
     expect(screen.getByRole("radio", { name: "Nominal" })).toHaveAttribute("aria-checked", "true");
-    await userEvent.click(screen.getByRole("radio", { name: "Today's dollars" }));
-    expect(screen.getByRole("radio", { name: "Today's dollars" })).toHaveAttribute("aria-checked", "true");
+    await userEvent.click(screen.getByRole("radio", { name: "2024 dollars" }));
+    expect(screen.getByRole("radio", { name: "2024 dollars" })).toHaveAttribute("aria-checked", "true");
     expect(screen.getByTestId("forecast-chart")).toHaveAttribute("data-mode", "real");
-    expect(screen.getByTestId("forecast-table").querySelector("caption")).toHaveTextContent("today's dollars");
+    expect(screen.getByTestId("forecast-table").querySelector("caption")).toHaveTextContent("2024 dollars");
     // The summary tiles always show both.
     expect(screen.getByTestId("forecast-nominal").textContent).toBe(nominal);
   });
@@ -311,13 +374,13 @@ describe("ForecastScreen", () => {
     expect(preset).toHaveValue("builtin:moderate");
     expect(screen.queryByText(/Modified from/)).not.toBeInTheDocument();
 
-    await userEvent.type(field("Annual gross income"), "120000");
+    await userEvent.type(field("Annual earned income"), "120000");
     await userEvent.selectOptions(preset, "builtin:aggressive");
     expect(spin("Investment return per year")).toHaveValue(8);
     expect(spin("Income growth per year")).toHaveValue(5);
     expect(spin("Spending growth per year")).toHaveValue(2);
     // The scenario's own values survive a preset change.
-    expect(field("Annual gross income")).toHaveValue("120000.00");
+    expect(field("Annual earned income")).toHaveValue("120000.00");
     expect(screen.queryByText(/Modified from/)).not.toBeInTheDocument();
 
     await replace(spin("Investment return per year"), "7");
@@ -339,7 +402,7 @@ describe("ForecastScreen", () => {
     await userEvent.selectOptions(screen.getByRole("combobox", { name: "Preset" }), "saved:7");
     expect(spin("Investment return per year")).toHaveValue(7);
     expect(spin("Last working year")).toHaveValue(2045);
-    expect(field("Annual gross income")).toHaveValue("150000.00");
+    expect(field("Annual earned income")).toHaveValue("150000.00");
     expect(spin("Forecast to year")).toHaveValue(2044);
     expect(screen.queryByText(/Modified from/)).not.toBeInTheDocument();
   });

@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/utils";
 
-import { formatDollarsInput, parseDollars } from "./params";
+import { MAX_AMOUNT_MINOR, checkDollars, formatDollarsInput, formatUsd, type DollarsProblem } from "./params";
 
 const LABEL = "text-xs font-medium text-muted-foreground";
 
@@ -70,24 +70,25 @@ export function MoneyField({
   const id = React.useId();
   const [draft, setDraft] = React.useState(value === null ? "" : formatDollarsInput(value));
   const [focused, setFocused] = React.useState(false);
-  const [invalid, setInvalid] = React.useState(false);
+  const [problem, setProblem] = React.useState<DollarsProblem | null>(null);
+  const invalid = problem !== null;
   React.useEffect(() => {
     if (!focused) {
       setDraft(value === null ? "" : formatDollarsInput(value));
-      setInvalid(false);
+      setProblem(null);
     }
   }, [value, focused]);
 
   function onType(text: string) {
     setDraft(text);
     if (text.trim() === "") {
-      setInvalid(false);
+      setProblem(null);
       onChange(nullable ? null : 0);
       return;
     }
-    const parsed = parseDollars(text, allowNegative);
-    setInvalid(parsed === null);
-    if (parsed !== null) onChange(parsed);
+    const parsed = checkDollars(text, allowNegative);
+    setProblem("problem" in parsed ? parsed.problem : null);
+    if ("minor" in parsed) onChange(parsed.minor);
   }
 
   return (
@@ -116,7 +117,9 @@ export function MoneyField({
       </div>
       {invalid ? (
         <p id={`${id}-error`} role="alert" className="text-xs text-destructive">
-          Enter {allowNegative ? "an" : "a non-negative"} amount, like 1,234.56.
+          {problem === "range"
+            ? `Enter an amount below ${formatUsd(MAX_AMOUNT_MINOR)}.`
+            : `Enter ${allowNegative ? "an" : "a non-negative"} amount, like 1,234.56.`}
         </p>
       ) : null}
       <DataHint text={dataText} canReset={value !== null} onReset={onReset} resetLabel={`Reset ${label} to data`} />

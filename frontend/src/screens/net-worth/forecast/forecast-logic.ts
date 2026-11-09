@@ -7,7 +7,7 @@
  * Each projected year `t` (from `baseYear + 1` to `targetYear`), with `n = t - baseYear`:
  *
  *   income_t    = salary_0 * (1 + income growth)^n                  while t <= retirementYear
- *               = retirementIncome * (1 + inflation)^n              after it (today's dollars, indexed)
+ *               = retirementIncome * (1 + inflation)^n              after it (base-year dollars, indexed)
  *   tax_t       = income_t * tax rate                               one flat effective rate
  *   spending_t  = max(0, spending_{t-1} * (1 + spending growth) + fixed annual change)
  *   savings_t   = income_t - tax_t - spending_t                     negative = drawdown

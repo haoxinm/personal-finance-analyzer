@@ -2,24 +2,32 @@
 
 Read-only aggregation over three existing sources, joined by calendar year:
 
-- **Net worth** (year-end): the last month with data in that year from `run_net_worth_query`
-  (balance entries, carried forward per account), else the user's manual value from
-  `net_worth_history`. Entries always win; a manual value for a year with entries is reported next
-  to it (`manual_net_worth_minor`) but never used. With ``user_id=None`` (all users) entries are
-  summed across users as the net-worth screen does, and manual values are summed per year.
-- **Income and tax**: `run_tax_summary`. Income is the gross taxable income on the imported forms
-  (`total_income_minor`, so it includes interest, dividends and capital gains); tax is the all-in
-  figure (federal + state + local + FICA), rebuilt as ``all_in_rate * total_income_minor``.
+- **Net worth** (year-end): per person, the last month with data in that year from
+  `run_net_worth_query` (balance entries, carried forward per account), else that person's manual
+  value from `net_worth_history`; entries win over a manual value for the same person and year, and
+  a manual value for a year with entries is reported next to it (`manual_net_worth_minor`) but never
+  used. With ``user_id=None`` (all users) the choice is made per person and per year, then summed,
+  so one person's entries never hide another person's manual value; the row's `source` is
+  ``"mixed"`` when both kinds contributed.
+- **Income and tax**: `run_tax_summary`. `income_minor` is the gross taxable income on the imported
+  forms (`total_income_minor`, so it includes interest, dividends and capital gains) and
+  `earned_income_minor` is its wages + self-employment part; tax is the all-in figure
+  (federal + state + local + FICA), rebuilt as ``all_in_rate * total_income_minor``.
 - **Spending**: `run_query` over the default spend kinds, refunds netted, grouped by month and
   summed per year. ``spending_months`` is how many calendar months of that year have any
   transaction, so a partial year is visible (and annualised only for the suggested default).
 
 USD only: the tax tables and balance entries are USD-only, and spending is filtered to USD.
 
-Suggested defaults: the latest net worth; income, tax rate and spending from the latest year that
-has them (a partial spending year is annualised when it covers at least `_MIN_ANNUALISE_MONTHS`
-months); growth rates are compound annual rates between the first and last year with data
-(spending: complete years only), ``None`` with fewer than two such years or a non-positive start.
+Suggested defaults: the latest net worth; **earned** income (wages + self-employment: interest,
+dividends and gains are left out because the forecast's investment return already compounds them),
+the tax rate (all-in tax / earned income, so the year's tax dollars are reproduced on the earned
+income alone) and spending from the latest year that has them (a partial spending year is
+annualised when it covers at least `_MIN_ANNUALISE_MONTHS` months); growth rates are compound
+annual rates between the first and last year with data (earned income; spending: complete years
+only), ``None`` with fewer than two such years or a non-positive start. Each default carries the
+year it was measured in (`net_worth_year`, `income_year`, `spending_year`), because they can
+differ; the screen rebases income and spending to the chosen starting year.
 """
 
 from __future__ import annotations
@@ -34,22 +42,28 @@ from sqlalchemy.orm import Session
 from spend_analyzer.analytics.net_worth_query import NetWorthQuery, run_net_worth_query
 from spend_analyzer.analytics.query import SpendQuery, run_query
 from spend_analyzer.analytics.tax_query import IncomeBasis, TaxQuery, run_tax_summary
+from spend_analyzer.core.net_worth import signed_balance
+from spend_analyzer.core.tax_types import IncomeCategory
 from spend_analyzer.db.models import NetWorthHistory
 
 CURRENCY: Final = "USD"
 #: A partial spending year needs at least this many months to be scaled up to a full year.
 _MIN_ANNUALISE_MONTHS = 3
+#: Income categories that count as earned: the rest (interest, dividends, gains) is what the
+#: forecast's investment return already models.
+_EARNED_CATEGORIES: Final[tuple[IncomeCategory, ...]] = ("salary_wages", "self_employment")
 
 
 @dataclass(frozen=True)
 class HistoryRow:
     year: int
     net_worth_minor: int | None
-    source: str | None  # "entries" | "manual" | None
+    source: str | None  # "entries" | "manual" | "mixed" (all-users view only) | None
     as_of: str | None
     manual_net_worth_minor: int | None
     manual_note: str | None
     income_minor: int | None
+    earned_income_minor: int | None
     tax_minor: int | None
     income_basis: IncomeBasis | None
     spending_minor: int | None
@@ -80,40 +94,99 @@ class ForecastBaseline:
     defaults: Defaults
 
 
-def _entries_by_year(session: Session, user_id: int | None) -> dict[int, tuple[int, str]]:
-    """year -> (year-end net worth, "YYYY-MM") from balance entries."""
+@dataclass(frozen=True)
+class _NetWorthYear:
+    net_worth_minor: int
+    source: str  # "entries" | "manual" | "mixed"
+    as_of: str | None
+    manual_minor: int | None
+    manual_note: str | None
+
+
+def _entries_by_user_year(
+    session: Session, user_id: int | None
+) -> dict[int, dict[int, tuple[int, str]]]:
+    """user -> year -> (that user's year-end net worth, "YYYY-MM") from balance entries.
+
+    The year-end month is the last month of the (combined) series in that year, so with several
+    users a person whose entries stop early is carried forward exactly as the net-worth screen
+    does. A user with no account in effect at that month has no value for the year."""
     result = run_net_worth_query(session, NetWorthQuery(user_id=user_id, currency=CURRENCY))
-    out: dict[int, tuple[int, str]] = {}
+    year_end: dict[int, str] = {}
     for point in result.series:  # chronological, so the last point of a year wins
-        out[int(point.period[:4])] = (point.net_worth_minor, point.period)
+        year_end[int(point.period[:4])] = point.period
+    ends = set(year_end.values())
+    totals: dict[tuple[int, str], int] = defaultdict(int)
+    for acc in result.account_series:
+        for pt in acc.points:
+            if pt.period in ends:
+                totals[(acc.user_id, pt.period)] += signed_balance(acc.category, pt.balance_minor)
+    out: dict[int, dict[int, tuple[int, str]]] = defaultdict(dict)
+    for (uid, period), total in sorted(totals.items()):
+        out[uid][int(period[:4])] = (total, period)
     return out
 
 
-def _manual_by_year(session: Session, user_id: int | None) -> dict[int, tuple[int, str | None]]:
-    """year -> (manual net worth, note). Summed across users for the all-users view (the note is
-    kept only for a single user's value)."""
+def _manual_by_user_year(
+    session: Session, user_id: int | None
+) -> dict[int, dict[int, tuple[int, str | None]]]:
+    """user -> year -> (manual net worth, note)."""
     stmt = select(NetWorthHistory).order_by(NetWorthHistory.year, NetWorthHistory.user_id)
     if user_id is not None:
         stmt = stmt.where(NetWorthHistory.user_id == user_id)
-    totals: dict[int, int] = defaultdict(int)
-    notes: dict[int, str | None] = {}
+    out: dict[int, dict[int, tuple[int, str | None]]] = defaultdict(dict)
     for row in session.scalars(stmt):
-        totals[row.year] += row.amount_minor
-        notes[row.year] = row.note if user_id is not None else None
-    return {y: (totals[y], notes[y]) for y in totals}
+        out[row.user_id][row.year] = (row.amount_minor, row.note)
+    return out
+
+
+def _net_worth_by_year(session: Session, user_id: int | None) -> dict[int, _NetWorthYear]:
+    """year -> year-end net worth, choosing entries over manual **per person per year**, then
+    summing. The note is kept only for a single user's value."""
+    entries = _entries_by_user_year(session, user_id)
+    manual = _manual_by_user_year(session, user_id)
+    years = {y for per_user in entries.values() for y in per_user}
+    years |= {y for per_user in manual.values() for y in per_user}
+    out: dict[int, _NetWorthYear] = {}
+    for year in sorted(years):
+        total = 0
+        kinds: set[str] = set()
+        periods: list[str] = []
+        manual_total: int | None = None
+        note: str | None = None
+        for uid in sorted({*entries, *manual}):
+            e = entries.get(uid, {}).get(year)
+            m = manual.get(uid, {}).get(year)
+            if m is not None:
+                manual_total = (manual_total or 0) + m[0]
+                if user_id is not None:
+                    note = m[1]
+            if e is not None:
+                total += e[0]
+                kinds.add("entries")
+                periods.append(e[1])
+            elif m is not None:
+                total += m[0]
+                kinds.add("manual")
+        source = next(iter(kinds)) if len(kinds) == 1 else "mixed"
+        as_of = max(periods) if periods else None
+        out[year] = _NetWorthYear(total, source, as_of, manual_total, note)
+    return out
 
 
 def _tax_by_year(
     session: Session, user_id: int | None
-) -> dict[int, tuple[int, int | None, IncomeBasis]]:
-    """year -> (gross income, all-in tax or None, basis); years without income are left out."""
+) -> dict[int, tuple[int, int, int | None, IncomeBasis]]:
+    """year -> (gross income, earned income, all-in tax or None, basis); years without income are
+    left out. Earned income is wages + self-employment."""
     query = TaxQuery(user_ids=[user_id] if user_id is not None else None, currency=CURRENCY)
-    out: dict[int, tuple[int, int | None, IncomeBasis]] = {}
+    out: dict[int, tuple[int, int, int | None, IncomeBasis]] = {}
     for s in run_tax_summary(session, query):
         if s.income_basis == "none" or s.total_income_minor <= 0:
             continue
         tax = round(s.all_in_rate * s.total_income_minor) if s.all_in_rate is not None else None
-        out[s.tax_year] = (s.total_income_minor, tax, s.income_basis)
+        earned = sum(s.income_by_category.get(c, 0) for c in _EARNED_CATEGORIES)
+        out[s.tax_year] = (s.total_income_minor, earned, tax, s.income_basis)
     return out
 
 
@@ -162,22 +235,14 @@ def run_forecast_baseline(session: Session, user_id: int | None) -> ForecastBase
     Args:
         user_id: One user, or None for everyone combined.
     """
-    entries = _entries_by_year(session, user_id)
-    manual = _manual_by_year(session, user_id)
+    net_worth_by_year = _net_worth_by_year(session, user_id)
     tax = _tax_by_year(session, user_id)
     spending = _spending_by_year(session, user_id)
 
     rows: list[HistoryRow] = []
-    for year in sorted({*entries, *manual, *tax, *spending}):
-        net_worth: int | None = None
-        source: str | None = None
-        as_of: str | None = None
-        if year in entries:
-            net_worth, as_of = entries[year]
-            source = "entries"
-        elif year in manual:
-            net_worth, source = manual[year][0], "manual"
-        income, tax_minor, basis = tax.get(year, (None, None, None))
+    for year in sorted({*net_worth_by_year, *tax, *spending}):
+        nw = net_worth_by_year.get(year)
+        income, earned, tax_minor, basis = tax.get(year, (None, None, None, None))
         spent, months = spending.get(year, (None, 0))
         savings = (
             income - tax_minor - spent
@@ -187,12 +252,13 @@ def run_forecast_baseline(session: Session, user_id: int | None) -> ForecastBase
         rows.append(
             HistoryRow(
                 year=year,
-                net_worth_minor=net_worth,
-                source=source,
-                as_of=as_of,
-                manual_net_worth_minor=manual[year][0] if year in manual else None,
-                manual_note=manual[year][1] if year in manual else None,
+                net_worth_minor=nw.net_worth_minor if nw else None,
+                source=nw.source if nw else None,
+                as_of=nw.as_of if nw else None,
+                manual_net_worth_minor=nw.manual_minor if nw else None,
+                manual_note=nw.manual_note if nw else None,
                 income_minor=income,
+                earned_income_minor=earned,
                 tax_minor=tax_minor,
                 income_basis=basis,
                 spending_minor=spent,
@@ -216,10 +282,13 @@ def _annual_spending(row: HistoryRow) -> tuple[int, bool] | None:
 
 def _defaults(rows: list[HistoryRow]) -> Defaults:
     latest_nw = next((r for r in reversed(rows) if r.net_worth_minor is not None), None)
-    latest_income = next((r for r in reversed(rows) if r.income_minor), None)
+    latest_income = next((r for r in reversed(rows) if r.earned_income_minor), None)
     tax_rate: float | None = None
-    if latest_income and latest_income.income_minor and latest_income.tax_minor is not None:
-        tax_rate = round(latest_income.tax_minor / latest_income.income_minor * 100, 2)
+    if latest_income and latest_income.earned_income_minor and latest_income.tax_minor is not None:
+        # All the year's tax is attributed to earned income (the only income the forecast taxes).
+        tax_rate = round(
+            min(latest_income.tax_minor / latest_income.earned_income_minor * 100, 100.0), 2
+        )
 
     spending: tuple[int, bool] | None = None
     spending_year: int | None = None
@@ -234,8 +303,10 @@ def _defaults(rows: list[HistoryRow]) -> Defaults:
     if latest_savings and latest_savings.savings_minor is not None and latest_savings.income_minor:
         savings_rate = round(latest_savings.savings_minor / latest_savings.income_minor * 100, 2)
 
-    income_by_year = {
-        r.year: r.income_minor for r in rows if r.income_minor is not None and r.income_minor > 0
+    earned_by_year = {
+        r.year: r.earned_income_minor
+        for r in rows
+        if r.earned_income_minor is not None and r.earned_income_minor > 0
     }
     complete_spending = {
         r.year: r.spending_minor
@@ -245,13 +316,13 @@ def _defaults(rows: list[HistoryRow]) -> Defaults:
     return Defaults(
         net_worth_minor=latest_nw.net_worth_minor if latest_nw else None,
         net_worth_year=latest_nw.year if latest_nw else None,
-        annual_income_minor=latest_income.income_minor if latest_income else None,
+        annual_income_minor=latest_income.earned_income_minor if latest_income else None,
         income_year=latest_income.year if latest_income else None,
         effective_tax_rate_pct=tax_rate,
         annual_spending_minor=spending[0] if spending else None,
         spending_year=spending_year,
         spending_annualized=spending[1] if spending else False,
-        income_growth_pct=_growth(income_by_year),
+        income_growth_pct=_growth(earned_by_year),
         spending_growth_pct=_growth(complete_spending),
         savings_rate_pct=savings_rate,
     )
