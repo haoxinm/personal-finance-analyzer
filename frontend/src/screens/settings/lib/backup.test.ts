@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { backupFilename, encodePassphrase, exportBackup, restoreBackup } from "./backup";
+import { backupFilename, encodePassphrase, exportBackup, parseSkipped, restoreBackup } from "./backup";
 
 describe("backup API calls", () => {
   afterEach(() => {
@@ -20,7 +20,8 @@ describe("backup API calls", () => {
     const fetchMock = vi.fn<typeof fetch>(() => Promise.resolve(new Response("archive-bytes")));
     vi.stubGlobal("fetch", fetchMock);
 
-    const blob = await exportBackup("correct horse battery");
+    const { blob, skipped } = await exportBackup("correct horse battery");
+    expect(skipped).toBeNull();
 
     const [url, init] = fetchMock.mock.calls[0] ?? [];
     expect(url as string).toContain("/api/backup/export");
@@ -28,6 +29,18 @@ describe("backup API calls", () => {
     expect(new Headers(init?.headers).get("X-PFA-Token")).toBe("test-token");
     expect(JSON.parse(init?.body as string)).toEqual({ passphrase: "correct horse battery", encrypt: true });
     expect(await blob.text()).toBe("archive-bytes");
+  });
+
+  it("reports the files the server left out of the backup", async () => {
+    const header = encodeURIComponent(JSON.stringify({ count: 2, examples: ["Scan é.pdf", "big.pdf"] }));
+    const fetchMock = vi.fn<typeof fetch>(() =>
+      Promise.resolve(new Response("x", { headers: { "X-Backup-Skipped": header } })),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const { skipped } = await exportBackup(null);
+    expect(skipped).toEqual({ count: 2, examples: ["Scan é.pdf", "big.pdf"] });
+    expect(parseSkipped("not%json")).toBeNull();
+    expect(parseSkipped(null)).toBeNull();
   });
 
   it("sends an explicit encrypt=false only when asked to skip the passphrase", async () => {

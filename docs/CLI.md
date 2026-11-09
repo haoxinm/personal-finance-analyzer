@@ -503,7 +503,9 @@ the new one. See [Moving to another machine](../README.md#moving-to-another-mach
 - **`backup create OUT`** writes the database (a consistent snapshot, so it is safe while `serve`
   is running), the PDFs of your [documents folder](#documents) (under a `documents/` prefix, with
   their readable names; only `.pdf` files, and a file whose name Windows could not hold is left out
-  with a warning), layout specs and `config.toml`. `OUT` is a file, or a
+  with a warning), layout specs and `config.toml`. A backup is never written that a restore would
+  refuse: a PDF over 64 MiB (or other file over 4 MiB, or more than 16 GiB in all) is left out
+  with a warning naming it, and a database over 8 GiB stops the backup. `OUT` is a file, or a
   directory to get a dated `pfa-YYYY-MM-DD.pfabackup` in. It is **encrypted with a
   passphrase by default** (at least 8 characters; prompted twice, or read from the first line of
   `--passphrase-file`). `--no-encrypt` is the explicit opt-out: the file then holds your statements
@@ -536,7 +538,9 @@ the new one. See [Moving to another machine](../README.md#moving-to-another-mach
   is deleted or overwritten. Files in the folder that are not part of the backup are counted and
   reported (`NOTE: 3 other file(s) in ... are not part of this backup`), never removed. When the
   folder is the default one inside the data directory it is carried across the swap instead of
-  being moved aside with the old data. A backup made before the documents folder existed
+  being moved aside with the old data. If the swap fails and that folder cannot be moved back, the
+  restore moves it to `<name>.documents-recovered-<time>` beside the data directory (never a
+  name a cleanup touches) and the error says where it is. A backup made before the documents folder existed
   (`statements/<sha256>.pdf`) is converted to the readable layout on the way in.
 
 All three exit 1 with a message on any problem (wrong passphrase, damaged or modified file, unknown

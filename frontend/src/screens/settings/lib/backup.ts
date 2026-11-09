@@ -68,8 +68,38 @@ export function backupFilename(date: Date = new Date()): string {
   return `pfa-${date.toISOString().slice(0, 10)}.pfabackup`;
 }
 
+/** Files the backend left out of the download (a name that cannot be stored portably, or larger than
+ * a restore accepts): the total and the first few names. */
+export interface SkippedFiles {
+  count: number;
+  examples: string[];
+}
+
+export interface ExportedBackup {
+  blob: Blob;
+  /** Present when some files are NOT in the backup. */
+  skipped: SkippedFiles | null;
+}
+
+/** Reads the `X-Backup-Skipped` header (URL-quoted JSON); `null` when absent or unreadable. */
+export function parseSkipped(header: string | null): SkippedFiles | null {
+  if (!header) return null;
+  try {
+    const parsed: unknown = JSON.parse(decodeURIComponent(header));
+    if (parsed && typeof parsed === "object" && "count" in parsed && "examples" in parsed) {
+      const { count, examples } = parsed;
+      if (typeof count === "number" && Array.isArray(examples)) {
+        return { count, examples: examples.map(String) };
+      }
+    }
+  } catch {
+    // an unreadable header just means no warning
+  }
+  return null;
+}
+
 /** Asks the backend to build a backup. `passphrase: null` is an explicit "do not encrypt". */
-export async function exportBackup(passphrase: string | null): Promise<Blob> {
+export async function exportBackup(passphrase: string | null): Promise<ExportedBackup> {
   const response = await fetch(backupUrl("export"), {
     method: "POST",
     headers: { "Content-Type": "application/json", ...tokenHeaders() },
@@ -78,7 +108,7 @@ export async function exportBackup(passphrase: string | null): Promise<Blob> {
   if (!response.ok) {
     throw new Error(await readErrorDetail(response));
   }
-  return response.blob();
+  return { blob: await response.blob(), skipped: parseSkipped(response.headers.get("X-Backup-Skipped")) };
 }
 
 /** Header values are latin-1, so the passphrase travels as base64 of its UTF-8 bytes. */

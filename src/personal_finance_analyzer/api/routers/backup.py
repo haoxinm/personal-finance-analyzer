@@ -24,8 +24,10 @@ from __future__ import annotations
 
 import base64
 import binascii
+import json
 from pathlib import Path
 from typing import Annotated
+from urllib.parse import quote
 
 from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
@@ -49,6 +51,9 @@ router = APIRouter(tags=["backup"])
 
 #: Header carrying the restore passphrase: base64 of its UTF-8 bytes.
 PASSPHRASE_HEADER = "X-Backup-Passphrase"
+#: Set on an export that left files out (a name that cannot be stored portably, or larger than a
+#: restore accepts): URL-quoted JSON `{"count": n, "examples": [first few names]}`.
+SKIPPED_HEADER = "X-Backup-Skipped"
 UPLOAD_CONTENT_TYPE = "application/octet-stream"
 
 
@@ -93,18 +98,24 @@ def export_backup(body: BackupExportRequest) -> FileResponse:
     tmp_dir = archive.make_work_dir(get_home(), "export")
     out = tmp_dir / archive.default_filename()
     try:
-        archive.create_backup(out, passphrase=passphrase)
+        manifest = archive.create_backup(out, passphrase=passphrase)
     except BackupError as exc:
         archive.remove_work_dir(tmp_dir)
         raise _http_error(exc) from exc
     except BaseException:
         archive.remove_work_dir(tmp_dir)
         raise
+    headers = {"Cache-Control": "no-store"}
+    left_out = [*manifest.skipped, *manifest.oversized]
+    if left_out:  # files that are NOT in the download: the page warns about them
+        headers[SKIPPED_HEADER] = quote(
+            json.dumps({"count": len(left_out), "examples": [n[:120] for n in left_out[:5]]})
+        )
     return FileResponse(
         out,
         media_type="application/octet-stream",
         filename=out.name,
-        headers={"Cache-Control": "no-store"},
+        headers=headers,
         background=BackgroundTask(archive.remove_work_dir, tmp_dir),
     )
 

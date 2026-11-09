@@ -168,6 +168,11 @@ class Manifest:
     #: Documents-folder PDFs a *new* backup left out because their name is not portable (never
     #: written to the manifest; reported by the command that made the backup).
     skipped: tuple[str, ...] = ()
+    #: Members a *new* backup left out because they are larger than a restore accepts (the limits
+    #: of `_member_limit`, and `MAX_TOTAL_BYTES` for the whole archive): a backup that restore
+    #: would refuse is never written. Documents-folder files are named by their relative path,
+    #: others by member name. Never written to the manifest; reported by the command that made it.
+    oversized: tuple[str, ...] = ()
 
     def to_json(self) -> bytes:
         document: dict[str, Any] = {
@@ -494,17 +499,39 @@ def _write_zip(home: Path, zip_path: Path, work: Path, documents: Path) -> Manif
 
     now = datetime.now(UTC)
     entries: list[BackupFile] = []
+    oversized: list[str] = []
+    total = 0
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
         for name, path in sources:
+            try:
+                declared = path.stat().st_size
+            except FileNotFoundError:  # removed between listing and reading (e.g. a delete)
+                continue
+            # The limits restore holds an archive to (`_extract`): a member over them is left out
+            # and reported rather than written into an archive that could not be restored. The
+            # database cannot be left out, so it stops the backup instead.
+            if name == DB_MEMBER and declared > _member_limit(name):
+                raise BackupError(
+                    f"the database is {declared} bytes, more than a backup may hold "
+                    f"({_member_limit(name)} bytes), so it cannot be backed up"
+                )
+            if name != DB_MEMBER and (
+                declared > _member_limit(name) or total + declared > MAX_TOTAL_BYTES
+            ):
+                oversized.append(name.removeprefix(DOCUMENTS_PREFIX))
+                continue
             info = zipfile.ZipInfo(name, date_time=now.timetuple()[:6])
             info.compress_type = (
-                zipfile.ZIP_STORED if name.endswith(".pdf") else zipfile.ZIP_DEFLATED
+                zipfile.ZIP_STORED if name.casefold().endswith(".pdf") else zipfile.ZIP_DEFLATED
             )
             try:
                 with path.open("rb") as src, zf.open(info, "w", force_zip64=True) as out:
                     size, sha256 = _copy_hashed(src, out)
             except FileNotFoundError:  # removed between listing and reading (e.g. a delete)
                 continue
+            if size > _member_limit(name) or (name != DB_MEMBER and total + size > MAX_TOTAL_BYTES):
+                raise BackupError(f"{name} grew while it was being backed up; try again")
+            total += size
             entries.append(BackupFile(name, size, sha256))
         manifest = Manifest(
             format_version=FORMAT_VERSION,
@@ -515,6 +542,7 @@ def _write_zip(home: Path, zip_path: Path, work: Path, documents: Path) -> Manif
             counts=counts,
             files=tuple(entries),
             skipped=tuple(skipped),
+            oversized=tuple(oversized),
         )
         zf.writestr(MANIFEST_NAME, manifest.to_json())
     return manifest
@@ -578,6 +606,8 @@ def sweep_stale_work_dirs(
     for candidate in candidates:
         try:
             if _newest_mtime(candidate) > cutoff:
+                continue
+            if (candidate / KEEP_MARKER).exists():  # a failed restore's stranded documents
                 continue
             if candidate.is_dir() and not candidate.is_symlink():
                 shutil.rmtree(candidate)
@@ -848,9 +878,12 @@ def _check_target(target: Path, *, replace: bool) -> None:
 
 
 def _member_limit(path: str) -> int:
-    if path == DB_MEMBER:
+    """The largest size restore accepts for member ``path``. Export applies the same limits, so an
+    archive this app wrote is always one it can restore (the extension test is case-insensitive,
+    as the one that decides what export includes)."""
+    if path in _DB_MEMBERS:
         return MAX_DB_BYTES
-    if path.endswith(".pdf"):
+    if path.casefold().endswith(".pdf"):
         return MAX_PDF_BYTES
     return MAX_TEXT_BYTES
 
@@ -1247,17 +1280,21 @@ def restore_backup(
                 try:
                     _undo_carry(carried)
                 except OSError as undo_exc:
-                    keep_stage = True
+                    assert stranded_docs is not None
+                    where, parked = _park_stranded_documents(stranded_docs, stage, target, now)
+                    keep_stage = not parked
+                    if parked:
+                        stranded_docs = None  # out of the stage: the stage may go
                     _log.error(
                         "restore failed and the documents folder could not be put back; it is "
                         "at %s (%s)",
-                        stranded_docs,
+                        where,
                         undo_exc,
                     )
                     if isinstance(exc, OSError):
                         raise BackupError(
                             f"could not move the restored data into place: {exc}. Your documents "
-                            f"folder could NOT be put back and was left at {stranded_docs}; move it "
+                            f"folder could NOT be put back and was left at {where}; move it "
                             f"back to {docs_root} yourself (nothing was deleted)."
                         ) from exc
                     raise
@@ -1272,6 +1309,7 @@ def restore_backup(
         finally:
             if stranded_docs is not None:
                 keep_stage = True
+                _mark_kept(stage)
         if kept_secrets and previous is not None:
             _discard_old_secrets(previous, target)
 
@@ -1304,6 +1342,44 @@ def restore_backup(
             shutil.rmtree(doc_stage, ignore_errors=True)
         if not swapped and made_top is not None:
             _prune_empty(docs_root, made_top)  # a failed restore leaves no empty folders behind
+
+
+#: A file inside a restore's staging directory that tells `sweep_stale_work_dirs` the directory
+#: holds something of the user's (their documents folder, after a failed swap) and is never swept.
+KEEP_MARKER = "KEEP-your-documents-are-inside.txt"
+
+
+def _mark_kept(stage: Path) -> None:
+    """Make the sweep leave ``stage`` alone, however old it gets (best effort)."""
+    with contextlib.suppress(OSError):
+        (stage / KEEP_MARKER).write_text(
+            "A restore failed and could not put your documents folder back. It is inside this "
+            "directory (home/...). Move it back by hand; this directory is never deleted "
+            "automatically.\n",
+            encoding="utf-8",
+        )
+
+
+def _park_stranded_documents(
+    stranded: Path, stage: Path, target: Path, now: datetime
+) -> tuple[Path, bool]:
+    """Move the user's documents folder, stranded inside the staging directory ``stage``, to a
+    name the stale-directory sweep never matches (``<home>.documents-recovered-<time>``, beside
+    the data directory). Returns where the folder is, and whether it left the staging directory.
+    When the move fails too the staging directory is marked instead (see `KEEP_MARKER`) and the
+    folder stays in it."""
+    stamp = now.strftime("%Y%m%dT%H%M%S")
+    parked = target.with_name(f"{target.name}.documents-recovered-{stamp}")
+    counter = 1
+    while parked.exists():
+        counter += 1
+        parked = target.with_name(f"{target.name}.documents-recovered-{stamp}-{counter}")
+    try:
+        stranded.rename(parked)
+    except OSError:
+        _mark_kept(stage)
+        return stranded, False
+    return parked, True
 
 
 def _topmost_missing(path: Path) -> Path | None:

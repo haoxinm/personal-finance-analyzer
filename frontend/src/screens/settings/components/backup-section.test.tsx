@@ -1,13 +1,13 @@
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type MockInstance, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ToastContextProvider } from "@/components/ui/toast-provider";
 
-import type { RestoreResult } from "../lib/backup";
+import type { ExportedBackup, RestoreResult } from "../lib/backup";
 import { BackupSection } from "./backup-section";
 
-type ExportOptions = { onSuccess?: (blob: Blob) => void; onError?: (err: Error) => void };
+type ExportOptions = { onSuccess?: (result: ExportedBackup) => void; onError?: (err: Error) => void };
 type RestoreOptions = { onSuccess?: (result: RestoreResult) => void; onError?: (err: Error) => void };
 
 const exportMutate = vi.fn<(vars: { passphrase: string | null }, opts: ExportOptions) => void>();
@@ -80,9 +80,22 @@ describe("BackupSection", () => {
     expect(vars).toEqual({ passphrase: PASSPHRASE });
 
     const blob = new Blob(["archive"]);
-    options?.onSuccess?.(blob);
+    options?.onSuccess?.({ blob, skipped: null });
     expect(saveBlob).toHaveBeenCalledWith(blob, "pfa-2026-01-01.pfabackup");
     expect(await screen.findByLabelText("Backup passphrase")).toHaveValue("");
+  });
+
+  it("warns which files are not in the downloaded backup", async () => {
+    const user = userEvent.setup();
+    renderSection();
+    await user.click(screen.getByRole("checkbox", { name: /encrypt with a passphrase/i }));
+    await user.click(screen.getByRole("button", { name: "Download backup" }));
+    const [, options] = exportMutate.mock.calls[0] ?? [];
+    act(() => {
+      options?.onSuccess?.({ blob: new Blob(["archive"]), skipped: { count: 2, examples: ["big.pdf", "Scan.PDF"] } });
+    });
+    const alerts = await screen.findAllByRole("alert");
+    expect(alerts.some((a) => /2 file\(s\).*NOT in this backup.*big\.pdf, Scan\.PDF/.test(a.textContent ?? ""))).toBe(true);
   });
 
   it("opting out of encryption warns and sends no passphrase", async () => {

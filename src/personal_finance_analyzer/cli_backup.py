@@ -110,6 +110,15 @@ def backup_create(
             + (", ..." if len(manifest.skipped) > 5 else ""),
             err=True,
         )
+    if manifest.oversized:
+        typer.echo(
+            f"WARNING: {len(manifest.oversized)} file(s) were not included because they are larger "
+            "than a restore accepts (a PDF over 64 MiB, a settings file over 4 MiB, or more than "
+            "16 GiB in all), so they are NOT in this backup; copy them separately: "
+            + ", ".join(manifest.oversized[:5])
+            + (", ..." if len(manifest.oversized) > 5 else ""),
+            err=True,
+        )
     if passphrase is None:
         typer.echo(
             "WARNING: this backup is NOT encrypted; anyone who gets the file can read your "

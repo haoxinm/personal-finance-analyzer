@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import base64
 import io
+import json
 import os
 import tempfile
 import threading
 import zipfile
 from collections.abc import Iterator
 from pathlib import Path
+from urllib.parse import unquote
 
 import pytest
 from fastapi import FastAPI
@@ -119,6 +121,25 @@ def test_export_encrypted_downloads_an_archive_restore_can_open(
     info = archive.inspect_backup(downloaded, passphrase=PASSPHRASE)
     assert info.encrypted
     assert info.manifest.counts["transactions"] == 1
+
+
+def test_export_reports_the_files_it_left_out(
+    client: TestClient, home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seed_home_over(home)
+    clean = client.post(EXPORT, json={"encrypt": False})
+    assert "x-backup-skipped" not in clean.headers
+
+    monkeypatch.setattr(archive, "MAX_PDF_BYTES", 100)
+    big = home / "documents" / "Big scan.PDF"
+    big.parent.mkdir(parents=True, exist_ok=True)
+    big.write_bytes(b"%PDF-1.4\n" + b"x" * 500)
+    response = client.post(EXPORT, json={"encrypt": False})
+    assert response.status_code == 200
+    reported = json.loads(unquote(response.headers["x-backup-skipped"]))
+    assert reported == {"count": 1, "examples": ["Big scan.PDF"]}
+    with zipfile.ZipFile(io.BytesIO(response.content)) as zf:
+        assert not any("Big scan" in n for n in zf.namelist())
 
 
 def seed_home_over(home: Path) -> None:

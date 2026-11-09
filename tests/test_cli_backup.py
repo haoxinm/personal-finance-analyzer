@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
+from personal_finance_analyzer.backup import archive
 from personal_finance_analyzer.cli import app
 from personal_finance_analyzer.core.paths import PFA_HOME_ENV
 from tests.backup.support import DESCRIPTION, PASSPHRASE, USER_NAME, seed_home
@@ -27,6 +28,19 @@ def seeded(home: Path) -> Path:
 
 def _use_home(monkeypatch: pytest.MonkeyPatch, path: Path) -> None:
     monkeypatch.setenv(PFA_HOME_ENV, str(path))
+
+
+def test_create_warns_about_a_file_too_large_to_restore(
+    seeded: Path, tmp_path: Path, pass_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(archive, "MAX_PDF_BYTES", 100)
+    big = seeded / "documents" / "Big scan.PDF"
+    big.write_bytes(b"%PDF-1.4\n" + b"x" * 500)
+    out = tmp_path / "all.pfabackup"
+    result = runner.invoke(app, ["backup", "create", str(out), "--passphrase-file", str(pass_file)])
+    assert result.exit_code == 0, result.output
+    assert "were not included because they are larger" in result.output
+    assert "Big scan.PDF" in result.output
 
 
 def test_create_inspect_restore_round_trip(

@@ -6,8 +6,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sqlite3
 import zipfile
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -16,7 +18,7 @@ from personal_finance_analyzer.backup import archive
 from personal_finance_analyzer.backup.errors import BackupError, BackupFormatError
 from personal_finance_analyzer.core import documents as docs
 
-from .support import STATEMENT_REL, TAX_REL, pdf_bytes, seed_home, table_rows, tree
+from .support import STATEMENT_REL, TAX_REL, USER_NAME, pdf_bytes, seed_home, table_rows, tree
 
 
 def _target(tmp_path: Path) -> Path:
@@ -260,13 +262,56 @@ def test_a_failed_swap_and_failed_rollback_never_deletes_the_documents_folder(
     with pytest.raises(BackupError, match="could NOT be put back") as caught:
         archive.restore_backup(backup, passphrase=None, replace=True, home=home_b)
 
-    stages = [p for p in home_b.parent.iterdir() if ".restore-" in p.name]
-    assert len(stages) == 1  # left in place, not deleted
-    stranded = next(stages[0].rglob("my own scan.pdf"))
-    assert stranded.read_bytes() == b"%PDF- mine"
-    assert str(stages[0]) in str(caught.value)  # and the message says where it is
+    # The folder was moved out of the staging directory to a name no sweep matches, and the error
+    # says where it is.
+    assert not [p for p in home_b.parent.iterdir() if ".restore-" in p.name]
+    parked = [p for p in home_b.parent.iterdir() if "documents-recovered" in p.name]
+    assert len(parked) == 1
+    assert (parked[0] / "Alex" / "my own scan.pdf").read_bytes() == b"%PDF- mine"
+    assert str(parked[0]) in str(caught.value)
     # (the log filter may redact the path itself; the error above always carries it)
     assert any("could not be put back" in r.getMessage() for r in caplog.records)
+
+    # Whatever sweeps run later (any backup operation, server start) leave it alone.
+    for stamp in (parked[0], *parked[0].rglob("*")):
+        os.utime(stamp, (0, 0))
+    assert archive.sweep_stale_work_dirs(home_b, max_age=timedelta(0)) == []
+    assert (parked[0] / "Alex" / "my own scan.pdf").is_file()
+
+
+def test_a_stage_that_must_be_kept_is_marked_and_survives_the_sweep(
+    source: tuple[Path, dict[str, str]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backup = tmp_path / "b.pfabackup"
+    archive.create_backup(backup, passphrase=None)
+    home_b = _target(tmp_path)
+    seed_home(home_b)
+    mine = home_b / "documents" / "Alex" / "my own scan.pdf"
+    mine.parent.mkdir(parents=True, exist_ok=True)
+    mine.write_bytes(b"%PDF- mine")
+    monkeypatch.setattr(archive, "_move_aside", _refuse_swap)
+    monkeypatch.setattr(archive, "_undo_carry", _refuse_swap)
+    real_rename = Path.rename
+
+    def refuse_parking(self: Path, target: str | os.PathLike[str]) -> Path:
+        if "documents-recovered" in str(target):
+            raise OSError("cannot rename")
+        return real_rename(self, target)
+
+    monkeypatch.setattr(Path, "rename", refuse_parking)
+
+    with pytest.raises(BackupError, match="could NOT be put back") as caught:
+        archive.restore_backup(backup, passphrase=None, replace=True, home=home_b)
+
+    stages = [p for p in home_b.parent.iterdir() if ".restore-" in p.name]
+    assert len(stages) == 1 and (stages[0] / archive.KEEP_MARKER).is_file()
+    assert str(stages[0]) in str(caught.value)
+    for stamp in (stages[0], *stages[0].rglob("*")):
+        os.utime(stamp, (0, 0))
+    assert archive.sweep_stale_work_dirs(home_b, max_age=timedelta(0)) == []
+    assert next(stages[0].rglob("my own scan.pdf")).read_bytes() == b"%PDF- mine"
 
 
 def test_documents_are_moved_in_only_after_the_swap(
@@ -470,3 +515,121 @@ def test_a_backup_made_before_the_startup_upgrade_ran_restores_too(
     archive.restore_backup(backup, passphrase=None, home=home_b, documents=tmp_path / "nas")
     assert (tmp_path / "nas" / STATEMENT_REL).is_file()
     assert shas["tax_sha"]
+
+
+# --- what export writes is always what restore accepts ------------------------------------------
+
+_MIB = 1024 * 1024
+
+
+def _pad_database(home: Path, mib: int) -> None:
+    """Make the data directory's database larger than a text member may be."""
+    con = sqlite3.connect(home / "finance.db")
+    try:
+        con.execute("CREATE TABLE padding (b BLOB)")
+        con.execute("INSERT INTO padding VALUES (zeroblob(?))", (mib * _MIB,))
+        con.commit()
+    finally:
+        con.close()
+
+
+def _as_legacy_archive(src: Path, dest: Path) -> None:
+    """Rewrite ``src`` the way versions before the rename stored the database (``db/spend.db``)."""
+    with zipfile.ZipFile(src) as zin, zipfile.ZipFile(dest, "w") as zout:
+        for name in zin.namelist():
+            data = zin.read(name)
+            if name == archive.MANIFEST_NAME:
+                manifest = json.loads(data)
+                for entry in manifest["files"]:
+                    if entry["path"] == archive.DB_MEMBER:
+                        entry["path"] = archive.LEGACY_DB_MEMBER
+                data = json.dumps(manifest).encode()
+            elif name == archive.DB_MEMBER:
+                name = archive.LEGACY_DB_MEMBER
+            zout.writestr(name, data)
+
+
+def test_member_limits_are_case_insensitive_and_know_both_database_names() -> None:
+    assert archive._member_limit("documents/Alex/Scan.PDF") == archive.MAX_PDF_BYTES
+    assert archive._member_limit("documents/Alex/scan.Pdf") == archive.MAX_PDF_BYTES
+    for member in (archive.DB_MEMBER, archive.LEGACY_DB_MEMBER):
+        assert archive._member_limit(member) == archive.MAX_DB_BYTES
+    assert archive._member_limit("config.toml") == archive.MAX_TEXT_BYTES
+
+
+def test_a_large_upper_case_pdf_round_trips(
+    source: tuple[Path, dict[str, str]], tmp_path: Path
+) -> None:
+    home_a, _ = source
+    big = home_a / "documents" / USER_NAME / "Scan.PDF"
+    payload = b"%PDF-1.4\n" + b"x" * (5 * _MIB) + b"\n%%EOF"  # over the 4 MiB text limit
+    big.write_bytes(payload)
+    backup = tmp_path / "b.pfabackup"
+    manifest = archive.create_backup(backup, passphrase=None)
+    assert manifest.skipped == () and manifest.oversized == ()
+    assert f"documents/{USER_NAME}/Scan.PDF" in _members(backup)
+
+    home_b = _target(tmp_path)
+    archive.restore_backup(backup, passphrase=None, home=home_b)
+    assert (home_b / "documents" / USER_NAME / "Scan.PDF").read_bytes() == payload
+
+
+def test_a_large_database_in_a_pre_rename_archive_restores(
+    source: tuple[Path, dict[str, str]], tmp_path: Path
+) -> None:
+    home_a, _ = source
+    _pad_database(home_a, 5)  # over the 4 MiB text limit
+    backup = tmp_path / "b.pfabackup"
+    archive.create_backup(backup, passphrase=None)
+    legacy = tmp_path / "old.spendbackup"
+    _as_legacy_archive(backup, legacy)
+    assert archive.LEGACY_DB_MEMBER in _members(legacy)
+
+    home_b = _target(tmp_path)
+    archive.restore_backup(legacy, passphrase=None, home=home_b)
+    con = sqlite3.connect(home_b / "finance.db")
+    try:
+        assert con.execute("SELECT length(b) FROM padding").fetchone()[0] == 5 * _MIB
+    finally:
+        con.close()
+
+
+def test_export_leaves_out_and_reports_a_pdf_restore_would_refuse(
+    source: tuple[Path, dict[str, str]], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home_a, _ = source
+    monkeypatch.setattr(archive, "MAX_PDF_BYTES", 1 * _MIB)
+    huge = home_a / "documents" / USER_NAME / "Huge.PDF"
+    huge.write_bytes(b"%PDF-1.4\n" + b"x" * (2 * _MIB))
+    backup = tmp_path / "b.pfabackup"
+    manifest = archive.create_backup(backup, passphrase=None)
+
+    assert manifest.oversized == (f"{USER_NAME}/Huge.PDF",)
+    assert f"documents/{USER_NAME}/Huge.PDF" not in _members(backup)
+    assert f"documents/{STATEMENT_REL}" in _members(backup)  # the rest is still backed up
+    home_b = _target(tmp_path)
+    archive.restore_backup(backup, passphrase=None, home=home_b)  # and the archive restores
+    assert not (home_b / "documents" / USER_NAME / "Huge.PDF").exists()
+    assert (home_b / "documents" / STATEMENT_REL).is_file()
+
+
+def test_export_stops_the_whole_backup_if_the_database_is_over_the_limit(
+    source: tuple[Path, dict[str, str]], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(archive, "MAX_DB_BYTES", 1000)
+    with pytest.raises(BackupError, match="cannot be backed up"):
+        archive.create_backup(tmp_path / "b.pfabackup", passphrase=None)
+    assert not (tmp_path / "b.pfabackup").exists()
+
+
+def test_export_keeps_to_the_total_a_restore_accepts(
+    source: tuple[Path, dict[str, str]], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home_a, _ = source
+    db_size = (home_a / "finance.db").stat().st_size
+    monkeypatch.setattr(archive, "MAX_TOTAL_BYTES", db_size + 6000)  # room for one PDF, not two
+    backup = tmp_path / "b.pfabackup"
+    manifest = archive.create_backup(backup, passphrase=None)
+    assert len(manifest.oversized) == 1
+    home_b = _target(tmp_path)
+    archive.restore_backup(backup, passphrase=None, home=home_b)
