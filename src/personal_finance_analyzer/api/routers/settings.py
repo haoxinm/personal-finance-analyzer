@@ -25,7 +25,12 @@ from personal_finance_analyzer.config import (
     Settings,
     TaxConfig,
     delete_api_key,
+    env_overridden_fields,
+    env_override_var,
     get_llm_api_key,
+    keep_file_values,
+    load_file_settings,
+    load_settings,
     save_settings,
     secret_storage_status,
     set_api_key,
@@ -40,7 +45,7 @@ router = APIRouter(tags=["settings"])
 
 def _has_key(cfg: LLMConfig) -> bool:
     try:
-        return get_llm_api_key(cfg) is not None
+        return get_llm_api_key(cfg, adopt=False) is not None  # a GET must not write the keychain
     except Exception:
         return False
 
@@ -106,6 +111,7 @@ def _settings_schema(settings: Settings) -> schemas.Settings:
         ),
         server=schemas.ServerSettings(port=settings.server.port),
         tax=schemas.TaxSettings(auto_update_params=settings.tax.auto_update_params),
+        env_overrides=sorted(f"{section}.{name}" for section, name in env_overridden_fields()),
     )
 
 
@@ -115,7 +121,11 @@ def get_settings_route(settings: SettingsDep) -> schemas.Settings:
 
 
 @router.put("/settings", response_model=schemas.Settings)
-def put_settings(body: schemas.Settings, current: SettingsDep) -> schemas.Settings:
+def put_settings(body: schemas.Settings) -> schemas.Settings:
+    """Save the draft to `config.toml`. Settings an environment variable (`PFA_<SECTION>__<FIELD>`)
+    controls are not written: the file keeps its own value for them (so a one-off override never
+    becomes permanent), and the response lists them in `env_overrides` with the effective values."""
+    current = load_file_settings()  # the file's values, not the env-merged ones
     new_settings = Settings(
         llm=_llm_config(body.llm),
         privacy=PrivacyConfig(
@@ -141,9 +151,9 @@ def put_settings(body: schemas.Settings, current: SettingsDep) -> schemas.Settin
         # Changed only through `PUT /settings/secret-storage`, which carries the warning.
         secrets=current.secrets,
     )
-    new_settings = without_stale_tax_consent(new_settings)
+    new_settings = without_stale_tax_consent(keep_file_values(new_settings, current))
     save_settings(new_settings)
-    return _settings_schema(new_settings)
+    return _settings_schema(load_settings())
 
 
 def _key_account(base_url: str, saved: LLMConfig) -> str:
@@ -189,11 +199,13 @@ def _secret_storage_schema(llm: LLMConfig) -> schemas.SecretStorageStatus:
         keychain_usable=status.keychain_usable,
         keychain_detail=status.keychain_detail,
         env_var=status.env_var,
+        key_legacy=status.key_legacy,
         file_store_enabled=status.file_store_enabled,
         file_store_path=status.file_store_path,
         file_store_has_keys=status.file_store_has_keys,
         guidance=status.guidance,
         warning=status.warning,
+        file_store_env_var=status.file_store_env_var,
     )
 
 
@@ -211,11 +223,18 @@ def put_secret_storage(
     body: schemas.SecretStoragePut, settings: SettingsDep
 ) -> schemas.SecretStorageStatus:
     """Switch the plaintext file store on or off (`[secrets] allow_file_store`; only used when the
-    OS keychain is unavailable)."""
-    save_settings(
-        settings.model_copy(
-            update={"secrets": SecretsConfig(allow_file_store=body.allow_file_store)}
+    OS keychain is unavailable). `409` while an environment variable controls the opt-in: it wins
+    on every load, so the toggle could not change anything."""
+    var = env_override_var("secrets", "allow_file_store")
+    if var is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"The plaintext key file is controlled by the environment variable {var}; "
+            "unset it to change this setting here.",
         )
+    saved = load_file_settings()  # never persist other env-overridden values
+    save_settings(
+        saved.model_copy(update={"secrets": SecretsConfig(allow_file_store=body.allow_file_store)})
     )
     return _secret_storage_schema(settings.llm)
 

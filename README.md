@@ -127,7 +127,7 @@ reading the old directory:
 | Data directory | `~/Library/Application Support/SpendAnalyzer` (macOS), `%LOCALAPPDATA%\SpendAnalyzer` (Windows), `~/.local/share/spend-analyzer` (Linux) | `.../PersonalFinanceAnalyzer`, `%LOCALAPPDATA%\PersonalFinanceAnalyzer`, `~/.local/share/personal-finance-analyzer`: the old directory is renamed in place (never copied). If that fails, or an old `spend-analyzer serve` still has the database open (stop it and restart), the old one keeps being used; if both exist the new one wins with a warning |
 | Database file | `spend.db` | `finance.db`, renamed inside whichever data directory you use |
 | Kept PDF copies | recorded by absolute path | the recorded paths are rewritten to the new directory, and copies are looked up under the current directory if a recorded path is stale |
-| LLM API key (OS credential store) | service `spend-analyzer` | service `personal-finance-analyzer`, copied on first read and the old entry deleted |
+| LLM API key (OS credential store) | service `spend-analyzer` | service `personal-finance-analyzer`, copied and the old entry deleted the first time the key is really used (an LLM call or a save), never by `pfa doctor`, `pfa llm show` or the Settings screen, which only read it |
 | Environment variables | `SPEND_ANALYZER_HOME`, `SPEND_ANALYZER_LLM_API_KEY`, `SPEND_ANALYZER_<SECTION>__<FIELD>` | `PFA_HOME`, `PFA_LLM_API_KEY`, `PFA_<SECTION>__<FIELD>`; the old names still work, the new ones win |
 | Command | `spend-analyzer ...` | `pfa ...`; `spend-analyzer` remains as a deprecated alias that prints a one-line stderr notice |
 | Backups | `*.spendbackup` | `*.pfabackup`; old files can still be inspected and restored |
@@ -222,7 +222,10 @@ This is the reason to run this instead of a hosted budgeting app.
   `<data dir>/secrets/api_keys.toml`. That file is **plaintext at rest**, protected only by its
   `0600` permissions, used only while no keychain is available, and never part of a backup.
   Settings and `pfa doctor` both say which backend is in use. `pfa doctor` only *reads* the
-  keychain; `pfa doctor --write-test` is the explicit write round trip.
+  keychain (and creates neither the data directory nor the database on a fresh machine);
+  `pfa doctor --write-test` is the explicit write round trip. A setting controlled by a `PFA_*`
+  environment variable is never written to `config.toml` by a save, and the Settings toggle for the
+  plaintext key file is disabled (with the variable's name) while one controls it.
 - **Backups are encrypted by default and never carry secrets.** `backup create` (and Settings ->
   Backup & restore) seals the archive with a passphrase (scrypt + AES-256-GCM); skipping that is an
   explicit `--no-encrypt`. The OS-keychain API key is never read into one. The archive is built
@@ -254,8 +257,8 @@ recover a lost passphrase). It never contains your LLM API key: that stays in th
 store of the machine that made it, so enter it again on the new one. Restore checks the whole file
 before touching anything, migrates a backup made by an older version, and refuses one from a newer
 version (including `.spendbackup` files made before the rename). If the new machine already has data, `restore` needs `--replace`, which moves the existing
-data directory aside to `<name>.<timestamp>.before-restore` instead of deleting it. See
-[docs/CLI.md](docs/CLI.md#backup).
+data directory aside to `<name>.<timestamp>.before-restore` instead of deleting it; the plaintext key file and the `[secrets]` opt-in of the machine being
+restored into are kept (they are not part of a backup). See [docs/CLI.md](docs/CLI.md#backup).
 
 ## Using an LLM (local or remote)
 

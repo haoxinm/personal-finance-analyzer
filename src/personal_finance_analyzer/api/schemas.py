@@ -681,6 +681,10 @@ class Settings(_Model):
     server: ServerSettings
     #: Optional on `PUT` (an older client that does not send it keeps the saved value).
     tax: TaxSettings = Field(default_factory=TaxSettings)
+    #: Read-only (ignored on `PUT`): the settings an environment variable currently controls, as
+    #: ``section.field`` (e.g. ``llm.enabled``). Their values here are the effective ones; saving
+    #: never writes them to `config.toml`.
+    env_overrides: list[str] = Field(default_factory=list)
 
 
 class TestLlmRequest(_Model):
@@ -721,6 +725,9 @@ class SecretStorageStatus(_Model):
     keychain_usable: bool
     keychain_detail: str
     env_var: str | None
+    #: The key was found only under the pre-rename keychain service ("spend-analyzer"); it is moved
+    #: to the current one the next time it is used.
+    key_legacy: bool = False
     file_store_enabled: bool
     file_store_path: str
     file_store_has_keys: bool
@@ -728,6 +735,9 @@ class SecretStorageStatus(_Model):
     guidance: str
     #: The plaintext-at-rest warning, filled in while the file store is enabled.
     warning: str
+    #: The environment variable that controls `file_store_enabled` right now, if any. While it is
+    #: set the opt-in cannot be changed through the API (`PUT` answers `409`).
+    file_store_env_var: str | None = None
 
 
 class SecretStoragePut(_Model):

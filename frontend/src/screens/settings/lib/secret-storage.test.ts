@@ -9,6 +9,7 @@ const base: SecretStorageStatus = {
   keychain_usable: true,
   keychain_detail: "",
   env_var: null,
+  key_legacy: false,
   file_store_enabled: false,
   file_store_path: "/data/secrets/api_keys.toml",
   file_store_has_keys: false,
@@ -21,6 +22,12 @@ describe("describeKeySource", () => {
     expect(describeKeySource({ ...base, key_source: "env", env_var: "PFA_LLM_API_KEY" })).toContain("PFA_LLM_API_KEY");
     expect(describeKeySource({ ...base, key_source: "keychain" })).toBe("Key stored in macOS Keychain");
     expect(describeKeySource({ ...base, key_source: "file" })).toContain("plaintext");
+  });
+
+  it("says a key under the old keychain name will be moved on next use", () => {
+    const text = describeKeySource({ ...base, key_source: "keychain", key_legacy: true });
+    expect(text).toContain("old name");
+    expect(text).toContain("moved on next use");
   });
 
   it("says where a new key would go when none is saved", () => {

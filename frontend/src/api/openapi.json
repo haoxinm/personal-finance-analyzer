@@ -3378,6 +3378,7 @@
           "settings"
         ],
         "summary": "Put Settings",
+        "description": "Save the draft to `config.toml`. Settings an environment variable (`PFA_<SECTION>__<FIELD>`)\ncontrols are not written: the file keeps its own value for them (so a one-off override never\nbecomes permanent), and the response lists them in `env_overrides` with the effective values.",
         "operationId": "put_settings_api_settings_put",
         "requestBody": {
           "content": {
@@ -3531,7 +3532,7 @@
           "settings"
         ],
         "summary": "Put Secret Storage",
-        "description": "Switch the plaintext file store on or off (`[secrets] allow_file_store`; only used when the\nOS keychain is unavailable).",
+        "description": "Switch the plaintext file store on or off (`[secrets] allow_file_store`; only used when the\nOS keychain is unavailable). `409` while an environment variable controls the opt-in: it wins\non every load, so the toggle could not change anything.",
         "operationId": "put_secret_storage_api_settings_secret_storage_put",
         "requestBody": {
           "required": true,
@@ -10267,6 +10268,11 @@
             ],
             "title": "Env Var"
           },
+          "key_legacy": {
+            "type": "boolean",
+            "title": "Key Legacy",
+            "default": false
+          },
           "file_store_enabled": {
             "type": "boolean",
             "title": "File Store Enabled"
@@ -10286,6 +10292,17 @@
           "warning": {
             "type": "string",
             "title": "Warning"
+          },
+          "file_store_env_var": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "File Store Env Var"
           }
         },
         "type": "object",
@@ -10334,6 +10351,13 @@
           },
           "tax": {
             "$ref": "#/components/schemas/TaxSettings"
+          },
+          "env_overrides": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Env Overrides"
           }
         },
         "type": "object",

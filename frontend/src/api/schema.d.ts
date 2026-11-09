@@ -779,7 +779,12 @@ export interface paths {
         };
         /** Get Settings Route */
         get: operations["get_settings_route_api_settings_get"];
-        /** Put Settings */
+        /**
+         * Put Settings
+         * @description Save the draft to `config.toml`. Settings an environment variable (`PFA_<SECTION>__<FIELD>`)
+         *     controls are not written: the file keeps its own value for them (so a one-off override never
+         *     becomes permanent), and the response lists them in `env_overrides` with the effective values.
+         */
         put: operations["put_settings_api_settings_put"];
         post?: never;
         delete?: never;
@@ -832,7 +837,8 @@ export interface paths {
         /**
          * Put Secret Storage
          * @description Switch the plaintext file store on or off (`[secrets] allow_file_store`; only used when the
-         *     OS keychain is unavailable).
+         *     OS keychain is unavailable). `409` while an environment variable controls the opt-in: it wins
+         *     on every load, so the toggle could not change anything.
          */
         put: operations["put_secret_storage_api_settings_secret_storage_put"];
         post?: never;
@@ -2804,6 +2810,11 @@ export interface components {
             keychain_detail: string;
             /** Env Var */
             env_var: string | null;
+            /**
+             * Key Legacy
+             * @default false
+             */
+            key_legacy: boolean;
             /** File Store Enabled */
             file_store_enabled: boolean;
             /** File Store Path */
@@ -2814,6 +2825,8 @@ export interface components {
             guidance: string;
             /** Warning */
             warning: string;
+            /** File Store Env Var */
+            file_store_env_var?: string | null;
         };
         /** ServerSettings */
         ServerSettings: {
@@ -2827,6 +2840,8 @@ export interface components {
             ingest: components["schemas"]["IngestSettings"];
             server: components["schemas"]["ServerSettings"];
             tax?: components["schemas"]["TaxSettings"];
+            /** Env Overrides */
+            env_overrides?: string[];
         };
         /** Statement */
         Statement: {

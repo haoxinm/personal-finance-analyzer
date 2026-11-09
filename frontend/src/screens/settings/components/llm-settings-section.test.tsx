@@ -20,6 +20,7 @@ const keychainStatus: SecretStorageStatus = {
   keychain_usable: true,
   keychain_detail: "",
   env_var: null,
+  key_legacy: false,
   file_store_enabled: false,
   file_store_path: "/data/secrets/api_keys.toml",
   file_store_has_keys: false,
@@ -268,6 +269,25 @@ describe("LlmSettingsSection secret storage", () => {
 
     await user.click(toggle);
     expect(setFileStoreMutate).toHaveBeenCalledWith(true, expect.anything());
+  });
+
+  it("disables the plaintext-file toggle and explains when an environment variable controls it", () => {
+    secretStatus = {
+      ...keychainStatus,
+      key_source: "none",
+      storage: "file",
+      keychain_usable: false,
+      keychain_name: "none",
+      keychain_detail: "no usable keyring backend is installed or running",
+      file_store_enabled: true,
+      file_store_env_var: "PFA_SECRETS__ALLOW_FILE_STORE",
+      guidance: "Linux: install gnome-keyring",
+      warning: "File store: API keys are saved as plaintext in /data/secrets/api_keys.toml.",
+    };
+    renderSection(remoteSettings);
+
+    expect(screen.getByRole("checkbox", { name: "Keep API keys in a plaintext file" })).toBeDisabled();
+    expect(screen.getByTestId("file-store-env-note")).toHaveTextContent("PFA_SECRETS__ALLOW_FILE_STORE");
   });
 
   it("with the file store on: warns it is plaintext and allows saving", async () => {

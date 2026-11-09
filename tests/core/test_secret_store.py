@@ -614,3 +614,119 @@ def test_set_key_into_the_file_store_warns(
 
 def test_config_module_exposes_the_secrets_setting() -> None:
     assert config_module.Settings().secrets.allow_file_store is False
+
+
+# --- read-only legacy lookups (`pfa doctor`, the status screen) ------------------------------
+
+
+def _legacy_key(backend: _Backend) -> None:
+    backend.store[("spend-analyzer", _ACCOUNT)] = "old"
+
+
+def test_non_adopting_lookup_finds_the_legacy_key_without_writing(backend: _Backend) -> None:
+    _legacy_key(backend)
+    assert get_llm_api_key(_CFG, adopt=False) == "old"
+    assert "set" not in backend.calls and "delete" not in backend.calls
+    assert ("spend-analyzer", _ACCOUNT) in backend.store
+    assert (_SERVICE, _ACCOUNT) not in backend.store
+
+
+def test_adopting_lookup_still_moves_the_legacy_key(backend: _Backend) -> None:
+    _legacy_key(backend)
+    assert get_llm_api_key(_CFG) == "old"
+    assert backend.store[(_SERVICE, _ACCOUNT)] == "old"
+    assert ("spend-analyzer", _ACCOUNT) not in backend.store
+
+
+def test_status_reports_a_legacy_key_and_never_writes(backend: _Backend) -> None:
+    _legacy_key(backend)
+    status = secret_storage_status(_CFG)
+    assert status.key_source == "keychain"
+    assert status.key_legacy is True
+    assert "set" not in backend.calls and "delete" not in backend.calls
+    assert ("spend-analyzer", _ACCOUNT) in backend.store
+
+
+def test_status_without_a_legacy_key_is_not_legacy(backend: _Backend) -> None:
+    backend.store[(_SERVICE, _ACCOUNT)] = "new"
+    status = secret_storage_status(_CFG)
+    assert (status.key_source, status.key_legacy) == ("keychain", False)
+
+
+def test_doctor_does_not_adopt_a_legacy_key_and_says_so(home: Path, backend: _Backend) -> None:
+    runner.invoke(
+        app, ["llm", "set", "--base-url", "https://api.example.com", "--model", "m", "--enable"]
+    )
+    _legacy_key(backend)
+    backend.calls.clear()
+    result = runner.invoke(app, ["doctor"])
+    assert "API key for api.example.com readable" in result.output
+    assert "found under the old name" in result.output.replace("\n", " ")
+    assert "set" not in backend.calls and "delete" not in backend.calls
+    assert ("spend-analyzer", _ACCOUNT) in backend.store
+    assert (_SERVICE, _ACCOUNT) not in backend.store
+
+
+def test_llm_show_does_not_adopt_a_legacy_key(home: Path, backend: _Backend) -> None:
+    runner.invoke(app, ["llm", "set", "--base-url", "https://api.example.com", "--model", "m"])
+    _legacy_key(backend)
+    backend.calls.clear()
+    result = runner.invoke(app, ["llm", "show"])
+    assert "api key on file: yes" in result.output
+    assert "set" not in backend.calls and "delete" not in backend.calls
+
+
+# --- doctor on a fresh machine ---------------------------------------------------------------
+
+
+def test_doctor_creates_no_data_directory_or_database(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, backend: _Backend
+) -> None:
+    fresh = tmp_path / "fresh" / "PersonalFinanceAnalyzer"
+    monkeypatch.setenv("PFA_HOME", str(fresh))
+    result = runner.invoke(app, ["doctor"])
+    assert "not created yet" in result.output
+    assert "No database yet" in result.output
+    assert not fresh.exists()
+    assert not fresh.parent.exists()
+
+
+def test_doctor_leaves_an_existing_database_unchanged(home: Path, backend: _Backend) -> None:
+    runner.invoke(app, ["migrate"])
+    before = (home / "finance.db").read_bytes()
+    result = runner.invoke(app, ["doctor"])
+    assert "PASS  Database migrated to head" in result.output
+    assert (home / "finance.db").read_bytes() == before
+
+
+# --- environment overrides are never persisted -----------------------------------------------
+
+
+def test_load_file_settings_ignores_the_environment(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PFA_SECRETS__ALLOW_FILE_STORE", "true")
+    assert config_module.load_settings().secrets.allow_file_store is True
+    assert config_module.load_file_settings().secrets.allow_file_store is False
+
+
+def test_env_overridden_fields_and_vars(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SPEND_ANALYZER_LLM__MODE", "none")
+    monkeypatch.setenv("PFA_SERVER__PORT", "9000")
+    monkeypatch.setenv("PFA_SERVER__NOPE", "1")
+    assert config_module.env_overridden_fields() == {("llm", "enabled"), ("server", "port")}
+    assert config_module.env_override_var("server", "port") == "PFA_SERVER__PORT"
+    assert config_module.env_override_var("tax", "auto_update_params") is None
+
+
+def test_llm_set_does_not_write_an_env_override_into_config(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PFA_SECRETS__ALLOW_FILE_STORE", "true")
+    monkeypatch.setenv("PFA_SERVER__PORT", "9999")
+    result = runner.invoke(app, ["llm", "set", "--model", "m"])
+    assert result.exit_code == 0
+    saved = config_module.load_file_settings()
+    assert saved.secrets.allow_file_store is False
+    assert saved.server.port == 8756
+    assert saved.llm.model == "m"

@@ -497,7 +497,7 @@ export function LlmSettingsSection({ settings, onSave, saving }: LlmSettingsSect
                           type="checkbox"
                           className="mt-0.5"
                           checked={secretStatus.file_store_enabled}
-                          disabled={setFileStore.isPending}
+                          disabled={setFileStore.isPending || Boolean(secretStatus.file_store_env_var)}
                           onChange={(e) => handleToggleFileStore(e.target.checked)}
                           aria-label="Keep API keys in a plaintext file"
                         />
@@ -509,6 +509,12 @@ export function LlmSettingsSection({ settings, onSave, saving }: LlmSettingsSect
                           </span>
                         </span>
                       </label>
+                      {secretStatus.file_store_env_var ? (
+                        <p data-testid="file-store-env-note" className="mt-1 text-muted-foreground">
+                          This is set by the {secretStatus.file_store_env_var} environment variable, which takes
+                          precedence over this setting. Unset it and restart to change it here.
+                        </p>
+                      ) : null}
                       {secretStatus.file_store_enabled ? (
                         <p data-testid="file-store-warning" className="mt-1 text-destructive">
                           {secretStatus.warning}

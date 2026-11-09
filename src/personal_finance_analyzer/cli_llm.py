@@ -15,7 +15,10 @@ from personal_finance_analyzer.config import (
     SecretStorageStatus,
     Settings,
     delete_api_key,
+    env_overridden_fields,
+    env_override_var,
     get_llm_api_key,
+    load_file_settings,
     load_settings,
     save_settings,
     secret_storage_status,
@@ -58,7 +61,7 @@ def _host(base_url: str) -> str:
 
 def _has_key(cfg: LLMConfig) -> bool:
     try:
-        return get_llm_api_key(cfg) is not None
+        return get_llm_api_key(cfg, adopt=False) is not None  # `show` never writes the keychain
     except Exception:
         return False
 
@@ -68,6 +71,11 @@ def describe_secret_storage(status: SecretStorageStatus) -> str:
     if status.key_source == "env":
         return f"environment variable {status.env_var}"
     if status.key_source == "keychain":
+        if status.key_legacy:
+            return (
+                f"OS keychain ({status.keychain_name}), found under the old name "
+                "'spend-analyzer'; it will be moved on next use"
+            )
         return f"OS keychain ({status.keychain_name})"
     if status.key_source == "file":
         return f"plaintext file store ({status.file_store_path})"
@@ -177,7 +185,7 @@ def set_cmd(
     ] = None,
 ) -> None:
     """Change LLM settings. Only the options you pass are changed."""
-    settings = load_settings()
+    settings = load_file_settings()  # edit what config.toml holds, never an env override
     updates: dict[str, Any] = {}
 
     if preset is not None:
@@ -250,11 +258,25 @@ def set_cmd(
         new_settings = without_stale_tax_consent(new_settings)
     save_settings(new_settings)
     typer.echo(f"saved to {config_path()}")
-    _describe(new_settings)
+    _warn_env_overrides()
+    _describe(load_settings())
+
+
+def _warn_env_overrides() -> None:
+    """Say so when an environment variable still decides an LLM or ingest setting: what was just
+    saved to config.toml is not what runs while the variable is set."""
+    for section, name in sorted(env_overridden_fields()):
+        if section in ("llm", "ingest"):
+            var = env_override_var(section, name)
+            typer.echo(
+                f"note: {var} is set and overrides [{section}] {name}; the saved value applies "
+                "once it is unset.",
+                err=True,
+            )
 
 
 def _set_enabled(value: bool) -> None:
-    settings = load_settings()
+    settings = load_file_settings()
     new_settings = settings.model_copy(
         update={"llm": settings.llm.model_copy(update={"enabled": value})}
     )
@@ -262,7 +284,8 @@ def _set_enabled(value: bool) -> None:
         new_settings = without_stale_tax_consent(new_settings)
     save_settings(new_settings)
     typer.echo(f"LLM {'enabled' if value else 'disabled'}.")
-    _describe(new_settings)
+    _warn_env_overrides()
+    _describe(load_settings())
 
 
 @llm_app.command("enable")

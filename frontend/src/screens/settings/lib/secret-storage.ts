@@ -8,7 +8,9 @@ export function describeKeySource(status: SecretStorageStatus): string {
     case "env":
       return `Key supplied by the ${status.env_var ?? "PFA_LLM_API_KEY"} environment variable`;
     case "keychain":
-      return `Key stored in ${status.keychain_name}`;
+      return status.key_legacy
+        ? `Key stored in ${status.keychain_name} under the old name (spend-analyzer); it will be moved on next use`
+        : `Key stored in ${status.keychain_name}`;
     case "file":
       return "Key stored in the plaintext key file";
     default:

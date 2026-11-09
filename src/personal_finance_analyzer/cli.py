@@ -16,18 +16,19 @@ from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import date
 from pathlib import Path
+from urllib.parse import quote
 
 import typer
-from sqlalchemy import Engine, select
+from sqlalchemy import Engine, create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from personal_finance_analyzer.analytics.query import SpendQuery, run_query
 from personal_finance_analyzer.analytics.tax_query import TaxYearSummary
 from personal_finance_analyzer.api.services import crud, gateway
-from personal_finance_analyzer.config import load_settings
+from personal_finance_analyzer.config import load_settings, no_key_adoption
 from personal_finance_analyzer.core.errors import PfaError
 from personal_finance_analyzer.core.logging import configure_logging, get_logger
-from personal_finance_analyzer.core.paths import ensure_home, prepare_home
+from personal_finance_analyzer.core.paths import db_path, get_home, prepare_home
 from personal_finance_analyzer.core.shellquote import join_command
 from personal_finance_analyzer.core.tax_types import TaxFallbackExtractor
 from personal_finance_analyzer.core.webui import web_ui_warning
@@ -594,15 +595,12 @@ def doctor(
     ok = True
     ok &= _check("Python version >= 3.12", sys.version_info >= (3, 12))
 
-    try:
-        home = ensure_home()
-        ok &= _check(f"Data directory ({home}) writable", os.access(home, os.W_OK))
-    except OSError as exc:
-        ok &= _check(f"Data directory writable: {exc}", False)
+    ok &= _doctor_home()
 
     ok &= _doctor_migrations()
     ok &= _doctor_keychain(write_test=write_test)
-    ok &= _doctor_llm()
+    with no_key_adoption():  # the connectivity check uses the key, but must not write
+        ok &= _doctor_llm()
 
     if not ok:
         raise typer.Exit(code=1)
@@ -695,14 +693,34 @@ def issuers_add(
         typer.echo(f"Created issuer #{issuer.id}: {issuer.name}")
 
 
+def _doctor_home() -> bool:
+    """Is the data directory usable? Read-only: a machine that has not run the app yet gets no
+    data directory (or database) from a diagnosis; it is created on first real use."""
+    try:
+        home = get_home()
+        if home.is_dir():
+            return _check(f"Data directory ({home}) writable", os.access(home, os.W_OK))
+        parent = next((p for p in home.parents if p.exists()), home)
+        return _check(
+            f"Data directory ({home}) not created yet; it will be on first use ({parent} writable)",
+            os.access(parent, os.W_OK),
+        )
+    except OSError as exc:
+        return _check(f"Data directory writable: {exc}", False)
+
+
 def _doctor_migrations() -> bool:
     from alembic.runtime.migration import MigrationContext
 
     from personal_finance_analyzer.db.migrate import build_alembic_config
-    from personal_finance_analyzer.db.session import make_engine
 
+    db_file = db_path()
+    if not db_file.exists():
+        typer.echo("INFO  No database yet (it is created by the first import or `pfa migrate`)")
+        return True
     try:
-        engine = make_engine()
+        # Read-only (`mode=ro`): the check must never create, or write to, the database.
+        engine = create_engine(f"sqlite:///file:{quote(db_file.as_posix())}?mode=ro&uri=true")
         try:
             with engine.connect() as conn:
                 context = MigrationContext.configure(conn)
@@ -757,7 +775,7 @@ def _doctor_keychain(*, write_test: bool = False) -> bool:
 
     if cfg.mode != "none":
         try:
-            found = get_llm_api_key(cfg) is not None
+            found = get_llm_api_key(cfg, adopt=False) is not None  # read-only
         except Exception as exc:  # a read must never crash the diagnosis
             ok &= _check(f"API key lookup failed: {exc}", False)
         else:

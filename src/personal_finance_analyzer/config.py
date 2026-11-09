@@ -15,11 +15,13 @@ reads `config.toml` or touches `keyring` directly.
 from __future__ import annotations
 
 import contextlib
+import contextvars
 import json
 import logging
 import os
 import time
 import tomllib
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -256,6 +258,18 @@ ENV_PREFIX = "PFA_"
 LEGACY_ENV_PREFIX = "SPEND_ANALYZER_"
 
 
+def load_file_settings(path: Path | None = None) -> Settings:
+    """Settings as `config.toml` holds them: defaults -> the file, with *no* environment overrides.
+    This is what a save must start from; `load_settings` (the effective values) would write a
+    one-off environment variable into the file for good."""
+    toml_path = path if path is not None else config_path()
+    data: dict[str, object] = {}
+    if toml_path.exists():
+        with toml_path.open("rb") as f:
+            data = tomllib.load(f)
+    return Settings.model_validate(data)
+
+
 def load_settings(path: Path | None = None) -> Settings:
     """Load settings: defaults -> `config.toml` (if present) -> environment variable overrides.
 
@@ -264,18 +278,15 @@ def load_settings(path: Path | None = None) -> Settings:
     without writing a file. The product's former prefix, ``SPEND_ANALYZER_``, is still read as a
     fallback; when both name the same setting, ``PFA_`` wins.
     """
-    toml_path = path if path is not None else config_path()
-    data: dict[str, object] = {}
-    if toml_path.exists():
-        with toml_path.open("rb") as f:
-            data = tomllib.load(f)
-
-    settings = Settings.model_validate(data)
-    return _apply_env_overrides(settings)
+    return _apply_env_overrides(load_file_settings(path))
 
 
-def _apply_env_overrides(settings: Settings) -> Settings:
-    overrides: dict[str, dict[str, str]] = {}
+_SETTINGS_SECTIONS = ("llm", "privacy", "ingest", "tax", "server", "secrets")
+
+
+def _collect_env_overrides() -> dict[tuple[str, str], tuple[str, str]]:
+    """``(section, field) -> (variable name, raw value)`` for every environment override."""
+    found: dict[tuple[str, str], tuple[str, str]] = {}
     # Legacy prefix first, so a `PFA_` variable for the same field overwrites it.
     for prefix in (LEGACY_ENV_PREFIX, ENV_PREFIX):
         for key, value in os.environ.items():
@@ -284,23 +295,55 @@ def _apply_env_overrides(settings: Settings) -> Settings:
             section, _, field_name = key[len(prefix) :].partition("__")
             section = section.lower()
             field_name = field_name.lower()
-            if section not in ("llm", "privacy", "ingest", "tax", "server", "secrets"):
+            if section not in _SETTINGS_SECTIONS:
                 continue
-            overrides.setdefault(section, {})[field_name] = value
+            if section == "llm" and field_name == "mode":  # legacy: none|local|remote
+                field_name = "enabled"
+            found[(section, field_name)] = (key, value)
+    return found
 
+
+def env_override_var(section: str, field_name: str) -> str | None:
+    """The environment variable currently overriding ``[section] field_name``, if any."""
+    found = _collect_env_overrides().get((section, field_name))
+    return found[0] if found is not None else None
+
+
+def env_overridden_fields() -> frozenset[tuple[str, str]]:
+    """Every ``(section, field)`` an environment variable currently decides (unknown fields, which
+    are ignored on load, are not listed)."""
+    defaults = Settings().model_dump()
+    known = {(name, field_name) for name in _SETTINGS_SECTIONS for field_name in defaults[name]}
+    return frozenset(key for key in _collect_env_overrides() if key in known)
+
+
+def keep_file_values(new: Settings, file_settings: Settings) -> Settings:
+    """``new`` with every environment-controlled field set back to its `config.toml` value, so
+    saving never turns a one-off environment override into a permanent setting."""
+    overridden = env_overridden_fields()
+    if not overridden:
+        return new
+    merged = new.model_dump()
+    from_file = file_settings.model_dump()
+    for section, field_name in overridden:
+        merged[section][field_name] = from_file[section][field_name]
+    return Settings.model_validate(merged)
+
+
+def _apply_env_overrides(settings: Settings) -> Settings:
+    overrides = _collect_env_overrides()
     if not overrides:
         return settings
 
     merged = settings.model_dump()
-    for section, fields in overrides.items():
-        for field_name, raw_value in fields.items():
-            if section == "llm" and field_name == "mode":  # legacy: none|local|remote
-                merged["llm"]["enabled"] = raw_value.strip().lower() != "none"
-                continue
-            if field_name not in merged[section]:
-                continue
-            current = merged[section][field_name]
-            merged[section][field_name] = _coerce(raw_value, current)
+    for (section, field_name), (_var, raw_value) in overrides.items():
+        if section == "llm" and field_name == "enabled" and _var.upper().endswith("__MODE"):
+            merged["llm"]["enabled"] = raw_value.strip().lower() != "none"
+            continue
+        if field_name not in merged[section]:
+            continue
+        current = merged[section][field_name]
+        merged[section][field_name] = _coerce(raw_value, current)
     return Settings.model_validate(merged)
 
 
@@ -369,7 +412,24 @@ def _allow_file_store() -> bool:
         return False
 
 
-def get_api_key(account: str) -> str | None:
+_NO_ADOPTION: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "pfa_no_adoption", default=False
+)
+
+
+@contextlib.contextmanager
+def no_key_adoption() -> Iterator[None]:
+    """Within the block no key lookup moves a legacy-service key (every `get_api_key` behaves as
+    ``adopt=False``). `pfa doctor` wraps its LLM connectivity check in this: the check really uses
+    the key, but a diagnosis must not write to the keychain."""
+    token = _NO_ADOPTION.set(True)
+    try:
+        yield
+    finally:
+        _NO_ADOPTION.reset(token)
+
+
+def get_api_key(account: str, *, adopt: bool = True) -> str | None:
     """Return the API key stored under ``account``: the ``{ACCOUNT}_API_KEY`` env var first (for a
     plain name like ``openai``), then the OS keychain (service ``personal-finance-analyzer``),
     then, only if the user opted in, the 0600 file store. Never logs the value. A keychain that
@@ -378,7 +438,10 @@ def get_api_key(account: str) -> str | None:
     screen instead of crashing or prompting.
 
     A key saved under the pre-rename service (``spend-analyzer``) is moved to the new one on first
-    read: copied, then the old entry deleted (both best-effort; the key is returned either way)."""
+    read: copied, then the old entry deleted (both best-effort; the key is returned either way).
+    That move writes to the keychain, so it happens only with ``adopt=True`` (a real use of the
+    key: an LLM call). A diagnostic or a status display passes ``adopt=False``: the old entry is
+    still found and returned, but nothing is written or deleted."""
     if account.replace("_", "").replace("-", "").isalnum():
         env_value = os.environ.get(f"{account.upper().replace('-', '_')}_API_KEY")
         if env_value:
@@ -388,7 +451,8 @@ def get_api_key(account: str) -> str | None:
             with KEYRING_LOCK:
                 value = keyring.get_password(_KEYRING_SERVICE, account)
                 if value is None:
-                    value = _adopt_legacy_key(account)
+                    adopting = adopt and not _NO_ADOPTION.get()
+                    value = _adopt_legacy_key(account) if adopting else _read_legacy_key(account)
         except keyring.errors.KeyringError as exc:
             _log.warning("OS keychain unavailable: %s", explain_keyring_error(exc))
             value = None
@@ -402,15 +466,22 @@ def get_api_key(account: str) -> str | None:
     return None
 
 
+def _read_legacy_key(account: str) -> str | None:
+    """Caller holds `KEYRING_LOCK`. ``account``'s key under the pre-rename keychain service, or
+    ``None``. A pure read: nothing is copied, moved or deleted."""
+    try:
+        return keyring.get_password(_LEGACY_KEYRING_SERVICE, account)
+    except keyring.errors.KeyringError:
+        return None
+
+
 def _adopt_legacy_key(account: str) -> str | None:
     """Caller holds `KEYRING_LOCK`. Move ``account``'s key from the pre-rename keychain service to
     the current one, so a user who saved a key before the rename keeps working. Only reads the old
     service (a lookup that finds nothing neither prompts nor writes); the copy and the delete happen
-    only when an old entry exists, and any failure along the way is tolerated."""
-    try:
-        legacy = keyring.get_password(_LEGACY_KEYRING_SERVICE, account)
-    except keyring.errors.KeyringError:
-        return None
+    only when an old entry exists, and any failure along the way is tolerated. Writes, so only a
+    real use of the key calls this (see `get_api_key`'s ``adopt``)."""
+    legacy = _read_legacy_key(account)
     if legacy is None:
         return None
     try:
@@ -422,14 +493,15 @@ def _adopt_legacy_key(account: str) -> str | None:
     return legacy
 
 
-def get_llm_api_key(cfg: LLMConfig) -> str | None:
+def get_llm_api_key(cfg: LLMConfig, *, adopt: bool = True) -> str | None:
     """The API key for ``cfg``'s endpoint: `PFA_LLM_API_KEY`, else the key saved in
     the OS keychain (or the opt-in file store) for ``cfg.base_url``'s host (see
-    `LLMConfig.key_account`)."""
+    `LLMConfig.key_account`). ``adopt=False`` is the read-only lookup for `pfa doctor`, the
+    Settings screen and `pfa llm show`: it never moves a legacy-service key (see `get_api_key`)."""
     env_value = os.environ.get(LLM_API_KEY_ENV) or os.environ.get(LEGACY_LLM_API_KEY_ENV)
     if env_value:
         return env_value
-    return get_api_key(cfg.key_account) if cfg.key_account else None
+    return get_api_key(cfg.key_account, adopt=adopt) if cfg.key_account else None
 
 
 def set_api_key(provider: str, key: str) -> Literal["keychain", "file"]:
@@ -504,6 +576,9 @@ class SecretStorageStatus:
     keychain_detail: str
     #: The environment variable that is supplying a key, if one is set.
     env_var: str | None
+    #: The key was found only under the pre-rename keychain service (``spend-analyzer``); it is
+    #: moved to the current service the next time it is really used (an LLM call or a save).
+    key_legacy: bool
     file_store_enabled: bool
     file_store_path: str
     #: A key sits in the file store (it is still read while enabled; with a working keychain, new
@@ -513,11 +588,15 @@ class SecretStorageStatus:
     guidance: str
     #: The plaintext warning; only filled in when the file store is enabled.
     warning: str
+    #: The environment variable that decides ``allow_file_store`` right now, if one is set. While
+    #: it is set the Settings toggle cannot change the opt-in (the variable wins on every load).
+    file_store_env_var: str | None = None
 
 
 def secret_storage_status(cfg: LLMConfig | None = None) -> SecretStorageStatus:
     """Resolve the secret backend in use for ``cfg``'s endpoint (read-only: it reads, at most, the
-    one key, and never writes anything)."""
+    one key from either keychain service, and never writes or deletes anything: a key under the
+    pre-rename service is reported as such, not adopted)."""
     keychain = inspect_keychain()
     file_enabled = _allow_file_store()
     env_var = next(
@@ -530,6 +609,7 @@ def secret_storage_status(cfg: LLMConfig | None = None) -> SecretStorageStatus:
     )
 
     source: SecretSource = "none"
+    legacy = False
     if env_var is not None:
         source = "env"
     elif cfg is not None and cfg.key_account:
@@ -538,6 +618,8 @@ def secret_storage_status(cfg: LLMConfig | None = None) -> SecretStorageStatus:
             try:
                 with KEYRING_LOCK:
                     found = keyring.get_password(_KEYRING_SERVICE, account) is not None
+                    if not found and _read_legacy_key(account) is not None:
+                        found, legacy = True, True
             except keyring.errors.KeyringError:
                 found = False
             if found:
@@ -555,11 +637,13 @@ def secret_storage_status(cfg: LLMConfig | None = None) -> SecretStorageStatus:
         keychain_usable=keychain.usable,
         keychain_detail=keychain.detail,
         env_var=env_var,
+        key_legacy=legacy,
         file_store_enabled=file_enabled,
         file_store_path=str(path),
         file_store_has_keys=file_store_has_keys(),
         guidance="" if keychain.usable else platform_guidance(),
         warning=FILE_STORE_WARNING.format(path=path) if file_enabled else "",
+        file_store_env_var=env_override_var("secrets", "allow_file_store"),
     )
 
 
