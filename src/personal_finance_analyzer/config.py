@@ -44,6 +44,7 @@ from personal_finance_analyzer.secret_store import (
     file_store_path,
     inspect_keychain,
     platform_guidance,
+    read_all_file_keys,
     read_file_key,
     write_file_key,
 )
@@ -429,7 +430,7 @@ def no_key_adoption() -> Iterator[None]:
         _NO_ADOPTION.reset(token)
 
 
-def get_api_key(account: str, *, adopt: bool = True) -> str | None:
+def get_api_key(account: str, *, adopt: bool = True, probe_legacy: bool = True) -> str | None:
     """Return the API key stored under ``account``: the ``{ACCOUNT}_API_KEY`` env var first (for a
     plain name like ``openai``), then the OS keychain (service ``personal-finance-analyzer``),
     then, only if the user opted in, the 0600 file store. Never logs the value. A keychain that
@@ -441,7 +442,12 @@ def get_api_key(account: str, *, adopt: bool = True) -> str | None:
     read: copied, then the old entry deleted (both best-effort; the key is returned either way).
     That move writes to the keychain, so it happens only with ``adopt=True`` (a real use of the
     key: an LLM call). A diagnostic or a status display passes ``adopt=False``: the old entry is
-    still found and returned, but nothing is written or deleted."""
+    still found and returned, but nothing is written or deleted.
+
+    ``probe_legacy=False`` does not look at the old service at all. A passive display (the Settings
+    screen loading) passes it: reading an entry that another build of the app saved can make macOS
+    ask the user whether this program may use it, and that prompt belongs to a deliberate action,
+    not to opening a page."""
     if account.replace("_", "").replace("-", "").isalnum():
         env_value = os.environ.get(f"{account.upper().replace('-', '_')}_API_KEY")
         if env_value:
@@ -452,7 +458,10 @@ def get_api_key(account: str, *, adopt: bool = True) -> str | None:
                 value = keyring.get_password(_KEYRING_SERVICE, account)
                 if value is None:
                     adopting = adopt and not _NO_ADOPTION.get()
-                    value = _adopt_legacy_key(account) if adopting else _read_legacy_key(account)
+                    if adopting:
+                        value = _adopt_legacy_key(account)
+                    elif probe_legacy:
+                        value = _read_legacy_key(account)
         except keyring.errors.KeyringError as exc:
             _log.warning("OS keychain unavailable: %s", explain_keyring_error(exc))
             value = None
@@ -493,7 +502,7 @@ def _adopt_legacy_key(account: str) -> str | None:
     return legacy
 
 
-def get_llm_api_key(cfg: LLMConfig, *, adopt: bool = True) -> str | None:
+def get_llm_api_key(cfg: LLMConfig, *, adopt: bool = True, probe_legacy: bool = True) -> str | None:
     """The API key for ``cfg``'s endpoint: `PFA_LLM_API_KEY`, else the key saved in
     the OS keychain (or the opt-in file store) for ``cfg.base_url``'s host (see
     `LLMConfig.key_account`). ``adopt=False`` is the read-only lookup for `pfa doctor`, the
@@ -501,7 +510,9 @@ def get_llm_api_key(cfg: LLMConfig, *, adopt: bool = True) -> str | None:
     env_value = os.environ.get(LLM_API_KEY_ENV) or os.environ.get(LEGACY_LLM_API_KEY_ENV)
     if env_value:
         return env_value
-    return get_api_key(cfg.key_account, adopt=adopt) if cfg.key_account else None
+    if not cfg.key_account:
+        return None
+    return get_api_key(cfg.key_account, adopt=adopt, probe_legacy=probe_legacy)
 
 
 def set_api_key(provider: str, key: str) -> Literal["keychain", "file"]:
@@ -563,6 +574,40 @@ def delete_api_key(provider: str) -> None:
         raise SecretStorageError(explain_keyring_error(refused))
 
 
+def move_file_keys_to_keychain() -> int:
+    """Copy every key in the plaintext file into the OS keychain, check each one reads back, and
+    only then remove it from the file (the file itself goes when the last key does). Returns how
+    many were moved. A key that cannot be moved stays in the file; nothing is deleted before its
+    keychain copy is verified.
+
+    Raises:
+        SecretStorageError: no usable keychain, or the keychain refused a key (the message says
+            which step and how to fix it; keys moved before the failure are already safe).
+    """
+    keychain = inspect_keychain()
+    if not keychain.usable:
+        raise SecretStorageError(
+            f"The saved key was not moved: there is no usable system keychain ({keychain.detail}). "
+            f"{platform_guidance()}"
+        )
+    moved = 0
+    for account, key in read_all_file_keys().items():
+        try:
+            with KEYRING_LOCK:
+                keyring.set_password(_KEYRING_SERVICE, account, key)
+                verified = keyring.get_password(_KEYRING_SERVICE, account) == key
+        except keyring.errors.KeyringError as exc:
+            raise SecretStorageError(explain_keyring_error(exc)) from None
+        if not verified:
+            raise SecretStorageError(
+                f"The {keychain.name} accepted the key but did not return it, so the plaintext "
+                "copy was kept."
+            )
+        delete_file_key(account)
+        moved += 1
+    return moved
+
+
 @dataclass(frozen=True)
 class SecretStorageStatus:
     """Which secret backend is in play, for `pfa doctor` and the Settings screen. No key material."""
@@ -584,6 +629,13 @@ class SecretStorageStatus:
     #: A key sits in the file store (it is still read while enabled; with a working keychain, new
     #: keys go to the keychain, so saving the key again moves it).
     file_store_has_keys: bool
+    #: The pre-rename keychain service was looked at (see ``secret_storage_status``'s
+    #: ``probe_legacy``). False means ``key_legacy`` only says "not checked".
+    legacy_checked: bool
+    #: What a ``file_key_action`` did to the plaintext key file (only set by the call that changed
+    #: it; ``none`` everywhere else) and how many keys it moved into the keychain.
+    file_key_outcome: Literal["none", "moved", "deleted", "kept"]
+    moved_keys: int
     #: Platform-specific setup advice; only filled in when no keychain is usable.
     guidance: str
     #: The plaintext warning; only filled in when the file store is enabled.
@@ -593,10 +645,15 @@ class SecretStorageStatus:
     file_store_env_var: str | None = None
 
 
-def secret_storage_status(cfg: LLMConfig | None = None) -> SecretStorageStatus:
+def secret_storage_status(
+    cfg: LLMConfig | None = None, *, probe_legacy: bool = True
+) -> SecretStorageStatus:
     """Resolve the secret backend in use for ``cfg``'s endpoint (read-only: it reads, at most, the
     one key from either keychain service, and never writes or deletes anything: a key under the
-    pre-rename service is reported as such, not adopted)."""
+    pre-rename service is reported as such, not adopted).
+
+    ``probe_legacy=False`` leaves the pre-rename service alone (the web Settings screen asks for
+    that on load; see `get_api_key`): the answer then covers the current service only."""
     keychain = inspect_keychain()
     file_enabled = _allow_file_store()
     env_var = next(
@@ -618,7 +675,7 @@ def secret_storage_status(cfg: LLMConfig | None = None) -> SecretStorageStatus:
             try:
                 with KEYRING_LOCK:
                     found = keyring.get_password(_KEYRING_SERVICE, account) is not None
-                    if not found and _read_legacy_key(account) is not None:
+                    if probe_legacy and not found and _read_legacy_key(account) is not None:
                         found, legacy = True, True
             except keyring.errors.KeyringError:
                 found = False
@@ -641,6 +698,9 @@ def secret_storage_status(cfg: LLMConfig | None = None) -> SecretStorageStatus:
         file_store_enabled=file_enabled,
         file_store_path=str(path),
         file_store_has_keys=file_store_has_keys(),
+        legacy_checked=probe_legacy,
+        file_key_outcome="none",
+        moved_keys=0,
         guidance="" if keychain.usable else platform_guidance(),
         warning=FILE_STORE_WARNING.format(path=path) if file_enabled else "",
         file_store_env_var=env_override_var("secrets", "allow_file_store"),

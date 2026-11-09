@@ -185,6 +185,15 @@ Pick one, in order of preference:
    available (it is still read when it holds a key), it is never included in a backup, and the
    app never turns it on by itself.
 
+   **Turning it off does not leave the key on disk unnoticed.** Untick the box (or `PUT
+   /api/settings/secret-storage`) while a key is still in the file and Settings asks what to do with
+   it: *move* it into the OS keychain (offered, and the default, when a keychain works), *delete* the
+   file (overwritten with zeros, then removed; the default when there is no keychain, behind an
+   explicit button; you enter the key again to use an LLM) or *keep* it (it stays as plaintext on
+   disk, unused, and Settings keeps saying so until you delete it). Overwriting is best effort: a
+   copy-on-write filesystem, an SSD or a snapshot may keep older blocks, which is one more reason to
+   prefer a keychain.
+
 A key is looked up in this order: `PFA_LLM_API_KEY`, the OS keychain, then the key file (only if
 enabled). On Windows the Credential Manager backend needs no setup.
 

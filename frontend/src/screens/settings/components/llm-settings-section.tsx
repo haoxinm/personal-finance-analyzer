@@ -11,6 +11,7 @@ import { hostnameOf, isLocalAddress, resolveUrl } from "../lib/llm-address";
 import {
   type LlmSettings,
   type Settings,
+  type FileKeyAction,
   type TestLlmResponse,
   useClearApiKey,
   useSecretStorageQuery,
@@ -18,7 +19,8 @@ import {
   useSetFileStore,
   useTestLlm,
 } from "../lib/hooks";
-import { cannotSaveKey, describeKeySource } from "../lib/secret-storage";
+import { cannotSaveKey, describeFileKeyOutcome, describeKeySource } from "../lib/secret-storage";
+import { PlaintextKeyFileChoice } from "./plaintext-key-file-choice";
 
 type ApiFormat = LlmSettings["api_format"];
 type Extractor = Settings["ingest"]["default_extractor"];
@@ -101,6 +103,8 @@ export function LlmSettingsSection({ settings, onSave, saving }: LlmSettingsSect
   const [headersText, setHeadersText] = React.useState(formatHeaders(settings.llm.extra_headers));
   const [apiKeyInput, setApiKeyInput] = React.useState("");
   const [testResult, setTestResult] = React.useState<TestLlmResponse | null>(null);
+  const [checkLegacy, setCheckLegacy] = React.useState(false);
+  const [choosingFileKey, setChoosingFileKey] = React.useState(false);
   const setApiKey = useSetApiKey();
   const clearApiKey = useClearApiKey();
   const testLlm = useTestLlm();
@@ -144,7 +148,7 @@ export function LlmSettingsSection({ settings, onSave, saving }: LlmSettingsSect
   const previewUrl = resolveUrl(draft.base_url, draft.api_format, draft.path);
   const hasAddress = draft.base_url.trim() !== "";
   const keyBase = draft.base_url.trim();
-  const secretStorage = useSecretStorageQuery(settings.llm.base_url.trim());
+  const secretStorage = useSecretStorageQuery(settings.llm.base_url.trim(), checkLegacy);
   const secretStatus = secretStorage.data;
   const noSecureStorage = cannotSaveKey(secretStatus);
 
@@ -179,10 +183,32 @@ export function LlmSettingsSection({ settings, onSave, saving }: LlmSettingsSect
   };
 
   const handleToggleFileStore = (allow: boolean) => {
-    setFileStore.mutate(allow, {
-      onError: (err) =>
-        toast({ title: "Could not change the key file setting", description: String(err), variant: "destructive" }),
-    });
+    if (!allow && secretStatus?.file_store_has_keys) {
+      // A key is still in the file: never turn it off without saying what happens to the key.
+      setChoosingFileKey(true);
+      return;
+    }
+    setFileStore.mutate(
+      { allow },
+      {
+        onError: (err) =>
+          toast({ title: "Could not change the key file setting", description: String(err), variant: "destructive" }),
+      },
+    );
+  };
+
+  const handleFileKeyAction = (action: FileKeyAction) => {
+    setFileStore.mutate(
+      { allow: false, action },
+      {
+        onSuccess: (status) => {
+          setChoosingFileKey(false);
+          if (status) toast(describeFileKeyOutcome(status));
+        },
+        onError: (err) =>
+          toast({ title: "Could not change the key file", description: String(err), variant: "destructive" }),
+      },
+    );
   };
 
   const handleTest = () => {
@@ -520,11 +546,49 @@ export function LlmSettingsSection({ settings, onSave, saving }: LlmSettingsSect
                           {secretStatus.warning}
                         </p>
                       ) : null}
+                      {!secretStatus.file_store_enabled && secretStatus.file_store_has_keys ? (
+                        <p data-testid="file-store-leftover" className="mt-2 text-destructive">
+                          A key is still saved as plaintext in {secretStatus.file_store_path}. It is not used while
+                          the plaintext key file is off, but it is still on disk.
+                          {!choosingFileKey ? (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="ml-2"
+                              onClick={() => setChoosingFileKey(true)}
+                            >
+                              Delete or keep it…
+                            </Button>
+                          ) : null}
+                        </p>
+                      ) : null}
                     </div>
                   ) : secretStatus.file_store_has_keys ? (
-                    <p className="text-xs text-muted-foreground">
+                    <p className="text-xs text-muted-foreground" data-testid="file-store-leftover">
                       A key is also saved in the plaintext key file ({secretStatus.file_store_path}); saving the key
                       again moves it into {secretStatus.keychain_name}.
+                      {!choosingFileKey ? (
+                        <Button size="sm" variant="outline" className="ml-2" onClick={() => setChoosingFileKey(true)}>
+                          Move or delete it…
+                        </Button>
+                      ) : null}
+                    </p>
+                  ) : null}
+                  {choosingFileKey && secretStatus.file_store_has_keys ? (
+                    <PlaintextKeyFileChoice
+                      status={secretStatus}
+                      pending={setFileStore.isPending}
+                      onApply={handleFileKeyAction}
+                      onCancel={() => setChoosingFileKey(false)}
+                    />
+                  ) : null}
+                  {secretStatus.keychain_usable && secretStatus.key_source === "none" && !secretStatus.legacy_checked ? (
+                    <p className="text-xs text-muted-foreground" data-testid="legacy-check">
+                      No key found in {secretStatus.keychain_name}. A key saved by an older version under the old name
+                      (spend-analyzer) is not looked for automatically: macOS may ask permission to read it.
+                      <Button size="sm" variant="outline" className="ml-2" onClick={() => setCheckLegacy(true)}>
+                        Look for it
+                      </Button>
                     </p>
                   ) : null}
                 </div>

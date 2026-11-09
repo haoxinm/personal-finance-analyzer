@@ -3490,7 +3490,7 @@
           "settings"
         ],
         "summary": "Get Secret Storage",
-        "description": "Which backend holds the LLM API key (environment variable / keychain name / plaintext file\n/ none), with platform-specific setup advice when no keychain works. Read-only; never returns\na key. `base_url` (default: the saved one) picks the endpoint whose key is looked up.",
+        "description": "Which backend holds the LLM API key (environment variable / keychain name / plaintext file\n/ none), with platform-specific setup advice when no keychain works. Read-only; never returns\na key. `base_url` (default: the saved one) picks the endpoint whose key is looked up.\n\nThe key saved under the pre-rename keychain service is only looked for with\n`check_legacy=true` (the Settings screen's explicit \"check\" button): reading an entry another\nbuild of the app saved can make macOS ask the user to allow it, which a page load must not\ntrigger.",
         "operationId": "get_secret_storage_api_settings_secret_storage_get",
         "parameters": [
           {
@@ -3501,6 +3501,16 @@
               "type": "string",
               "default": "",
               "title": "Base Url"
+            }
+          },
+          {
+            "name": "check_legacy",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Check Legacy"
             }
           }
         ],
@@ -3532,7 +3542,7 @@
           "settings"
         ],
         "summary": "Put Secret Storage",
-        "description": "Switch the plaintext file store on or off (`[secrets] allow_file_store`; only used when the\nOS keychain is unavailable). `409` while an environment variable controls the opt-in: it wins\non every load, so the toggle could not change anything.",
+        "description": "Switch the plaintext file store on or off (`[secrets] allow_file_store`; only used when the\nOS keychain is unavailable). `409` while an environment variable controls the opt-in: it wins\non every load, so the toggle could not change anything.\n\nSwitching it off does not leave a plaintext key behind unnoticed: a key still in the file is\nmoved into the OS keychain when one works, otherwise the caller must choose\n(`file_key_action`) to delete the file (overwritten, then removed) or to keep it. The response\nsays which happened (`file_key_outcome`), so the UI can state where the key now lives.",
         "operationId": "put_secret_storage_api_settings_secret_storage_put",
         "requestBody": {
           "required": true,
@@ -10215,6 +10225,22 @@
           "allow_file_store": {
             "type": "boolean",
             "title": "Allow File Store"
+          },
+          "file_key_action": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "move",
+                  "delete",
+                  "keep"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "File Key Action"
           }
         },
         "type": "object",
@@ -10222,7 +10248,7 @@
           "allow_file_store"
         ],
         "title": "SecretStoragePut",
-        "description": "`PUT /api/settings/secret-storage`: switch the plaintext file store on or off\n(`[secrets] allow_file_store`)."
+        "description": "`PUT /api/settings/secret-storage`: switch the plaintext file store on or off\n(`[secrets] allow_file_store`).\n\nTurning it off (or calling again with it already off) while the key file still holds keys\nneeds a decision about them, `file_key_action`: `move` them into the OS keychain (the default\nwhen one works), `delete` the file (overwritten, then removed) or `keep` it on disk, unused.\nWithout a working keychain there is no default: the call is refused with `409` until the\ncaller chooses `delete` or `keep`, so a key never stays on disk by accident."
       },
       "SecretStorageStatus": {
         "properties": {
@@ -10284,6 +10310,27 @@
           "file_store_has_keys": {
             "type": "boolean",
             "title": "File Store Has Keys"
+          },
+          "legacy_checked": {
+            "type": "boolean",
+            "title": "Legacy Checked",
+            "default": false
+          },
+          "file_key_outcome": {
+            "type": "string",
+            "enum": [
+              "none",
+              "moved",
+              "deleted",
+              "kept"
+            ],
+            "title": "File Key Outcome",
+            "default": "none"
+          },
+          "moved_keys": {
+            "type": "integer",
+            "title": "Moved Keys",
+            "default": 0
           },
           "guidance": {
             "type": "string",

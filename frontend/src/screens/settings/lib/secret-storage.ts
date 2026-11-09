@@ -21,6 +21,29 @@ export function describeKeySource(status: SecretStorageStatus): string {
   return "No secure place to save a key on this machine";
 }
 
+/** The toast that says where the key now lives after turning the plaintext key file off. */
+export function describeFileKeyOutcome(status: SecretStorageStatus): { title: string; description: string } {
+  switch (status.file_key_outcome) {
+    case "moved":
+      return {
+        title: `Moved ${status.moved_keys} saved key${status.moved_keys === 1 ? "" : "s"} into ${status.keychain_name}`,
+        description: "The plaintext key file was overwritten and removed.",
+      };
+    case "deleted":
+      return {
+        title: "Plaintext key file deleted",
+        description: "The key is no longer stored on this computer. Enter it again to save a new one.",
+      };
+    case "kept":
+      return {
+        title: "Plaintext key file kept",
+        description: `The key stays as plaintext in ${status.file_store_path} and is not used. Delete the file when you no longer need it.`,
+      };
+    default:
+      return { title: "Plaintext key file turned off", description: "" };
+  }
+}
+
 /** True when saving a key from the UI would fail: no keychain and the file store is off. */
 export function cannotSaveKey(status: SecretStorageStatus | undefined): boolean {
   return status !== undefined && status.storage === "none";

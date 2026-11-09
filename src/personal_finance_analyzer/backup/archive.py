@@ -26,10 +26,12 @@ moved aside to ``<name>.<timestamp>.before-restore``, never deleted.
 
 The machine-local secret state of the directory being replaced is carried over into the restored
 one: its ``secrets/`` directory (the plaintext key file the user chose to keep here) and its
-``[secrets]`` table of ``config.toml``. So a restore neither strands that file in the
-``*.before-restore`` copy, where a plaintext key would linger unnoticed, nor changes whether the
-file store is enabled on this machine (a restored archive's own ``[secrets]``, if an older version
-wrote one, is discarded).
+``[secrets]`` table of ``config.toml``. It is moved, not left behind: the file is copied into the
+restored directory before the swap (so a restore that fails loses nothing) and, once the swap has
+succeeded and the copy is verified, the original in the ``*.before-restore`` directory is
+overwritten and removed, so no plaintext key lingers there unnoticed. A restore also never changes
+whether the file store is enabled on this machine (a restored archive's own ``[secrets]``, if an
+older version wrote one, is discarded).
 
 The archive is treated as hostile input. Extraction counts the bytes it actually writes against
 per-member and total limits (never trusting the sizes a crafted zip or manifest declares), and
@@ -78,6 +80,7 @@ from personal_finance_analyzer.backup.errors import (
     SchemaTooNewError,
 )
 from personal_finance_analyzer.core.paths import create_home_layout, existing_db_file, get_home
+from personal_finance_analyzer.core.secure_delete import shred_file
 from personal_finance_analyzer.db.migrate import build_alembic_config, upgrade_head
 
 FORMAT_NAME = "personal-finance-analyzer-backup"
@@ -887,6 +890,30 @@ def _carry_over_secrets(old_home: Path, new_home: Path) -> bool:
     return True
 
 
+def _discard_old_secrets(previous: Path, target: Path) -> None:
+    """After a successful swap, remove the plaintext key file from the ``*.before-restore``
+    directory it was copied out of, so the restore *moves* it: the copy in ``target`` (made before
+    the swap, so that a failed restore loses nothing) is verified file by file against the old one
+    before the old one is overwritten and deleted. A file whose copy is missing or different is
+    left alone. Best effort: the restore has already succeeded, so a failure here is not an error."""
+    old_secrets = previous / "secrets"
+    new_secrets = target / "secrets"
+    if not old_secrets.is_dir() or old_secrets.is_symlink():
+        return
+    try:
+        for old in sorted(p for p in old_secrets.rglob("*") if p.is_file()):
+            new = new_secrets / old.relative_to(old_secrets)
+            if new.is_file() and new.read_bytes() == old.read_bytes():
+                shred_file(old)
+        for directory in sorted((p for p in old_secrets.rglob("*") if p.is_dir()), reverse=True):
+            with contextlib.suppress(OSError):
+                directory.rmdir()
+        with contextlib.suppress(OSError):
+            old_secrets.rmdir()
+    except OSError:
+        return
+
+
 def _remove_empty_tree(root: Path) -> None:
     for directory in sorted((p for p in root.rglob("*") if p.is_dir()), reverse=True):
         directory.rmdir()
@@ -980,6 +1007,8 @@ def restore_backup(
             if previous is not None:
                 previous.rename(target)
             raise BackupError(f"could not move the restored data into place: {exc}") from exc
+        if kept_secrets and previous is not None:
+            _discard_old_secrets(previous, target)
         return RestoreResult(
             manifest=manifest, migrated=migrated, previous_dir=previous, kept_secrets=kept_secrets
         )

@@ -731,6 +731,15 @@ class SecretStorageStatus(_Model):
     file_store_enabled: bool
     file_store_path: str
     file_store_has_keys: bool
+    #: Whether the pre-rename keychain service was looked at. The Settings screen does not on load
+    #: (reading another build's entry can make macOS prompt), so `key_legacy` then only means "not
+    #: checked"; `?check_legacy=true` does it on request.
+    legacy_checked: bool = False
+    #: What the `PUT` that just ran did with the plaintext key file: `moved` (into the keychain),
+    #: `deleted` (overwritten and removed), `kept` (left on disk, unused) or `none`. `moved_keys`
+    #: counts the keys moved. Always `none` / 0 on a `GET`.
+    file_key_outcome: Literal["none", "moved", "deleted", "kept"] = "none"
+    moved_keys: int = 0
     #: Platform-specific setup advice, filled in when no usable keychain exists.
     guidance: str
     #: The plaintext-at-rest warning, filled in while the file store is enabled.
@@ -742,9 +751,16 @@ class SecretStorageStatus(_Model):
 
 class SecretStoragePut(_Model):
     """`PUT /api/settings/secret-storage`: switch the plaintext file store on or off
-    (`[secrets] allow_file_store`)."""
+    (`[secrets] allow_file_store`).
+
+    Turning it off (or calling again with it already off) while the key file still holds keys
+    needs a decision about them, `file_key_action`: `move` them into the OS keychain (the default
+    when one works), `delete` the file (overwritten, then removed) or `keep` it on disk, unused.
+    Without a working keychain there is no default: the call is refused with `409` until the
+    caller chooses `delete` or `keep`, so a key never stays on disk by accident."""
 
     allow_file_store: bool
+    file_key_action: Literal["move", "delete", "keep"] | None = None
 
 
 # --- Net worth ---------------------------------------------------------------------------------

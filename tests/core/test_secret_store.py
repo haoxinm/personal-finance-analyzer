@@ -730,3 +730,138 @@ def test_llm_set_does_not_write_an_env_override_into_config(
     assert saved.secrets.allow_file_store is False
     assert saved.server.port == 8756
     assert saved.llm.model == "m"
+
+
+# --- removing the plaintext key file for real ------------------------------------------------
+
+
+def test_shred_file_overwrites_the_data_before_unlinking(tmp_path: Path) -> None:
+    from personal_finance_analyzer.core.secure_delete import shred_file
+
+    path = tmp_path / "api_keys.toml"
+    path.write_bytes(b'[keys]\n"llm:x" = "sk-very-secret"\n' * 100)
+    alias = tmp_path / "alias"
+    os.link(path, alias)  # a second name for the same data: what an undelete would still see
+    shred_file(path)
+    assert not path.exists()
+    assert alias.read_bytes() == bytes(alias.stat().st_size)  # zeros, same length
+    assert b"sk-very-secret" not in alias.read_bytes()
+
+
+def test_shred_file_tolerates_missing_and_symlinks(tmp_path: Path) -> None:
+    from personal_finance_analyzer.core.secure_delete import shred_file
+
+    shred_file(tmp_path / "missing")
+    target = tmp_path / "target"
+    target.write_bytes(b"keep me")
+    link = tmp_path / "link"
+    link.symlink_to(target)
+    shred_file(link)
+    assert not link.exists()
+    assert target.read_bytes() == b"keep me"  # only the link went
+
+
+def test_shred_tree_removes_files_and_directories(tmp_path: Path) -> None:
+    from personal_finance_analyzer.core.secure_delete import shred_tree
+
+    root = tmp_path / "secrets"
+    (root / "nested").mkdir(parents=True)
+    (root / "a").write_bytes(b"x")
+    (root / "nested" / "b").write_bytes(b"y")
+    shred_tree(root)
+    assert not root.exists()
+    shred_tree(root)  # already gone
+
+
+def test_remove_file_store_takes_every_key_and_stray_temp_files() -> None:
+    secret_store.write_file_key("a", "1")
+    secret_store.write_file_key("b", "2")
+    leftover = file_store_path().parent / ".api_keys-abc.tmp"
+    leftover.write_text("half written", encoding="utf-8")
+    assert secret_store.remove_file_store() is True
+    assert not file_store_path().parent.exists()  # the directory went with the last file
+    assert secret_store.remove_file_store() is False  # nothing left to remove
+
+
+def test_deleting_the_last_key_removes_the_file_and_its_directory() -> None:
+    secret_store.write_file_key(_ACCOUNT, "k")
+    secret_store.delete_file_key(_ACCOUNT)
+    assert not file_store_path().exists()
+    assert not file_store_path().parent.exists()
+
+
+def test_file_store_file_exists_even_when_unreadable() -> None:
+    assert secret_store.file_store_file_exists() is False
+    file_store_path().parent.mkdir(parents=True)
+    file_store_path().write_text("this is [not toml", encoding="utf-8")
+    assert secret_store.file_store_file_exists() is True
+    assert secret_store.file_store_has_keys() is False  # unreadable counts as no keys...
+    assert secret_store.remove_file_store() is True  # ...but it can still be removed
+
+
+# --- moving the plaintext keys into the keychain ---------------------------------------------
+
+
+def test_move_file_keys_to_keychain_moves_verifies_and_removes(backend: _Backend) -> None:
+    secret_store.write_file_key("llm:a.example", "ka")
+    secret_store.write_file_key("llm:b.example", "kb")
+    assert config_module.move_file_keys_to_keychain() == 2
+    assert backend.store[(_SERVICE, "llm:a.example")] == "ka"
+    assert backend.store[(_SERVICE, "llm:b.example")] == "kb"
+    assert not file_store_path().exists()
+
+
+def test_move_keeps_the_plaintext_when_the_keychain_refuses(backend: _Backend) -> None:
+    secret_store.write_file_key(_ACCOUNT, "k")
+    backend.fail_with = lambda op: keyring.errors.KeyringLocked("locked") if op == "set" else None
+    with pytest.raises(SecretStorageError, match="locked"):
+        config_module.move_file_keys_to_keychain()
+    assert secret_store.read_file_key(_ACCOUNT) == "k"
+
+
+def test_move_keeps_the_plaintext_when_the_keychain_does_not_return_the_key(
+    backend: _Backend,
+) -> None:
+    secret_store.write_file_key(_ACCOUNT, "k")
+    backend.set_password = lambda service, username, password: None  # type: ignore[method-assign]
+    with pytest.raises(SecretStorageError, match="did not return"):
+        config_module.move_file_keys_to_keychain()
+    assert secret_store.read_file_key(_ACCOUNT) == "k"
+
+
+def test_move_without_a_keychain_is_an_error(no_keychain: object) -> None:
+    secret_store.write_file_key(_ACCOUNT, "k")
+    with pytest.raises(SecretStorageError, match="no usable system keychain"):
+        config_module.move_file_keys_to_keychain()
+    assert secret_store.read_file_key(_ACCOUNT) == "k"
+
+
+# --- the pre-rename keychain service is not probed unless asked ------------------------------
+
+
+def _spy_on_services(backend: _Backend) -> list[str]:
+    services: list[str] = []
+    real_get = backend.get_password
+
+    def spy(service: str, username: str) -> str | None:
+        services.append(service)
+        return real_get(service, username)
+
+    backend.get_password = spy  # type: ignore[method-assign]
+    return services
+
+
+def test_lookup_without_legacy_probe_never_touches_the_old_service(backend: _Backend) -> None:
+    _legacy_key(backend)
+    services = _spy_on_services(backend)
+    assert get_llm_api_key(_CFG, adopt=False, probe_legacy=False) is None
+    assert services == [_SERVICE]
+
+
+def test_status_without_legacy_probe_never_touches_the_old_service(backend: _Backend) -> None:
+    _legacy_key(backend)
+    services = _spy_on_services(backend)
+    status = secret_storage_status(_CFG, probe_legacy=False)
+    assert (status.key_source, status.key_legacy, status.legacy_checked) == ("none", False, False)
+    assert services == [_SERVICE]
+    assert secret_storage_status(_CFG).legacy_checked is True  # the CLI default still checks

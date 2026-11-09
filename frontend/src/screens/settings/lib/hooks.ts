@@ -132,12 +132,14 @@ export function useClearApiKey() {
 
 /** Which backend holds (or would hold) the API key for `baseUrl`'s host: environment variable,
  * OS keychain, the opt-in plaintext file, or nothing. Never carries key material. */
-export function useSecretStorageQuery(baseUrl: string) {
+export function useSecretStorageQuery(baseUrl: string, checkLegacy = false) {
   return useQuery({
-    queryKey: [...SECRET_STORAGE_KEY, baseUrl],
+    queryKey: [...SECRET_STORAGE_KEY, baseUrl, checkLegacy],
     queryFn: async (): Promise<SecretStorageStatus> => {
+      // `check_legacy` also looks for a key saved under the pre-rename keychain name. It is off on
+      // page load: reading another build's entry can make macOS ask the user for permission.
       const { data, error } = await apiClient.GET("/settings/secret-storage", {
-        params: { query: { base_url: baseUrl } },
+        params: { query: { base_url: baseUrl, check_legacy: checkLegacy } },
       });
       throwIfError(error);
       if (!data) throw new Error("The server returned no secret-storage status.");
@@ -146,13 +148,18 @@ export function useSecretStorageQuery(baseUrl: string) {
   });
 }
 
-/** Switch the plaintext key file (`[secrets] allow_file_store`) on or off. */
+/** What to do with a key still saved in the plaintext file when turning it off. */
+export type FileKeyAction = NonNullable<components["schemas"]["SecretStoragePut"]["file_key_action"]>;
+
+/** Switch the plaintext key file (`[secrets] allow_file_store`) on or off. Turning it off while a key
+ * is still in it needs `action` (the server refuses without a keychain to move it to). The result
+ * says what happened to the file (`file_key_outcome`). */
 export function useSetFileStore() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (allowFileStore: boolean) => {
+    mutationFn: async ({ allow, action }: { allow: boolean; action?: FileKeyAction }) => {
       const { data, error } = await apiClient.PUT("/settings/secret-storage", {
-        body: { allow_file_store: allowFileStore },
+        body: { allow_file_store: allow, file_key_action: action ?? null },
       });
       throwIfError(error);
       return data;

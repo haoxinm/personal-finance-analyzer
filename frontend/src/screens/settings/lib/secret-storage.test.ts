@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { cannotSaveKey, describeKeySource, type SecretStorageStatus } from "./secret-storage";
+import { cannotSaveKey, describeFileKeyOutcome, describeKeySource, type SecretStorageStatus } from "./secret-storage";
 
 const base: SecretStorageStatus = {
   key_source: "none",
@@ -13,6 +13,9 @@ const base: SecretStorageStatus = {
   file_store_enabled: false,
   file_store_path: "/data/secrets/api_keys.toml",
   file_store_has_keys: false,
+  legacy_checked: true,
+  file_key_outcome: "none",
+  moved_keys: 0,
   guidance: "",
   warning: "",
 };
@@ -34,6 +37,21 @@ describe("describeKeySource", () => {
     expect(describeKeySource(base)).toBe("A saved key will go to macOS Keychain");
     expect(describeKeySource({ ...base, storage: "file", keychain_usable: false })).toContain("plaintext");
     expect(describeKeySource({ ...base, storage: "none", keychain_usable: false })).toContain("No secure place");
+  });
+});
+
+describe("describeFileKeyOutcome", () => {
+  it("says where the key now lives", () => {
+    const moved = describeFileKeyOutcome({ ...base, file_key_outcome: "moved", moved_keys: 1 });
+    expect(moved.title).toBe("Moved 1 saved key into macOS Keychain");
+    expect(moved.description).toContain("removed");
+    expect(describeFileKeyOutcome({ ...base, file_key_outcome: "moved", moved_keys: 2 }).title).toContain("2 saved keys");
+    const deleted = describeFileKeyOutcome({ ...base, file_key_outcome: "deleted" });
+    expect(deleted.title).toContain("deleted");
+    expect(deleted.description).toContain("no longer stored");
+    const kept = describeFileKeyOutcome({ ...base, file_key_outcome: "kept" });
+    expect(kept.description).toContain("/data/secrets/api_keys.toml");
+    expect(kept.description).toContain("not used");
   });
 });
 

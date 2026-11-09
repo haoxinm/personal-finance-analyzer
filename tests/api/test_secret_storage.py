@@ -7,6 +7,7 @@ import keyring.backend
 import keyring.backends.fail
 import pytest
 from fastapi.testclient import TestClient
+from httpx import Response
 
 from personal_finance_analyzer.secret_store import file_store_path
 
@@ -95,7 +96,12 @@ def test_api_toggle_file_store_then_save_key(client: TestClient, no_keychain: ob
     client.put("/api/settings", json=client.get("/api/settings").json())
     assert client.get("/api/settings/secret-storage").json()["file_store_enabled"] is True
 
-    off = client.put("/api/settings/secret-storage", json={"allow_file_store": False}).json()
+    # With no keychain to move it to, turning the file off needs an explicit choice about the key.
+    refused = client.put("/api/settings/secret-storage", json={"allow_file_store": False})
+    assert refused.status_code == 409
+    off = client.put(
+        "/api/settings/secret-storage", json={"allow_file_store": False, "file_key_action": "keep"}
+    ).json()
     assert off["file_store_enabled"] is False
     assert client.delete("/api/settings/api-key").status_code == 204
     assert not file_store_path().exists()
@@ -118,7 +124,7 @@ class _Recording(_Backend):
         super().delete_password(service, username)
 
 
-def test_status_and_settings_reads_do_not_adopt_a_legacy_key(client: TestClient) -> None:
+def test_explicit_legacy_check_reports_the_old_key_without_adopting_it(client: TestClient) -> None:
     fake = _Recording()
     keyring.set_keyring(fake)
     saved = client.get("/api/settings").json()
@@ -127,10 +133,9 @@ def test_status_and_settings_reads_do_not_adopt_a_legacy_key(client: TestClient)
     account = "llm:api.example.com"
     fake.store[("spend-analyzer", account)] = "old"
 
-    status = client.get("/api/settings/secret-storage").json()
+    status = client.get("/api/settings/secret-storage?check_legacy=true").json()
     assert status["key_source"] == "keychain"
     assert status["key_legacy"] is True
-    assert client.get("/api/settings").json()["llm"]["has_key"] is True
     assert fake.writes == []
     assert ("spend-analyzer", account) in fake.store
 
@@ -191,3 +196,169 @@ def test_secret_storage_put_does_not_persist_other_env_overrides(
     saved = load_file_settings()
     assert saved.secrets.allow_file_store is True
     assert saved.server.port == 8756
+
+
+# --- turning the plaintext key file off does not leave the key on disk -----------------------
+
+
+def _enable_file_store_and_save_a_key(client: TestClient) -> None:
+    saved = client.get("/api/settings").json()
+    saved["llm"]["base_url"] = "https://api.example.com"
+    client.put("/api/settings", json=saved)
+    on = client.put("/api/settings/secret-storage", json={"allow_file_store": True})
+    assert on.status_code == 200
+    assert client.put("/api/settings/api-key", json={"api_key": "sk-plain"}).status_code == 204
+    assert file_store_path().is_file()
+
+
+def _off(client: TestClient, **extra: object) -> Response:
+    return client.put("/api/settings/secret-storage", json={"allow_file_store": False, **extra})
+
+
+def test_turning_off_moves_the_key_into_a_working_keychain(client: TestClient) -> None:
+    keyring.set_keyring(keyring.backends.fail.Keyring())
+    _enable_file_store_and_save_a_key(client)
+    working = _Backend()
+    keyring.set_keyring(working)  # a keychain became available since
+
+    response = _off(client)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert (body["file_key_outcome"], body["moved_keys"]) == ("moved", 1)
+    assert body["file_store_enabled"] is False
+    assert body["file_store_has_keys"] is False
+    assert not file_store_path().exists()
+    assert not file_store_path().parent.exists()
+    assert working.store[("personal-finance-analyzer", "llm:api.example.com")] == "sk-plain"
+    assert client.get("/api/settings/secret-storage").json()["key_source"] == "keychain"
+
+
+def test_turning_off_without_a_keychain_demands_a_choice_and_changes_nothing(
+    client: TestClient, no_keychain: object
+) -> None:
+    _enable_file_store_and_save_a_key(client)
+    response = _off(client)
+    assert response.status_code == 409
+    assert "delete" in response.json()["detail"] and "keep" in response.json()["detail"]
+    assert file_store_path().is_file()
+    assert client.get("/api/settings/secret-storage").json()["file_store_enabled"] is True
+
+
+def test_turning_off_and_deleting_removes_the_file(client: TestClient, no_keychain: object) -> None:
+    _enable_file_store_and_save_a_key(client)
+    body = _off(client, file_key_action="delete").json()
+    assert (body["file_key_outcome"], body["moved_keys"]) == ("deleted", 0)
+    assert body["file_store_enabled"] is False
+    assert body["file_store_has_keys"] is False
+    assert not file_store_path().exists()
+    assert client.get("/api/settings").json()["llm"]["has_key"] is False
+
+
+def test_turning_off_and_keeping_leaves_the_file_unused_and_says_so(
+    client: TestClient, no_keychain: object
+) -> None:
+    _enable_file_store_and_save_a_key(client)
+    body = _off(client, file_key_action="keep").json()
+    assert body["file_key_outcome"] == "kept"
+    assert body["file_store_enabled"] is False
+    assert body["file_store_has_keys"] is True  # the UI can state where the key still is
+    assert body["file_store_path"] == str(file_store_path())
+    assert file_store_path().is_file()
+    assert client.get("/api/settings").json()["llm"]["has_key"] is False  # and it is not used
+    # The kept file can be dealt with later, without turning anything on again.
+    later = _off(client, file_key_action="delete").json()
+    assert later["file_key_outcome"] == "deleted"
+    assert not file_store_path().exists()
+
+
+def test_a_failed_move_keeps_the_file_and_the_opt_in(client: TestClient) -> None:
+    keyring.set_keyring(keyring.backends.fail.Keyring())
+    _enable_file_store_and_save_a_key(client)
+
+    class _Locked(_Backend):
+        def set_password(self, service: str, username: str, password: str) -> None:
+            raise keyring.errors.KeyringLocked("locked")
+
+    keyring.set_keyring(_Locked())
+
+    response = _off(client)
+
+    assert response.status_code == 503
+    assert "locked" in response.json()["detail"]
+    assert "sk-plain" not in response.text
+    assert file_store_path().is_file()
+    assert client.get("/api/settings/secret-storage").json()["file_store_enabled"] is True
+
+
+def test_move_explicitly_requested_without_a_keychain_is_refused(
+    client: TestClient, no_keychain: object
+) -> None:
+    _enable_file_store_and_save_a_key(client)
+    response = _off(client, file_key_action="move")
+    assert response.status_code == 503
+    assert file_store_path().is_file()
+
+
+def test_turning_off_with_no_key_file_just_works(client: TestClient, no_keychain: object) -> None:
+    client.put("/api/settings/secret-storage", json={"allow_file_store": True})
+    body = _off(client).json()
+    assert (body["file_key_outcome"], body["file_store_enabled"]) == ("none", False)
+
+
+def test_a_file_key_action_makes_no_sense_when_turning_the_file_on(
+    client: TestClient, no_keychain: object
+) -> None:
+    response = client.put(
+        "/api/settings/secret-storage", json={"allow_file_store": True, "file_key_action": "keep"}
+    )
+    assert response.status_code == 400
+
+
+def test_turning_off_a_corrupt_key_file_can_still_delete_it(
+    client: TestClient, no_keychain: object
+) -> None:
+    client.put("/api/settings/secret-storage", json={"allow_file_store": True})
+    file_store_path().parent.mkdir(parents=True)
+    file_store_path().write_text("not [toml", encoding="utf-8")
+    assert _off(client).status_code == 409  # still needs a choice
+    assert _off(client, file_key_action="delete").status_code == 200
+    assert not file_store_path().exists()
+
+
+# --- the Settings page load does not read the pre-rename keychain entry ----------------------
+
+
+def test_status_and_settings_reads_do_not_probe_the_legacy_service(client: TestClient) -> None:
+    gets: list[str] = []
+
+    class _Spy(_Recording):
+        def get_password(self, service: str, username: str) -> str | None:
+            gets.append(service)
+            return super().get_password(service, username)
+
+    fake = _Spy()
+    keyring.set_keyring(fake)
+    saved = client.get("/api/settings").json()
+    saved["llm"]["base_url"] = "https://api.example.com"
+    client.put("/api/settings", json=saved)
+    fake.store[("spend-analyzer", "llm:api.example.com")] = "old"
+    gets.clear()
+
+    status = client.get("/api/settings/secret-storage").json()
+    assert client.get("/api/settings").json()["llm"]["has_key"] is False
+    assert "spend-analyzer" not in gets  # nothing that could make macOS ask for permission
+    assert (status["key_source"], status["key_legacy"], status["legacy_checked"]) == (
+        "none",
+        False,
+        False,
+    )
+
+    explicit = client.get("/api/settings/secret-storage?check_legacy=true").json()
+    assert "spend-analyzer" in gets  # only on request
+    assert (explicit["key_source"], explicit["key_legacy"], explicit["legacy_checked"]) == (
+        "keychain",
+        True,
+        True,
+    )
+    assert fake.writes == []

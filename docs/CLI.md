@@ -493,8 +493,9 @@ the new one. See [Moving to another machine](../README.md#moving-to-another-mach
   Machine-local secret state stays with the machine: the replaced directory's `secrets/` folder
   (the plaintext key file, if you opted in) and its `[secrets]` setting are carried over into the
   restored directory, and the archive's own `[secrets]` setting (an older version could write one)
-  is ignored, so a restore never switches the plaintext key file on or strands a key in the
-  `*.before-restore` copy.
+  is ignored, so a restore never switches the plaintext key file on. The key file is moved, not
+  copied: once the restore has succeeded, the original in the `*.before-restore` directory is
+  overwritten and removed, so no plaintext key lingers there.
 
 All three exit 1 with a message on any problem (wrong passphrase, damaged or modified file, unknown
 format). The web UI has the same two actions under Settings -> Backup & restore.

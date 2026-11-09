@@ -832,6 +832,11 @@ export interface paths {
          * @description Which backend holds the LLM API key (environment variable / keychain name / plaintext file
          *     / none), with platform-specific setup advice when no keychain works. Read-only; never returns
          *     a key. `base_url` (default: the saved one) picks the endpoint whose key is looked up.
+         *
+         *     The key saved under the pre-rename keychain service is only looked for with
+         *     `check_legacy=true` (the Settings screen's explicit "check" button): reading an entry another
+         *     build of the app saved can make macOS ask the user to allow it, which a page load must not
+         *     trigger.
          */
         get: operations["get_secret_storage_api_settings_secret_storage_get"];
         /**
@@ -839,6 +844,11 @@ export interface paths {
          * @description Switch the plaintext file store on or off (`[secrets] allow_file_store`; only used when the
          *     OS keychain is unavailable). `409` while an environment variable controls the opt-in: it wins
          *     on every load, so the toggle could not change anything.
+         *
+         *     Switching it off does not leave a plaintext key behind unnoticed: a key still in the file is
+         *     moved into the OS keychain when one works, otherwise the caller must choose
+         *     (`file_key_action`) to delete the file (overwritten, then removed) or to keep it. The response
+         *     says which happened (`file_key_outcome`), so the UI can state where the key now lives.
          */
         put: operations["put_secret_storage_api_settings_secret_storage_put"];
         post?: never;
@@ -2781,10 +2791,18 @@ export interface components {
          * SecretStoragePut
          * @description `PUT /api/settings/secret-storage`: switch the plaintext file store on or off
          *     (`[secrets] allow_file_store`).
+         *
+         *     Turning it off (or calling again with it already off) while the key file still holds keys
+         *     needs a decision about them, `file_key_action`: `move` them into the OS keychain (the default
+         *     when one works), `delete` the file (overwritten, then removed) or `keep` it on disk, unused.
+         *     Without a working keychain there is no default: the call is refused with `409` until the
+         *     caller chooses `delete` or `keep`, so a key never stays on disk by accident.
          */
         SecretStoragePut: {
             /** Allow File Store */
             allow_file_store: boolean;
+            /** File Key Action */
+            file_key_action?: ("move" | "delete" | "keep") | null;
         };
         /**
          * SecretStorageStatus
@@ -2821,6 +2839,22 @@ export interface components {
             file_store_path: string;
             /** File Store Has Keys */
             file_store_has_keys: boolean;
+            /**
+             * Legacy Checked
+             * @default false
+             */
+            legacy_checked: boolean;
+            /**
+             * File Key Outcome
+             * @default none
+             * @enum {string}
+             */
+            file_key_outcome: "none" | "moved" | "deleted" | "kept";
+            /**
+             * Moved Keys
+             * @default 0
+             */
+            moved_keys: number;
             /** Guidance */
             guidance: string;
             /** Warning */
@@ -5894,6 +5928,7 @@ export interface operations {
         parameters: {
             query?: {
                 base_url?: string;
+                check_legacy?: boolean;
             };
             header?: never;
             path?: never;

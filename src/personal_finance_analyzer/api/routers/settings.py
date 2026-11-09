@@ -10,7 +10,7 @@ bound to the endpoint's host, and never echo the key back, log it, or persist it
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Body, HTTPException, Response
 
@@ -31,6 +31,7 @@ from personal_finance_analyzer.config import (
     keep_file_values,
     load_file_settings,
     load_settings,
+    move_file_keys_to_keychain,
     save_settings,
     secret_storage_status,
     set_api_key,
@@ -38,14 +39,21 @@ from personal_finance_analyzer.config import (
 )
 from personal_finance_analyzer.core.pii import compile_redactor
 from personal_finance_analyzer.llm.diagnostics import check_connection
-from personal_finance_analyzer.secret_store import SecretStorageError
+from personal_finance_analyzer.secret_store import (
+    SecretStorageError,
+    file_store_file_exists,
+    inspect_keychain,
+    remove_file_store,
+)
 
 router = APIRouter(tags=["settings"])
 
 
 def _has_key(cfg: LLMConfig) -> bool:
     try:
-        return get_llm_api_key(cfg, adopt=False) is not None  # a GET must not write the keychain
+        # A GET must not write the keychain, nor read the pre-rename entry (which can make macOS
+        # ask the user to allow it): a key still under the old name shows once it is used.
+        return get_llm_api_key(cfg, adopt=False, probe_legacy=False) is not None
     except Exception:
         return False
 
@@ -190,8 +198,14 @@ def delete_api_key_route(settings: SettingsDep, base_url: str = "") -> Response:
     return Response(status_code=204)
 
 
-def _secret_storage_schema(llm: LLMConfig) -> schemas.SecretStorageStatus:
-    status = secret_storage_status(llm)
+def _secret_storage_schema(
+    llm: LLMConfig,
+    *,
+    probe_legacy: bool = False,
+    outcome: Literal["none", "moved", "deleted", "kept"] = "none",
+    moved_keys: int = 0,
+) -> schemas.SecretStorageStatus:
+    status = secret_storage_status(llm, probe_legacy=probe_legacy)
     return schemas.SecretStorageStatus(
         key_source=status.key_source,
         storage=status.storage,
@@ -203,6 +217,9 @@ def _secret_storage_schema(llm: LLMConfig) -> schemas.SecretStorageStatus:
         file_store_enabled=status.file_store_enabled,
         file_store_path=status.file_store_path,
         file_store_has_keys=status.file_store_has_keys,
+        legacy_checked=status.legacy_checked,
+        file_key_outcome=outcome,
+        moved_keys=moved_keys,
         guidance=status.guidance,
         warning=status.warning,
         file_store_env_var=status.file_store_env_var,
@@ -210,12 +227,47 @@ def _secret_storage_schema(llm: LLMConfig) -> schemas.SecretStorageStatus:
 
 
 @router.get("/settings/secret-storage", response_model=schemas.SecretStorageStatus)
-def get_secret_storage(settings: SettingsDep, base_url: str = "") -> schemas.SecretStorageStatus:
+def get_secret_storage(
+    settings: SettingsDep, base_url: str = "", check_legacy: bool = False
+) -> schemas.SecretStorageStatus:
     """Which backend holds the LLM API key (environment variable / keychain name / plaintext file
     / none), with platform-specific setup advice when no keychain works. Read-only; never returns
-    a key. `base_url` (default: the saved one) picks the endpoint whose key is looked up."""
+    a key. `base_url` (default: the saved one) picks the endpoint whose key is looked up.
+
+    The key saved under the pre-rename keychain service is only looked for with
+    `check_legacy=true` (the Settings screen's explicit "check" button): reading an entry another
+    build of the app saved can make macOS ask the user to allow it, which a page load must not
+    trigger."""
     llm = settings.llm.model_copy(update={"base_url": base_url.strip() or settings.llm.base_url})
-    return _secret_storage_schema(llm)
+    return _secret_storage_schema(llm, probe_legacy=check_legacy)
+
+
+def _settle_file_keys(
+    action: Literal["move", "delete", "keep"] | None,
+) -> tuple[Literal["none", "moved", "deleted", "kept"], int]:
+    """Decide what happens to the plaintext key file before the opt-in is switched off. Runs
+    first, so a refusal or a failure leaves the settings exactly as they were."""
+    if not file_store_file_exists():
+        return "none", 0
+    keychain = inspect_keychain()
+    if action is None:
+        if not keychain.usable:
+            raise HTTPException(
+                status_code=409,
+                detail="A key is saved in the plaintext key file and there is no system keychain "
+                "to move it to. Choose what to do with it: file_key_action 'delete' (overwrite "
+                "and remove it; enter the key again later) or 'keep' (leave it on disk, unused).",
+            )
+        action = "move"
+    if action == "keep":
+        return "kept", 0
+    try:
+        if action == "delete":
+            remove_file_store()
+            return "deleted", 0
+        return "moved", move_file_keys_to_keychain()
+    except SecretStorageError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from None
 
 
 @router.put("/settings/secret-storage", response_model=schemas.SecretStorageStatus)
@@ -224,7 +276,12 @@ def put_secret_storage(
 ) -> schemas.SecretStorageStatus:
     """Switch the plaintext file store on or off (`[secrets] allow_file_store`; only used when the
     OS keychain is unavailable). `409` while an environment variable controls the opt-in: it wins
-    on every load, so the toggle could not change anything."""
+    on every load, so the toggle could not change anything.
+
+    Switching it off does not leave a plaintext key behind unnoticed: a key still in the file is
+    moved into the OS keychain when one works, otherwise the caller must choose
+    (`file_key_action`) to delete the file (overwritten, then removed) or to keep it. The response
+    says which happened (`file_key_outcome`), so the UI can state where the key now lives."""
     var = env_override_var("secrets", "allow_file_store")
     if var is not None:
         raise HTTPException(
@@ -232,11 +289,20 @@ def put_secret_storage(
             detail=f"The plaintext key file is controlled by the environment variable {var}; "
             "unset it to change this setting here.",
         )
+    outcome: Literal["none", "moved", "deleted", "kept"] = "none"
+    moved = 0
+    if body.allow_file_store:
+        if body.file_key_action is not None:
+            raise HTTPException(
+                status_code=400, detail="file_key_action only applies when turning the file off"
+            )
+    else:
+        outcome, moved = _settle_file_keys(body.file_key_action)
     saved = load_file_settings()  # never persist other env-overridden values
     save_settings(
         saved.model_copy(update={"secrets": SecretsConfig(allow_file_store=body.allow_file_store)})
     )
-    return _secret_storage_schema(settings.llm)
+    return _secret_storage_schema(settings.llm, outcome=outcome, moved_keys=moved)
 
 
 @router.post("/settings/pii-test", response_model=schemas.PiiTestResponse)

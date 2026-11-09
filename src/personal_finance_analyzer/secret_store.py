@@ -36,6 +36,7 @@ import tomli_w
 
 from personal_finance_analyzer.core.errors import PfaError
 from personal_finance_analyzer.core.paths import get_home
+from personal_finance_analyzer.core.secure_delete import shred_file
 
 _log = logging.getLogger(__name__)
 
@@ -238,6 +239,18 @@ def read_file_key(account: str) -> str | None:
         return _load(file_store_path()).get(account)
 
 
+def file_store_file_exists() -> bool:
+    """Whether the key file is on disk at all, readable or not (a corrupt one still holds, or may
+    hold, plaintext keys, so it counts when deciding what to do about leftover keys)."""
+    return file_store_path().is_file()
+
+
+def read_all_file_keys() -> dict[str, str]:
+    """Every ``account -> key`` pair in the key file (empty when there is none)."""
+    with _FILE_LOCK:
+        return _load(file_store_path())
+
+
 def file_store_has_keys() -> bool:
     try:
         with _FILE_LOCK:
@@ -272,8 +285,38 @@ def delete_file_key(account: str) -> None:
             if keys:
                 _store(path, keys)
             else:
-                path.unlink(missing_ok=True)
+                shred_file(path)
+                _remove_dir_if_empty(path.parent)
     except OSError as exc:
         raise SecretStorageError(
             f"The key file {path} could not be updated ({type(exc).__name__}: {exc.strerror})."
         ) from None
+
+
+def _remove_dir_if_empty(directory: Path) -> None:
+    with contextlib.suppress(OSError):  # not empty (or already gone): leave it
+        directory.rmdir()
+
+
+def remove_file_store() -> bool:
+    """Delete the whole plaintext key file (every account in it), overwriting it first, along with
+    any half-written temporary copy next to it. Returns whether anything was removed. Always
+    allowed, whatever the opt-in says: removing plaintext is never wrong.
+
+    Raises:
+        SecretStorageError: the file could not be removed (permissions, a read-only mount)."""
+    path = file_store_path()
+    try:
+        with _FILE_LOCK:
+            existed = path.is_file() or path.is_symlink()
+            shred_file(path)
+            if path.parent.is_dir():
+                for leftover in path.parent.glob(".api_keys-*.tmp"):
+                    existed = True
+                    shred_file(leftover)
+                _remove_dir_if_empty(path.parent)
+    except OSError as exc:
+        raise SecretStorageError(
+            f"The key file {path} could not be deleted ({type(exc).__name__}: {exc.strerror})."
+        ) from None
+    return existed
