@@ -250,8 +250,8 @@ pii_terms = []                   # names, numbers and addresses to remove before
 `store_tax_pdf_copies` is off by default because a W-2, 1099 or 1040 PDF contains full Social
 Security and employer identification numbers. With it off, the PDF is deleted once its figures are
 imported and only the parsed amounts (plus the last four digits of payer and account identifiers)
-remain in the database. Turn it on only if you want the original file kept in the data directory's
-`statements/` folder; `pfa tax delete` removes a kept copy. Tax-form text is never
+remain in the database. Turn it on only if you want the original file kept in the documents folder
+(`<Person>/Tax/<Year>/`, see `pfa documents where`); `pfa tax delete` removes a kept copy. Tax-form text is never
 written to the extract cache, whatever `store_extract_cache` says. The key is edited in the file
 only, not on the Settings screen. See [TAX.md](TAX.md).
 
