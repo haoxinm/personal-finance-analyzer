@@ -139,10 +139,11 @@ describe("TaxEstimateScreen", () => {
   it("shows the senior deduction, NIIT, Additional Medicare Tax and the credits and payments that go with them", async () => {
     // Refundable credits ($3,000), Additional Medicare Tax withheld ($450) and an excess Social
     // Security credit ($200) are payments; they are not taken off the tax. $25,000 of nonrefundable
-    // credits were entered but only the $10,000 income tax can use them.
+    // credits were entered but only the $10,000 income tax can use them. Two seniors on a joint
+    // return at an AGI of $103,140 (under the $150,000 threshold): $6,000 each.
     const calc = estimateCalc({
       filing_status: "mfj",
-      senior_deduction_minor: 600000,
+      senior_deduction_minor: 1200000,
       income_tax_minor: 1000000,
       nonrefundable_credits_minor: 1000000,
       nonrefundable_credits_entered_minor: 2500000,
@@ -167,7 +168,7 @@ describe("TaxEstimateScreen", () => {
     const tax = within(screen.getByTestId("estimate-section-tax"));
     const payments = within(screen.getByTestId("estimate-section-payments"));
     expect(line("senior-deduction")).toHaveTextContent("Senior deduction");
-    expect(line("senior-deduction")).toHaveTextContent("$6,000.00");
+    expect(line("senior-deduction")).toHaveTextContent("$12,000.00");
     expect(line("nonrefundable")).toHaveTextContent("Nonrefundable credits used");
     expect(line("nonrefundable")).toHaveTextContent("$10,000.00");
     expect(line("nonrefundable-entered")).toHaveTextContent("$25,000.00");
@@ -463,7 +464,7 @@ describe("profile form", () => {
     await userEvent.selectOptions(screen.getByLabelText("Deduction"), "itemized");
     await userEvent.type(screen.getByLabelText("Itemized deductions"), "$25,000");
     await userEvent.selectOptions(screen.getByLabelText("Age 65 or older / blind boxes checked"), "2");
-    await userEvent.selectOptions(screen.getByLabelText(/People aged 65 or older/), "2");
+    await userEvent.selectOptions(screen.getByLabelText(/Aged 65 or older/), "1");
     await userEvent.type(screen.getByLabelText("Adjustments to income"), "1,234.50");
     await userEvent.type(screen.getByLabelText("Other income"), "100");
     await userEvent.type(screen.getByLabelText("Capital loss carryover"), "3000.5");
@@ -483,7 +484,7 @@ describe("profile form", () => {
         deduction_mode: "itemized",
         itemized_deductions_minor: 2500000,
         age65_or_blind_count: 2,
-        age65_count: 2,
+        age65_count: 1,
         adjustments_minor: 123450,
         other_income_minor: 10000,
         capital_loss_carryover_minor: 300050,
@@ -500,33 +501,35 @@ describe("profile form", () => {
     );
   });
 
-  it("limits the age counts to what the API accepts and brings them back when the status changes", async () => {
+  it("limits the age counts to one person's, for every filing status, and says each spouse enters their own", async () => {
     mockApi({ estimates: { 1: estimate() } });
     renderScreen();
     const boxes = await screen.findByLabelText("Age 65 or older / blind boxes checked");
-    const seniors = screen.getByLabelText(/People aged 65 or older/);
+    const seniors = screen.getByLabelText(/Aged 65 or older/);
     const values = (el: HTMLElement) =>
       within(el)
         .getAllByRole("option")
         .map((o) => o.textContent);
-    // One person: at most 2 boxes, and at most 1 person aged 65 or older (within the boxes).
+    // At most 2 boxes, and "65 or older" at most 1 (within the boxes).
     expect(values(boxes)).toEqual(["0", "1", "2"]);
     expect(values(seniors)).toEqual(["0"]);
     await userEvent.selectOptions(boxes, "2");
     expect(values(seniors)).toEqual(["0", "1"]);
     await userEvent.selectOptions(seniors, "1");
 
-    // Jointly: up to 4 boxes and 2 seniors.
+    // The same caps hold jointly: a spouse enters their own boxes on their own profile.
     await userEvent.selectOptions(screen.getByLabelText("Filing status"), "mfj");
-    expect(values(boxes)).toEqual(["0", "1", "2", "3", "4"]);
-    await userEvent.selectOptions(boxes, "4");
-    expect(values(seniors)).toEqual(["0", "1", "2"]);
-    await userEvent.selectOptions(seniors, "2");
-
-    // Back to one person: the counts are clamped, never left at a value the API would refuse.
-    await userEvent.selectOptions(screen.getByLabelText("Filing status"), "single");
+    expect(values(boxes)).toEqual(["0", "1", "2"]);
+    expect(values(seniors)).toEqual(["0", "1"]);
+    expect(screen.getByTestId("profile-form")).toHaveTextContent(/A spouse enters their own on their own profile/);
     expect(boxes).toHaveValue("2");
     expect(seniors).toHaveValue("1");
+
+    // Lowering the boxes brings "65 or older" back within them.
+    await userEvent.selectOptions(boxes, "0");
+    expect(seniors).toHaveValue("0");
+    await userEvent.selectOptions(boxes, "2");
+    await userEvent.selectOptions(seniors, "1");
     await userEvent.click(screen.getByRole("button", { name: "Save profile" }));
     await waitFor(() => expect(put).toHaveBeenCalledTimes(1));
     expect(put).toHaveBeenCalledWith(

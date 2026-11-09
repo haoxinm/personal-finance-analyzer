@@ -522,7 +522,9 @@ that is missing; the return is never changed by it.
 
 - **Inputs** (left): your tax profile for the year: filing status (and, for married filing jointly,
   the spouse, chosen among the other users), standard or itemized deduction with the itemized
-  total, the number of age 65 / blind boxes, and the dollar amounts the forms do not cover:
+  total, this person's age 65 / blind boxes (at most 2, whatever the filing status) and whether they are
+  65 or older (0 or 1; a spouse enters their own on their own profile), and the dollar amounts the
+  forms do not cover:
   adjustments, other income, capital loss carryover, nonrefundable and refundable credits, other
   taxes, estimated and other payments. Amounts are typed in dollars and saved in cents; **Save**
   replaces the profile, **Reset** returns to the saved values, **Delete profile** (with a

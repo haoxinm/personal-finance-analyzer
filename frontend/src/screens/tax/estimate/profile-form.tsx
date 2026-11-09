@@ -10,7 +10,7 @@ import { FILING_STATUS_OPTIONS, errorMessage } from "../logic";
 import { useDeleteTaxProfile, useSaveTaxProfile } from "./hooks";
 import {
   MONEY_FIELDS,
-  ageLimits,
+  AGE_LIMITS,
   clampAge,
   draftFromProfile,
   draftToBody,
@@ -74,7 +74,6 @@ export function ProfileForm({ userId, year, users, profile, fallback }: ProfileF
     setErrors((e) => ({ ...e, age65OrBlind: undefined, age65: undefined }));
     setSaveError(null);
   }
-  const limits = ageLimits(draft.filingStatus);
   function setMoney(key: (typeof MONEY_FIELDS)[number]["key"], value: string) {
     setDraft((d) => ({ ...d, money: { ...d.money, [key]: value } }));
     setErrors((e) => ({ ...e, [key]: undefined }));
@@ -167,20 +166,21 @@ export function ProfileForm({ userId, year, users, profile, fallback }: ProfileF
             <SelectField<string>
               label="Age 65 or older / blind boxes checked"
               value={String(draft.age65OrBlind)}
-              options={countOptions(limits.boxes)}
+              options={countOptions(AGE_LIMITS.boxes)}
               onChange={(v) => patch({ age65OrBlind: Number(v) })}
             />
             <SelectField<string>
-              label="People aged 65 or older (senior deduction, 2025-2028)"
+              label="Aged 65 or older (senior deduction, 2025-2028)"
               value={String(draft.age65)}
-              options={countOptions(Math.min(limits.age65, draft.age65OrBlind))}
+              options={countOptions(Math.min(AGE_LIMITS.age65, draft.age65OrBlind))}
               onChange={(v) => patch({ age65: Number(v) })}
             />
           </div>
           <p className="-mt-2 text-xs text-muted-foreground">
-            Check a box for each person who is 65 or older or blind. Of those, count the people who are 65 or
-            older again in the second field: only they qualify for the senior deduction. It is at most{" "}
-            {limits.age65} for {draft.filingStatus === "mfj" ? "a joint return" : "this filing status"}.
+            This profile covers only this person: one box for being 65 or older and one for being blind (at
+            most {AGE_LIMITS.boxes}), whatever the filing status. Enter 1 in the second field if this person is
+            65 or older: only then does the senior deduction apply. A spouse enters their own on their own
+            profile; a joint return adds the two together.
           </p>
           {errors.age65OrBlind || errors.age65 ? (
             <p role="alert" className="text-xs text-destructive">
