@@ -49,7 +49,14 @@ counterpart except the layout mapper and the forecast.
   suggestion chip ("Grocery › Wholesale clubs · built-in"; the applied one is marked *Current*).
   One click uses a lower-priority one as a one-time edit of that transaction only, with an Undo.
   The Transactions screen flags such rows and has a *Conflicting suggestions* filter. Suggestions
-  are read from what is already stored: they never call an LLM.
+  are read from what is already stored: they never call an LLM. The answer already applied is a
+  plain *Current* chip, not a button (clicking it could only freeze the row).
+- **Hand an edited row back to the rules.** A one-time edit is final for every rule and re-run, so
+  the edit dialog (and a bulk bar on Transactions) has *Revert to automatic*: it clears the edit and
+  re-runs your rules, the built-in rules, the issuer's label and the saved merchant answer for that
+  row, never an LLM (if none answers, the row becomes Uncategorized and flagged for review). On an
+  edited row the chip the rules would pick is marked *Automatic*. Undo puts the edit back. A kind
+  you changed by hand stays; the original kind is not stored.
 - **Reconcile every import** against the statement's own printed totals and warn, rather than
   silently accept numbers that don't add up; **never double-count a card payment** (a payment from
   a tracked checking account is a transfer on both sides, not spend).
@@ -353,7 +360,11 @@ looks off:
   (`include_candidates`, `include_conflict`) and filter with `?conflict=true`; the filter is
   computed in Python over the rows the other filters match, with one rule scan per distinct
   merchant rather than per row, so it is fast on a household-sized database (tens of thousands of
-  rows) but is not indexed SQL.
+  rows) but is not indexed SQL. Each candidate also carries `is_automatic` (the winning layer,
+  which is what an edited row gets back). `POST /api/transactions/{id}/revert-to-automatic` and
+  `POST /api/transactions/bulk-revert-to-automatic` clear `classified_by='user'` and re-run only the
+  deterministic cascade (`cascade.revert_to_automatic`: no LLM, no `merchant_map` write or hit
+  count), returning the same undo token as `POST /api/review/accept` for `POST /api/review/undo`.
 - **A one-time edit teaches the app nothing** about the merchant or future transactions. A rule
   reaches transactions you already have only when you press "Apply to existing" on the Rules screen
   (which first shows how many rows it will change, and whether that spans several users or changes
