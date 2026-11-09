@@ -102,6 +102,7 @@ function Shell() {
           <Route key={meta.path} path={meta.path} element={<Component />} />
         ))}
         <Route path="/gallery" element={<ComponentGallery />} />
+        <Route path="*" element={<NotFound />} />
       </Routes>
     </ErrorBoundary>
   );
@@ -165,6 +166,7 @@ function Shell() {
             onCompareToggle={compare.setEnabled}
             onCompareUserChange={changeCompare}
             note={info.note}
+            currentSectionKey={info.section?.key}
           />
         ) : null}
       </header>
@@ -191,6 +193,27 @@ function Shell() {
         )}
       </main>
     </div>
+  );
+}
+
+/** The catch-all for unknown paths: say so and link to every section. */
+function NotFound() {
+  return (
+    <section aria-labelledby="not-found-title" className="flex flex-col gap-3" data-testid="not-found">
+      <h1 id="not-found-title" className="text-xl font-semibold">
+        Page not found
+      </h1>
+      <p className="text-sm text-muted-foreground">There is nothing at this address. Go to a section:</p>
+      <ul className="flex flex-wrap gap-4 text-sm">
+        {SECTIONS.filter((section) => !section.hidden).map((section) => (
+          <li key={section.key}>
+            <Link to={section.tabs[0]!.path} className="underline underline-offset-2 hover:text-foreground">
+              {section.label}
+            </Link>
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }
 

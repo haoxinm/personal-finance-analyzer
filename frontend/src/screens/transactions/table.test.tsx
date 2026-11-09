@@ -107,6 +107,17 @@ describe("TransactionsTable column layout", () => {
     expect(onSortChange).toHaveBeenLastCalledWith("amount_minor");
   });
 
+  it("reports the query's total as aria-rowcount, not just the loaded rows", () => {
+    render(
+      <TransactionsTable
+        rows={TRANSACTIONS}
+        totalCount={1234}
+        context={{ categories: CATEGORIES, selectedIds: new Set(), onToggleRow: noop, onEdit: vi.fn() }}
+      />,
+    );
+    expect(screen.getByRole("table", { name: "Transactions" })).toHaveAttribute("aria-rowcount", "1235");
+  });
+
   it("is one table with header and cell roles, and opens a row from its Edit button via the keyboard", async () => {
     const onEdit = vi.fn();
     const onRowClick = vi.fn();

@@ -157,7 +157,9 @@ describe("global user bar", () => {
     expect(button).toBeDisabled();
     const help = document.getElementById(button.getAttribute("aria-describedby")!);
     expect(help).toBeVisible();
-    expect(help).toHaveTextContent("Compare isn’t available on this page. Try Spending, Income & tax or Net worth.");
+    // The section the user is already in (Spending) is not suggested.
+    expect(help).toHaveTextContent("Compare isn’t available on this page. Try Income & tax or Net worth.");
+    expect(help).not.toHaveTextContent("Spending");
     expect(button).not.toHaveAttribute("title");
   });
 

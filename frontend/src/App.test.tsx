@@ -66,6 +66,17 @@ describe("App shell nav", () => {
     expect(screen.queryByRole("link", { name: "Component gallery" })).not.toBeInTheDocument();
   });
 
+  it("renders a 'Page not found' page with links to the sections for an unknown route", async () => {
+    await renderApp("/no/such/page");
+    const page = await screen.findByTestId("not-found");
+    expect(within(page).getByRole("heading", { name: "Page not found" })).toBeInTheDocument();
+    const links = within(page).getAllByRole("link");
+    expect(links.map((a) => a.textContent)).toEqual(["Spending", "Income & tax", "Net worth", "Settings"]);
+    expect(links[0]).toHaveAttribute("href", "/spending");
+    // Known routes are unaffected.
+    expect(screen.getByTestId("location")).toHaveTextContent("/no/such/page");
+  });
+
   it("redirects '/' to Spending with Overview active", async () => {
     await renderApp("/");
     await waitFor(() => expect(screen.getByTestId("location")).toHaveTextContent("/spending"));

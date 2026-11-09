@@ -21,6 +21,8 @@ export interface UserBarProps {
   onCompareUserChange: (id: number | null) => void;
   /** Optional clarifying note, e.g. "Rules apply to all users". */
   note?: string;
+  /** Key of the section the user is in; the "Compare isn't available" hint skips it. */
+  currentSectionKey?: string | null;
 }
 
 function nameOf(users: readonly User[], id: number | null): string {
@@ -42,8 +44,10 @@ export function UserBar({
   onCompareToggle,
   onCompareUserChange,
   note,
+  currentSectionKey,
 }: UserBarProps) {
   const multiple = users.length > 1;
+  const otherCompareSections = compareSectionLabels(currentSectionKey);
   const compareHelpId = React.useId();
 
   let body: React.ReactNode;
@@ -113,7 +117,8 @@ export function UserBar({
             </Button>
             {compareSupported ? null : (
               <span id={compareHelpId} className="text-xs text-muted-foreground">
-                Compare isn&rsquo;t available on this page. Try {formatList(compareSectionLabels())}.
+                Compare isn&rsquo;t available on this page.
+                {otherCompareSections.length > 0 ? <> Try {formatList(otherCompareSections)}.</> : null}
               </span>
             )}
           </>

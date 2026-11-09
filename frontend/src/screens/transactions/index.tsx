@@ -64,6 +64,11 @@ export default function TransactionsScreen() {
   // the user ticked: bulk apply then asks for confirmation. Any manual change ends it.
   const [allMatchingSelected, setAllMatchingSelected] = React.useState(false);
   const [editing, setEditing] = React.useState<Transaction | null>(null);
+  // After the editor closes, its opener (the row's Edit button) may unmount because the saved row
+  // left the filter; focus then falls back to the grid container instead of <body>.
+  const gridFocusRef = React.useRef<HTMLDivElement>(null);
+  const restoreFocus = React.useRef(false);
+  const wasEditing = React.useRef(false);
   const [exporting, setExporting] = React.useState(false);
 
   // A selection made under one user view must not carry into another.
@@ -86,6 +91,29 @@ export default function TransactionsScreen() {
     [grid.data],
   );
   const total = grid.data?.pages.at(-1)?.total ?? 0;
+
+  React.useEffect(() => {
+    if (editing) {
+      wasEditing.current = true;
+      return;
+    }
+    if (wasEditing.current) {
+      // Just closed: from now until the user's next pointer press, keep focus out of <body>.
+      wasEditing.current = false;
+      restoreFocus.current = true;
+    }
+    if (!restoreFocus.current) return;
+    const active = document.activeElement;
+    if (!active || active === document.body) gridFocusRef.current?.focus();
+  }, [editing, rows]);
+  React.useEffect(() => {
+    // Once the user moves focus themselves (pointer), stop restoring it.
+    const stop = () => {
+      restoreFocus.current = false;
+    };
+    document.addEventListener("pointerdown", stop);
+    return () => document.removeEventListener("pointerdown", stop);
+  }, []);
 
   const toggleRow = React.useCallback((id: number) => {
     setAllMatchingSelected(false);
@@ -274,16 +302,19 @@ export default function TransactionsScreen() {
         />
       ) : (
         <>
+          <div ref={gridFocusRef} tabIndex={-1} className="outline-none" data-testid="transactions-grid">
           <TransactionsTable
             rows={rows}
             context={columnsContext}
             onRowClick={setEditing}
+            totalCount={total}
             sort={gridParams.sort}
             onSortChange={(sort) => setGridParams({ sort })}
             onNearEnd={() => {
               if (grid.hasNextPage && !grid.isFetchingNextPage) void grid.fetchNextPage();
             }}
           />
+          </div>
           {grid.isFetchingNextPage ? (
             <p className="text-center text-xs text-muted-foreground">Loading more…</p>
           ) : grid.hasNextPage ? (
