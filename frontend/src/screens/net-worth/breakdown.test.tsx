@@ -61,4 +61,17 @@ describe("Breakdown", () => {
     );
     expect(screen.getByText("Wells (Sam)")).toBeInTheDocument();
   });
+
+  it("marks stale accounts with their age and says how to retire a closed one", () => {
+    const stale = { user_id: 1, category: "savings" as const, account_name: "Old savings", balance_minor: 5000, signed_minor: 5000, as_of: "2024-11", carried: true, stale: true, months_old: 12 };
+    render(<Breakdown snapshot={{ ...SNAPSHOT, accounts: [...SNAPSHOT.accounts, stale] }} users={USERS} currency="USD" />);
+    expect(screen.getByTestId("stale-Old savings")).toHaveTextContent("Stale: last updated Nov 2024 (12 months ago)");
+    expect(screen.getByTestId("stale-hint")).toHaveTextContent(/add a balance of 0/);
+    expect(screen.queryByText(/carried from Nov 2024/)).not.toBeInTheDocument();
+  });
+
+  it("shows no stale marker or hint when nothing is stale", () => {
+    render(<Breakdown snapshot={SNAPSHOT} users={USERS} currency="USD" />);
+    expect(screen.queryByTestId("stale-hint")).not.toBeInTheDocument();
+  });
 });

@@ -4,7 +4,10 @@ Data volume is tiny (a handful of accounts x months), so rows are loaded and agg
 Python. With `carry_forward` an account's value for month M is its latest entry at or before M,
 flagged `carried` when that entry is from an earlier month and `stale` when it is more than
 `STALE_AFTER_MONTHS` months old (`months_old` says how many; the balance is still counted: the flag
-only tells the UI the figure may be out of date); an account has no value (not zero) before its
+only tells the UI the figure may be out of date). Age is measured to the requested ``period``, or,
+for the default latest snapshot, to the current calendar month (`NetWorthQuery.today`, injectable
+for tests), so an account that has not been updated for months is flagged even when it is the
+newest entry in the data; a closed account stops counting once a zero balance is entered. An account has no value (not zero) before its
 first entry. Account names that differ only in case (compared with Python's ``str.casefold``, never
 SQLite's ASCII-only ``lower()``) are one account and the newest spelling is shown. If such
 names both have an entry in the *same* month (older data, from before the entry form matched
@@ -22,6 +25,7 @@ from __future__ import annotations
 import re
 from bisect import bisect_right
 from dataclasses import dataclass, field
+from datetime import date
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -41,6 +45,10 @@ MAX_SERIES_MONTHS = 1200
 STALE_AFTER_MONTHS = 3
 
 
+def _today() -> date:
+    return date.today()
+
+
 @dataclass(frozen=True)
 class NetWorthQuery:
     user_id: int | None
@@ -49,6 +57,8 @@ class NetWorthQuery:
     period_from: str | None = None
     period_to: str | None = None
     carry_forward: bool = True
+    #: "Now" for staleness of the default (latest) snapshot; None = the real current date.
+    today: date | None = None
 
 
 @dataclass(frozen=True)
@@ -235,6 +245,9 @@ def run_net_worth_query(session: Session, q: NetWorthQuery) -> NetWorthResult:
             account_series.append(AccountSeries(key[0], key[1], names[key], points))
 
     snap_idx = _idx(*snap_ym) if snap_ym else real_sorted[-1]
+    # An explicit period is judged as of that period; the default snapshot as of the current month.
+    now = q.today or _today()
+    age_idx = snap_idx if snap_ym else max(snap_idx, _idx(now.year, now.month))
     by_cat, assets, liabilities, net = _totals(accounts, snap_idx, carry)
     previous = [i for i in real_sorted if i < snap_idx]
     prev_idx = previous[-1] if previous else None
@@ -252,8 +265,8 @@ def run_net_worth_query(session: Session, q: NetWorthQuery) -> NetWorthResult:
                     signed_minor=signed_balance(key[1], hit[0]),
                     as_of=_label(hit[1]),
                     carried=hit[1] != snap_idx,
-                    stale=snap_idx - hit[1] > STALE_AFTER_MONTHS,
-                    months_old=snap_idx - hit[1],
+                    stale=age_idx - hit[1] > STALE_AFTER_MONTHS,
+                    months_old=age_idx - hit[1],
                 )
             )
     snapshot = Snapshot(

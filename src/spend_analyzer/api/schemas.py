@@ -762,7 +762,8 @@ class NetWorthAccountBalance(_Model):
     carried: bool
     #: Carried forward from an entry more than `STALE_AFTER_MONTHS` (3) months old.
     stale: bool = False
-    #: Whole months between `as_of` and the snapshot period.
+    #: Whole months between `as_of` and the snapshot period, or, for the default latest snapshot,
+    #: the current month if that is later.
     months_old: int = 0
 
 

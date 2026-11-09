@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from spend_analyzer.analytics import net_worth_query
 from spend_analyzer.db.models import BalanceEntry
 
 
@@ -57,7 +60,10 @@ def test_same_name_in_another_category_or_user_is_a_different_account(client: Te
     assert other_user.json()["account_name"] == "main"
 
 
-def test_summary_marks_old_carried_balances_stale(client: TestClient) -> None:
+def test_summary_marks_old_carried_balances_stale(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(net_worth_query, "_today", lambda: date(2025, 5, 31))
     uid = _user(client)
     client.post(
         "/api/net-worth/entries", json=_body(uid, month=1, account_name="Old", balance_minor=100)

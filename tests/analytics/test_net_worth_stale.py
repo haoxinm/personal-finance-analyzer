@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import date
+
 from sqlalchemy.orm import Session
 
 from spend_analyzer.analytics.net_worth_query import (
@@ -41,7 +43,7 @@ def test_stale_means_carried_more_than_three_months(session: Session) -> None:
     _add(session, a, "savings", "S", "2025-01", 100)
     _add(session, a, "checking", "C", "2025-04", 10)
     _add(session, a, "investment", "I", "2025-05", 5)
-    snap = run_net_worth_query(session, NetWorthQuery(user_id=a)).snapshot
+    snap = run_net_worth_query(session, NetWorthQuery(user_id=a, today=date(2025, 5, 20))).snapshot
     assert snap is not None
     by = {x.account_name: x for x in snap.accounts}
     assert (by["S"].months_old, by["S"].stale, by["S"].carried) == (4, True, True)
@@ -51,6 +53,32 @@ def test_stale_means_carried_more_than_three_months(session: Session) -> None:
     exact = run_net_worth_query(session, NetWorthQuery(user_id=a, period="2025-04")).snapshot
     assert exact is not None
     assert {x.account_name: x.stale for x in exact.accounts} == {"S": False, "C": False}
+
+
+def test_stale_is_measured_against_the_current_month_not_the_latest_entry(
+    session: Session,
+) -> None:
+    a = _user(session)
+    _add(session, a, "checking", "Closed", "2025-05", 40)
+    _add(session, a, "checking", "Open", "2025-05", 10)
+    now = NetWorthQuery(user_id=a, today=date(2025, 10, 2))
+    snap = run_net_worth_query(session, now).snapshot
+    assert snap is not None and snap.period == "2025-05"
+    assert all(x.stale and x.months_old == 5 and not x.carried for x in snap.accounts)
+    # Entering a zero balance for the closed account (and a fresh one for the open one) clears it.
+    _add(session, a, "checking", "Closed", "2025-10", 0)
+    _add(session, a, "checking", "Open", "2025-10", 12)
+    snap = run_net_worth_query(session, now).snapshot
+    assert snap is not None and snap.assets_minor == 12
+    assert not any(x.stale for x in snap.accounts)
+    # An explicit past period is judged as of that period, whatever today is.
+    past = NetWorthQuery(user_id=a, period="2025-05", today=date(2030, 1, 1))
+    old = run_net_worth_query(session, past).snapshot
+    assert old is not None and not any(x.stale for x in old.accounts)
+    # Data in the "future" (a later month than today) never gives a negative age.
+    early = NetWorthQuery(user_id=a, today=date(2025, 1, 1))
+    future = run_net_worth_query(session, early).snapshot
+    assert future is not None and all(x.months_old == 0 for x in future.accounts)
 
 
 def test_account_names_differing_only_in_case_are_one_account(session: Session) -> None:
