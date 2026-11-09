@@ -62,3 +62,34 @@ def test_account_names_differing_only_in_case_are_one_account(session: Session) 
     assert snap is not None
     assert snap.assets_minor == 250
     assert [x.account_name for x in snap.accounts] == ["chase"]  # the newest spelling
+
+
+def test_case_variants_in_the_same_month_keep_the_latest_entry_and_warn(session: Session) -> None:
+    """Two legacy rows for one account in one month: the later-entered balance is used (summing
+    would double count a re-typed balance) and the result carries a warning."""
+    a = _user(session)
+    _add(session, a, "checking", "Chase", "2025-03", 100)
+    _add(session, a, "checking", "chase", "2025-03", 250)  # entered later: higher id
+    result = run_net_worth_query(session, NetWorthQuery(user_id=a))
+    assert result.snapshot is not None
+    assert result.snapshot.assets_minor == 250
+    assert [x.account_name for x in result.snapshot.accounts] == ["chase"]
+    assert len(result.warnings) == 1 and "2025-03" in result.warnings[0]
+    other = User(name="B")
+    session.add(other)
+    session.flush()
+    clean = other.id
+    _add(session, clean, "checking", "Chase", "2025-03", 100)
+    assert run_net_worth_query(session, NetWorthQuery(user_id=clean)).warnings == []
+
+
+def test_non_ascii_case_variants_are_one_account(session: Session) -> None:
+    """The match is Python's casefold, which SQLite's ASCII-only lower() would miss."""
+    a = _user(session)
+    _add(session, a, "savings", "Ärzte Sparkasse", "2025-01", 100)
+    _add(session, a, "savings", "ärzte sparkasse", "2025-02", 300)
+    _add(session, a, "savings", "Straße", "2025-01", 5)
+    _add(session, a, "savings", "STRASSE", "2025-02", 7)  # casefold: "ß" -> "ss"
+    snap = run_net_worth_query(session, NetWorthQuery(user_id=a)).snapshot
+    assert snap is not None
+    assert snap.assets_minor == 307 and len(snap.accounts) == 2

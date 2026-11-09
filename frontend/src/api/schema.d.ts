@@ -2464,6 +2464,16 @@ export interface components {
             as_of: string;
             /** Carried */
             carried: boolean;
+            /**
+             * Stale
+             * @default false
+             */
+            stale: boolean;
+            /**
+             * Months Old
+             * @default 0
+             */
+            months_old: number;
         };
         /** NetWorthAccountPoint */
         NetWorthAccountPoint: {
@@ -2571,6 +2581,8 @@ export interface components {
             /** Account Series */
             account_series: components["schemas"]["NetWorthAccountSeries"][];
             snapshot: components["schemas"]["NetWorthSnapshot"] | null;
+            /** Warnings */
+            warnings?: string[];
         };
         /**
          * PiiTestRequest

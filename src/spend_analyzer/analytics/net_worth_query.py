@@ -5,7 +5,12 @@ Python. With `carry_forward` an account's value for month M is its latest entry 
 flagged `carried` when that entry is from an earlier month and `stale` when it is more than
 `STALE_AFTER_MONTHS` months old (`months_old` says how many; the balance is still counted: the flag
 only tells the UI the figure may be out of date); an account has no value (not zero) before its
-first entry. Account names that differ only in case are one account (the newest spelling is shown). Totals sum magnitudes per category; net worth = assets - liabilities.
+first entry. Account names that differ only in case (compared with Python's ``str.casefold``, never
+SQLite's ASCII-only ``lower()``) are one account and the newest spelling is shown. If such
+names both have an entry in the *same* month (older data, from before the entry form matched
+names), only the most recently entered balance is used and a warning says so: summing would
+double count a re-typed balance, and the entry form now updates the existing row instead.
+Totals sum magnitudes per category; net worth = assets - liabilities.
 
 The series covers the months of the data: ``period_from`` / ``period_to`` can only narrow the range
 between the first and last entry (never widen it), and at most `MAX_SERIES_MONTHS` months, the most
@@ -16,7 +21,7 @@ from __future__ import annotations
 
 import re
 from bisect import bisect_right
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -110,6 +115,7 @@ class NetWorthResult:
     series: list[Point]
     account_series: list[AccountSeries]
     snapshot: Snapshot | None
+    warnings: list[str] = field(default_factory=list)
 
 
 def parse_period(s: str) -> tuple[int, int]:
@@ -139,9 +145,15 @@ class _Account:
         self.idxs: list[int] = []
         self.values: list[int] = []
 
-    def add(self, idx: int, value: int) -> None:
+    def add(self, idx: int, value: int) -> bool:
+        """Record the balance for month `idx`; True when it replaced one already recorded for that
+        month (entries arrive oldest first, ties by id, so the latest entered wins)."""
+        if self.idxs and self.idxs[-1] == idx:
+            self.values[-1] = value
+            return True
         self.idxs.append(idx)
         self.values.append(value)
+        return False
 
     def at(self, idx: int, carry: bool) -> tuple[int, int] | None:
         """(balance, entry_idx) in effect for month `idx`, or None."""
@@ -175,7 +187,7 @@ def run_net_worth_query(session: Session, q: NetWorthQuery) -> NetWorthResult:
     stmt = (
         select(BalanceEntry)
         .where(BalanceEntry.currency == q.currency)
-        .order_by(BalanceEntry.year, BalanceEntry.month)
+        .order_by(BalanceEntry.year, BalanceEntry.month, BalanceEntry.id)
     )
     if q.user_id is not None:
         stmt = stmt.where(BalanceEntry.user_id == q.user_id)
@@ -186,12 +198,17 @@ def run_net_worth_query(session: Session, q: NetWorthQuery) -> NetWorthResult:
     accounts: dict[_Key, _Account] = {}
     names: dict[_Key, str] = {}  # display spelling: the newest entry's (rows are oldest first)
     real: set[int] = set()
+    warnings: list[str] = []
     for r in rows:
         i = _idx(r.year, r.month)
         real.add(i)
         key = (r.user_id, r.category, r.account_name.casefold())
         names[key] = r.account_name
-        accounts.setdefault(key, _Account()).add(i, r.balance_minor)
+        if accounts.setdefault(key, _Account()).add(i, r.balance_minor):
+            warnings.append(
+                f"{r.account_name!r} has more than one entry in {_label(i)} whose names differ "
+                "only in letter case; only the most recently entered balance is used."
+            )
     real_sorted = sorted(real)
     carry = q.carry_forward
 
@@ -256,4 +273,5 @@ def run_net_worth_query(session: Session, q: NetWorthQuery) -> NetWorthResult:
         series=series,
         account_series=account_series,
         snapshot=snapshot,
+        warnings=list(dict.fromkeys(warnings)),
     )
