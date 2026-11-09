@@ -155,6 +155,16 @@ def has_pdf_shape(path: Path, size: int) -> bool:
         return False
 
 
+def _unreadable(path: Path) -> bool:
+    """Whether the file cannot be opened at all (typically: owned by another user, no read access):
+    waiting will not fix that, so it is reported at once."""
+    try:
+        with path.open("rb"):
+            return False
+    except OSError:
+        return True
+
+
 def _skip_name(rel: str, staging: Path | None, root: Path) -> bool:
     parts = PurePosixPath(rel).parts
     if any(p.startswith("~$") for p in parts):
@@ -296,8 +306,8 @@ class FolderScanner:
         ready: list[_Candidate] = []
         now = self._clock()
         for candidate in sorted(stable, key=lambda c: c.rel):
-            if has_pdf_shape(candidate.path, candidate.size):
-                ready.append(candidate)
+            if has_pdf_shape(candidate.path, candidate.size) or _unreadable(candidate.path):
+                ready.append(candidate)  # (an unreadable file is reported by `_handle` at once)
                 continue
             self._pending[candidate.rel] = (candidate.size, candidate.mtime_ns)
             age = now - candidate.mtime_ns / 1e9
@@ -339,7 +349,17 @@ class FolderScanner:
         cls = classify_path(parts, people)
         self._pending.pop(candidate.rel, None)
         try:
-            if not has_pdf_shape(candidate.path, candidate.size):
+            if _unreadable(candidate.path):
+                outcome = _Outcome(
+                    "failed",
+                    code="unreadable",
+                    message="The app is not allowed to read this file.",
+                    hint=(
+                        "Give the user the app runs as (PUID/PGID in Docker) read access to the "
+                        "file, then press Retry."
+                    ),
+                )
+            elif not has_pdf_shape(candidate.path, candidate.size):
                 outcome = _Outcome(
                     "failed",
                     code="incomplete_pdf",

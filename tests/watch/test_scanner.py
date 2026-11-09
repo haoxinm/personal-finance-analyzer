@@ -210,6 +210,24 @@ def test_a_half_written_pdf_waits_even_when_its_size_is_steady(
     assert actions(setup.scan()) == {STATEMENT: "imported"}
 
 
+@pytest.mark.skipif(
+    not hasattr(os, "geteuid") or os.geteuid() == 0, reason="needs a user that permissions bind"
+)
+def test_a_file_the_app_may_not_read_is_reported_at_once_with_the_fix(
+    setup: FolderScanner, session: Session
+) -> None:
+    pdf = put_statement(STATEMENT)
+    pdf.chmod(0o000)
+    try:
+        report = scan_stable(setup)
+        assert actions(report) == {STATEMENT: "failed"}
+        record = records(session)[STATEMENT]
+        assert record.code == "unreadable" and "PUID" in (record.hint or "")
+    finally:
+        pdf.chmod(0o600)
+    assert statements(session) == []
+
+
 def test_a_pdf_that_never_finishes_is_eventually_reported(engine: Engine, session: Session) -> None:
     add_person(session, "Alex")
     clock = [1_000_000.0]
