@@ -75,8 +75,11 @@ def test_profile_validation(client: TestClient) -> None:
         {"filing_status": "single", "age65_or_blind_count": 3},  # one person: at most 2 boxes
         {"filing_status": "hoh", "age65_or_blind_count": 3},
         {"filing_status": "mfj", "age65_or_blind_count": 5},
+        # a profile is one person's: a household count (3-4 boxes, 2 seniors) is not accepted
+        {"filing_status": "mfj", "age65_or_blind_count": 3},
+        {"filing_status": "mfj", "age65_or_blind_count": 4, "age65_count": 2},
         {"filing_status": "single", "age65_count": 2, "age65_or_blind_count": 2},
-        {"filing_status": "mfj", "age65_count": 3, "age65_or_blind_count": 4},
+        {"filing_status": "mfj", "age65_count": 2, "age65_or_blind_count": 2},
         {"filing_status": "single", "age65_count": 1, "age65_or_blind_count": 0},
         {"filing_status": "single", "other_income_minor": 10**13},
         {"filing_status": "single", "other_income_minor": 1.5},
@@ -443,6 +446,6 @@ def test_profile_age_boxes_drive_the_senior_deduction(client: TestClient, sessio
     assert calc["taxable_income_minor"] == (60_000 - 17_750 - 6_000) * D
     ok_joint = client.put(
         f"/api/tax/profiles/{uid}/2024",
-        json=_profile(filing_status="mfj", age65_or_blind_count=4, age65_count=2),
+        json=_profile(filing_status="mfj", age65_or_blind_count=2, age65_count=1),
     )
     assert ok_joint.status_code == 201

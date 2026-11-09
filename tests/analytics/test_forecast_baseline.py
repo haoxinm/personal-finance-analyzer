@@ -11,7 +11,10 @@ from spend_analyzer.analytics.forecast_baseline import cagr_pct, run_forecast_ba
 from spend_analyzer.db.models import NetWorthHistory
 from tests.forecast_seed import SpendSeed, add_balance, add_user, add_w2
 
-# 20.15% all-in on 80,000.00: federal 10,000 + Social Security 4,960 + Medicare 1,160.
+# Withholding on 80,000.00 of 2022 wages: federal 10,000 + Social Security 4,960 + Medicare 1,160.
+# There is no Form 1040, so the year's tax is the headline total: the *estimated* federal tax
+# (single, standard deduction $12,950: taxable $67,050, the tax table's $67,075 midpoint gives
+# 1,027.50 + 3,780.00 + 22% x 25,300 = $10,374) plus the same FICA ($6,120) = $16,494.
 _TAXES_2022 = {
     "federal_income_tax_withheld": 1_000_000,
     "social_security_tax": 496_000,
@@ -37,7 +40,14 @@ def _seed(session: Session) -> int:
         uid,
         2023,
         8_800_000,
-        {"federal_income_tax_withheld": 1_100_000, "medicare_tax": 700_000},
+        # 2023 wages 88,000.00: Social Security 6.2% = 5,456 and Medicare 1.45% = 1,276. The estimated
+        # federal tax (single, standard deduction $13,850: taxable $74,150, table midpoint $74,175)
+        # is 1,100 + 4,047 + 22% x 29,450 = $11,626, so the year's tax is 11,626 + 6,732 = $18,358.
+        {
+            "federal_income_tax_withheld": 1_100_000,
+            "social_security_tax": 545_600,
+            "medicare_tax": 127_600,
+        },
     )
     card = SpendSeed(session, uid)
     for month in range(1, 13):  # a complete 2023: 12 x 1,000.00
@@ -82,7 +92,7 @@ def test_history_rows_join_all_sources(session: Session) -> None:
     no_net_worth = rows[2022]
     assert no_net_worth.net_worth_minor is None and no_net_worth.source is None
     assert no_net_worth.income_minor == 8_000_000
-    assert no_net_worth.tax_minor == 1_612_000 and no_net_worth.income_basis == "source_documents"
+    assert no_net_worth.tax_minor == 1_649_400 and no_net_worth.income_basis == "source_documents"
 
 
 def test_spending_months_and_savings(session: Session) -> None:
@@ -91,9 +101,9 @@ def test_spending_months_and_savings(session: Session) -> None:
     full, partial = rows[2023], rows[2024]
     assert (full.spending_minor, full.spending_months) == (1_180_000, 12)
     assert (partial.spending_minor, partial.spending_months) == (450_000, 3)
-    # Tax is rebuilt from the summary's 4-dp all-in rate (0.2045 x 8,800,000 = 1,799,600).
-    assert full.tax_minor == 1_799_600
-    assert full.savings_minor == 8_800_000 - 1_799_600 - 1_180_000
+    # Tax is the summary's headline total tax, to the cent: 11,626 estimated federal + 6,732 FICA.
+    assert full.tax_minor == 1_835_800
+    assert full.savings_minor == 8_800_000 - 1_835_800 - 1_180_000  # 57,842.00
     assert partial.savings_minor is None  # a partial spending year has no savings figure
     assert rows[2022].savings_minor is None  # tax year without spending
 
@@ -103,7 +113,8 @@ def test_defaults_derive_from_latest_years(session: Session) -> None:
     d = run_forecast_baseline(session, uid).defaults
     assert (d.net_worth_minor, d.net_worth_year) == (180_000, 2024)
     assert (d.annual_income_minor, d.income_year) == (8_800_000, 2023)
-    assert d.effective_tax_rate_pct == pytest.approx(20.45)
+    # 1,835,800 of tax on 8,800,000 of earned income (all of it wages here).
+    assert d.effective_tax_rate_pct == pytest.approx(20.86)
     # 2024 has only 3 months: annualised from them, and flagged.
     assert (d.annual_spending_minor, d.spending_year, d.spending_annualized) == (
         1_800_000,
@@ -112,7 +123,7 @@ def test_defaults_derive_from_latest_years(session: Session) -> None:
     )
     assert d.income_growth_pct == 10.0  # 8,000,000 -> 8,800,000 over one year
     assert d.spending_growth_pct is None  # only one complete spending year
-    assert d.savings_rate_pct == pytest.approx(66.14, abs=0.01)
+    assert d.savings_rate_pct == pytest.approx(65.73, abs=0.01)  # 5,784,200 / 8,800,000
 
 
 def test_all_users_sums_entries_and_manual_values(session: Session) -> None:
@@ -213,10 +224,12 @@ def test_defaults_use_earned_income_only(session: Session) -> None:
     d = result.defaults
     assert (d.annual_income_minor, d.income_year) == (8_800_000, 2024)  # wages only
     assert d.income_growth_pct == 10.0  # earned: 8.0M -> 8.8M, not 10.0M -> 10.8M
-    # The year's tax dollars (1,100,000) are carried by the earned income alone: 12.5%.
-    assert d.effective_tax_rate_pct == pytest.approx(
-        12.5, abs=0.02
-    )  # tax is rebuilt from a 4-dp rate
+    # No return and no FICA on the forms, so the year's tax is the estimated federal tax on the whole
+    # $108,000 of income: single, standard deduction $14,600, taxable $93,400 (table midpoint
+    # $93,425) = 1,160 + 4,266 + 22% x 46,275 = 15,606.50, i.e. $15,607. It is all carried by the
+    # earned income ($88,000): 15,607 / 88,000 = 17.74% (spread over the gross it would be 14.45%).
+    assert rows[2024].tax_minor == 1_560_700
+    assert d.effective_tax_rate_pct == pytest.approx(17.74)
 
 
 def test_default_income_year_is_the_latest_year_with_earned_income(session: Session) -> None:

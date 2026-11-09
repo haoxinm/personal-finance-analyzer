@@ -40,12 +40,11 @@ numerator is unavailable):
 
 - ``federal_effective_rate`` = ``total_federal_tax`` (return) / total income;
 - ``withholding_rate`` = federal income tax withheld (sources) / total income;
-- ``all_in_rate`` = (federal tax [return's total tax less the part of its Additional Medicare Tax
-  already counted in W-2 box 6 Medicare, if a return is present; else federal withheld]
-  + state tax [state liability if present, else state withheld] + local withheld
-  + Social Security + Medicare) / total income. The Additional Medicare Tax (Schedule 2 line 11) is
-  withheld by employers inside W-2 box 6, so the liability part excludes
-  ``min(additional_medicare_tax, medicare_tax)`` to avoid counting the same 0.9% twice.
+- ``all_in_rate`` = the headline total (``headline.total_minor``: federal tax on the headline basis
+  [return, else estimate, else withholding] + FICA + state) / total income, so it always matches
+  the "Total tax" figure next to it. The Additional Medicare Tax (Schedule 2 line 11) is withheld
+  by employers inside W-2 box 6, so the headline's federal part excludes only the part actually
+  withheld (box 6 beyond 1.45% of the Medicare wages, capped at the tax owed), never the whole tax.
 
 **Refund / owed.** Taken from the return when printed (``refund`` is the refund actually received:
 line 35a, else line 34 less line 36). If the return prints neither but has
@@ -797,19 +796,6 @@ def _finalize(year: int, user_id: int | None, r: _Resolved) -> TaxYearSummary:
 
     fed_withheld = withheld["federal_income_tax_withheld"]
     federal = liability.get("total_federal_tax")
-    federal_for_all_in = fed_withheld
-    if federal is not None:
-        # W-2 box 6 already includes the 0.9% Additional Medicare Tax an employer withheld.
-        double_counted = min(liability.get("additional_medicare_tax", 0), fica["medicare_tax"])
-        federal_for_all_in = federal - double_counted
-    state = liability.get("state_income_tax_liability")
-    state_for_all_in = state if state is not None else withheld["state_income_tax_withheld"]
-    all_in_numerator = (
-        federal_for_all_in
-        + state_for_all_in
-        + withheld["local_income_tax_withheld"]
-        + sum(fica.values())
-    )
     has_any_tax = bool(federal is not None or any(withheld.values()) or any(fica.values()))
     headline: HeadlineTax | None = None
     if has_any_tax or r.estimate_total is not None:
@@ -835,7 +821,7 @@ def _finalize(year: int, user_id: int | None, r: _Resolved) -> TaxYearSummary:
         amount_owed_minor=r.owed,
         refund_or_owed_derived=r.derived,
         federal_effective_rate=_rate(federal, total_income),
-        all_in_rate=_rate(all_in_numerator if has_any_tax else None, total_income),
+        all_in_rate=_rate(headline.total_minor if headline is not None else None, total_income),
         withholding_rate=_rate(fed_withheld if any(withheld.values()) else None, total_income),
         document_count=r.documents,
         form_count=r.forms,

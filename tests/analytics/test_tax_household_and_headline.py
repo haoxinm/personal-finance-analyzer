@@ -639,6 +639,26 @@ def test_both_spouses_itemizing_is_summed_and_said_so(session: Session) -> None:
     assert not any("Both spouses entered itemized" in w for w in again.warnings)
 
 
+def test_a_profile_counts_only_its_own_user_so_spouses_are_not_double_counted(
+    session: Session,
+) -> None:
+    a, b = make_user(session, "a"), make_user(session, "b")
+    # each spouse entered the household's boxes (4, both 65+): only 2 boxes and one senior per
+    # profile are used, so the joint return gets 4 boxes and 2 seniors at most, not 8 and 4
+    add_profile(
+        session, a, 2025, "mfj", joint_with_user_id=b, age65_or_blind_count=4, age65_count=2
+    )
+    add_profile(
+        session, b, 2025, "mfj", joint_with_user_id=a, age65_or_blind_count=4, age65_count=2
+    )
+    _w2_full(session, a, 2025, 100_000, tin="1111")
+    est = run_tax_estimate(session, a, 2025)
+    assert est.calc.senior_deduction_minor == 12_000 * D
+    assert est.calc.deduction_minor == (31_500 + 4 * 1_600) * D
+    assert not any("at most 4 apply" in w for w in est.warnings)
+    assert any("more age 65 / blind boxes than one person" in w for w in est.warnings)
+
+
 def test_senior_deduction_for_a_household_sums_both_profiles(session: Session) -> None:
     a, b = make_user(session, "a"), make_user(session, "b")
     add_profile(

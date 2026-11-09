@@ -23,7 +23,7 @@ from spend_analyzer.analytics.tax_estimate import (
     run_tax_estimate,
 )
 from spend_analyzer.core import tax_calc
-from spend_analyzer.core.tax_params import FILING_STATUSES
+from spend_analyzer.core.tax_params import FILING_STATUSES, load_bundled
 from spend_analyzer.db.models import TaxProfile
 from tests.analytics.tax_seed import add_form, add_profile, make_user
 
@@ -359,6 +359,16 @@ def test_niit_is_limited_by_the_excess_over_the_threshold_and_needs_investment_i
     assert _calc(2024, "mfj", wages=240_000, interest=5_000).net_investment_income_tax_minor == 0
     loss = _calc(2024, wages=300_000, interest=1_000, long_term_gain=-10_000)
     assert loss.net_investment_income_tax_minor == 0  # 1,000 - 3,000 limited loss -> below zero
+
+
+def test_additional_medicare_tax_qss_threshold_is_200k_not_the_joint_250k() -> None:
+    # IRC 3101(b)(2) / Form 8959: 250,000 only for a joint return; a qualifying surviving spouse
+    # (like single and head of household) starts at 200,000: 0.9% x 40,000 = 360 owed
+    r = _calc(2025, "qss", wages=240_000, ss_wages=240_000)
+    assert r.additional_medicare_tax_minor == 360 * D
+    assert _calc(2025, "mfj", wages=240_000, ss_wages=240_000).additional_medicare_tax_minor == 0
+    # the NIIT threshold, in contrast, is 250,000 for a surviving spouse (IRC 1411)
+    assert load_bundled().years[2025].niit_threshold_minor["qss"] == 250_000 * D
 
 
 def test_additional_medicare_tax_mfj_two_180k_earners() -> None:

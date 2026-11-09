@@ -112,6 +112,14 @@ MAX_AGED_BLIND_JOINT = 4
 MAX_AGED_BLIND_SINGLE = 2
 
 
+def _person_boxes(profile: TaxProfile | None) -> tuple[int, int]:
+    """(aged / blind boxes, people aged 65+) one profile contributes: its own user's only."""
+    if profile is None:
+        return 0, 0
+    boxes = min(max(profile.age65_or_blind_count, 0), MAX_AGED_BLIND_SINGLE)
+    return boxes, min(max(profile.age65_count, 0), 1, boxes)
+
+
 class EstimateError(ValueError):
     """Base class of the errors `run_tax_estimate` raises."""
 
@@ -780,6 +788,17 @@ def run_tax_estimate(session: Session, user_id: int, tax_year: int) -> UserEstim
             "joint return. Enter each spouse's own share, or the household total on one profile "
             "and nothing on the other."
         )
+    # A profile describes only its own user (at most 2 aged / blind boxes, 1 person aged 65+), so a
+    # household is the sum of its profiles; rows saved with a household count are clamped.
+    person_boxes = [_person_boxes(p) for p in profiles]
+    if any(
+        p is not None and (p.age65_or_blind_count > MAX_AGED_BLIND_SINGLE or p.age65_count > 1)
+        for p in profiles
+    ):
+        notes.append(
+            "A tax profile counts more age 65 / blind boxes than one person can have: each profile "
+            "is limited to its own user's 2 boxes and one 65-or-older person."
+        )
     inputs = EstimateInputs(
         tax_year=tax_year,
         filing_status=status,
@@ -795,8 +814,8 @@ def run_tax_estimate(session: Session, user_id: int, tax_year: int) -> UserEstim
         adjustments_minor=total("adjustments_minor"),
         deduction_mode="itemized" if itemized_any else "standard",
         itemized_deductions_minor=total("itemized_deductions_minor"),
-        aged_or_blind_count=total("age65_or_blind_count"),
-        senior_count=total("age65_count"),
+        aged_or_blind_count=sum(boxes for boxes, _ in person_boxes),
+        senior_count=sum(senior for _, senior in person_boxes),
         nonrefundable_credits_minor=total("nonrefundable_credits_minor"),
         refundable_credits_minor=total("refundable_credits_minor"),
         other_taxes_minor=total("other_taxes_minor"),

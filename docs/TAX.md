@@ -228,22 +228,25 @@ numerator isn't available, for example no return was imported.
 |---|---|
 | Federal effective rate | total federal tax (return) / total income |
 | Federal withholding rate | federal income tax withheld (source forms) / total income |
-| All-in rate | (federal tax + state tax + local tax + Social Security + Medicare) / total income |
+| All-in rate | headline total tax (federal + Social Security + Medicare + state) / total income |
 
-In the all-in rate, "federal tax" is the return's total federal tax when there is one, otherwise
-the federal tax withheld. "State tax" is the return's state liability when present, otherwise the
-state tax withheld. Local tax is local withholding. The all-in rate therefore mixes final and
-withheld figures when you have only part of the paperwork, so read the warnings under the numbers.
+The all-in rate is the **headline total tax** (see "Headline tax" below) divided by total income,
+so it always matches the "Total tax" figure shown next to it. In the headline, "federal tax" is the
+return's total federal tax when there is one, otherwise the [estimate](#per-user-estimate)'s total tax,
+otherwise the federal tax withheld. "State tax" is the return's state liability when present,
+otherwise the state and local tax withheld. The rate therefore mixes final, estimated and withheld
+figures when you have only part of the paperwork, so read the warnings and the basis label under the
+numbers.
 
 **Additional Medicare Tax is counted once.** An employer withholds the 0.9% Additional Medicare Tax
 inside W-2 box 6 only on wages over $200,000, so the Medicare figure from your W-2s contains it
 only when it was actually withheld, and the return's total tax contains it again (Schedule 2
-line 11). With a return, the all-in rate therefore uses
+line 11). With a return, the headline federal figure therefore uses
 
 ```text
 withheld = max(W-2 box 6 - 1.45% x Medicare wages, 0)
-all-in   = (total federal tax - min(additional Medicare Tax, withheld)
-            + state tax + local withholding + Social Security + Medicare) / total income
+federal  = total federal tax - min(additional Medicare Tax, withheld)
+all-in   = (federal + state tax + Social Security + Medicare) / total income
 ```
 
 Medicare wages (W-2 box 5) are not stored; they are approximated as box 1 wages plus the box 12
@@ -427,8 +430,9 @@ or `GET /api/tax/estimate?user_id=&tax_year=` (the web UI's Estimate screen come
 - **A tax profile** per user and year (`tax_profiles`; `GET`/`PUT`/`DELETE
   /api/tax/profiles/{user_id}/{tax_year}`): filing status, spouse (`joint_with_user_id`, only with
   `mfj`), standard or itemized deduction (and the itemized total), the number of age 65 / blind boxes
-  (`age65_or_blind_count`: at most 2 for one person, 4 for `mfj`) and how many of the people are 65
-  or older (`age65_count`, for the 2025-2028 senior deduction), adjustments to income, other income, capital loss carryover from the previous year, nonrefundable
+  (`age65_or_blind_count`: at most 2) and whether the user is 65 or older (`age65_count`: 0 or 1, for
+  the 2025-2028 senior deduction). A profile describes only its own user: with a linked spouse both
+  profiles are added together (up to 4 boxes and 2 seniors), so each spouse enters their own, adjustments to income, other income, capital loss carryover from the previous year, nonrefundable
   and refundable credits, other taxes, estimated payments and other payments. All amounts are
   non-negative cents. **Without a profile**: the filing status of the user's own 1040 if there is
   one, else single, and the standard deduction.

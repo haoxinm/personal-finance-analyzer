@@ -1175,18 +1175,18 @@ MAX_TAX_AMOUNT_MINOR = 10**12
 class TaxProfileIn(_Model):
     """`PUT /api/tax/profiles/{user_id}/{tax_year}` body: the manual inputs of the estimate.
     Amounts are non-negative cents. `joint_with_user_id` (the spouse, another existing user) is
-    only valid with `filing_status` `mfj`. `age65_or_blind_count` counts the boxes checked for the
-    additional standard deduction (age 65 or older, blind): at most 2 for one person (every status
-    but `mfj`), at most 4 for `mfj` (the household's, when spouses share one profile; each
-    spouse's profile is summed). `age65_count` is how many of the people are 65 or older, for the
-    2025-2028 senior deduction (at most 1, or 2 for `mfj`; not more than the boxes)."""
+    only valid with `filing_status` `mfj`. A profile describes only its own user: with a linked
+    spouse the two profiles are added together, so each spouse enters their own boxes.
+    `age65_or_blind_count` counts the boxes checked for the additional standard deduction (age 65
+    or older, blind): at most 2 per person. `age65_count` is 1 when this user is 65 or older (for
+    the 2025-2028 senior deduction) and not more than the boxes."""
 
     filing_status: TaxFilingStatus
     joint_with_user_id: int | None = None
     deduction_mode: TaxDeductionMode = "standard"
     itemized_deductions_minor: int = Field(default=0, ge=0, le=MAX_TAX_AMOUNT_MINOR)
-    age65_or_blind_count: int = Field(default=0, ge=0, le=4)
-    age65_count: int = Field(default=0, ge=0, le=2)
+    age65_or_blind_count: int = Field(default=0, ge=0, le=2)
+    age65_count: int = Field(default=0, ge=0, le=1)
     adjustments_minor: int = Field(default=0, ge=0, le=MAX_TAX_AMOUNT_MINOR)
     other_income_minor: int = Field(default=0, ge=0, le=MAX_TAX_AMOUNT_MINOR)
     capital_loss_carryover_minor: int = Field(default=0, ge=0, le=MAX_TAX_AMOUNT_MINOR)
@@ -1198,12 +1198,6 @@ class TaxProfileIn(_Model):
 
     @model_validator(mode="after")
     def _check_boxes(self) -> TaxProfileIn:
-        joint = self.filing_status == "mfj"
-        most = 4 if joint else 2
-        if self.age65_or_blind_count > most:
-            raise ValueError(f"age65_or_blind_count is at most {most} for {self.filing_status}")
-        if self.age65_count > (2 if joint else 1):
-            raise ValueError(f"age65_count is at most {2 if joint else 1} for {self.filing_status}")
         if self.age65_count > self.age65_or_blind_count:
             raise ValueError("age65_count cannot exceed age65_or_blind_count (it is a subset)")
         return self
@@ -1437,7 +1431,8 @@ class ForecastHistoryRow(_Model):
     #: The manual value for the year, even when entries override it (so the editor can show both).
     manual_net_worth_minor: int | None
     manual_note: str | None
-    #: Gross income on the imported tax forms, and all-in tax (federal + state + local + FICA).
+    #: Gross income on the imported tax forms, and the year's headline total tax (federal + FICA +
+    #: state; see `TaxHeadline`).
     income_minor: int | None
     #: The wages + self-employment part of `income_minor` (interest, dividends and gains excluded).
     earned_income_minor: int | None

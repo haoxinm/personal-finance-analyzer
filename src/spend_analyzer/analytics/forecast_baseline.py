@@ -14,8 +14,10 @@ Read-only aggregation over three existing sources, joined by calendar year:
   value; the row's `source` is ``"mixed"`` when several kinds contributed.
 - **Income and tax**: `run_tax_summary`. `income_minor` is the gross taxable income on the imported
   forms (`total_income_minor`, so it includes interest, dividends and capital gains) and
-  `earned_income_minor` is its wages + self-employment part; tax is the all-in figure
-  (federal + state + local + FICA), rebuilt as ``all_in_rate * total_income_minor``.
+  `earned_income_minor` is its wages + self-employment part; tax is the summary's headline total
+  (`headline.total_minor`: federal on the headline basis [return, else estimate, else withholding]
+  + FICA + state), the same figure the Income & tax screen shows as "Total tax" and divides by
+  `total_income_minor` for its all-in rate.
 - **Spending**: `run_query` over the default spend kinds, refunds netted, grouped by month and
   summed per year. ``spending_months`` is how many calendar months of that year have any
   transaction, so a partial year is visible (and annualised only for the suggested default).
@@ -216,7 +218,7 @@ def _tax_by_year(
     for s in run_tax_summary(session, query):
         if s.income_basis == "none" or s.total_income_minor <= 0:
             continue
-        tax = round(s.all_in_rate * s.total_income_minor) if s.all_in_rate is not None else None
+        tax = s.headline.total_minor if s.headline is not None else None
         earned = sum(s.income_by_category.get(c, 0) for c in _EARNED_CATEGORIES)
         out[s.tax_year] = (s.total_income_minor, earned, tax, s.income_basis)
     return out
