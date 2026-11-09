@@ -44,20 +44,34 @@ def _user_rule(session: Session, user_id: int, pattern: str, category: tuple[str
     return rule
 
 
+def _llm_map(session: Session, merchant_key: str, category: tuple[str, str]) -> None:
+    category_id, subcategory_id = category_ids(session, *category)
+    session.add(
+        MerchantMap(
+            merchant_key=merchant_key,
+            category_id=category_id,
+            subcategory_id=subcategory_id,
+            source="llm",
+            confidence=0.5,
+        )
+    )
+
+
 def _seed_conflicts(session: Session) -> dict[str, Transaction]:
-    """`conflict`: user rule says dining, builtin says wholesale. `agree`: both say wholesale.
-    `edited`: like `conflict`, but patched by hand. `plain`: no layer knows it."""
+    """`conflict`: the built-in rule says wholesale, the saved LLM answer says dining (a winning
+    user rule would settle the row, so it is not a conflict). `edited`: patched by hand.
+    `plain`: no layer knows it. `agree`: one layer only."""
     seed = base(session)
     sync_builtin_rules(session)
-    _user_rule(session, seed[0].id, "costco", DINING)
+    _llm_map(session, "costco whse", DINING)
     rows = {
         "conflict": add_txn(
             session,
             seed,
             1,
             merchant_key="costco whse",
-            category=DINING,
-            classified_by="user_rule",
+            category=WHOLESALE,
+            classified_by="builtin_rule",
             posted_date="2026-01-04",
         ),
         "edited": add_txn(
@@ -106,11 +120,30 @@ def test_candidates_endpoint_lists_every_layer_in_precedence_order(
         (c["source"], c["category_key"], c["subcategory_key"], c["label"], c["is_current"])
         for c in body["candidates"]
     ] == [
-        ("user_rule", "restaurant", "dine_in", "costco", True),
-        ("builtin_rule", "grocery", "wholesale_clubs", "COSTCO", False),
+        ("builtin_rule", "grocery", "wholesale_clubs", "COSTCO", True),
+        ("llm", "restaurant", "dine_in", "learned from LLM", False),
     ]
     assert body["candidates"][0]["rule_id"] is not None
     assert fake_llm.requests == []
+
+
+def test_a_row_settled_by_a_user_rule_is_not_a_conflict_though_lower_layers_disagree(
+    client: TestClient, session: Session
+) -> None:
+    seed = base(session)
+    sync_builtin_rules(session)
+    _user_rule(session, seed[0].id, "costco", DINING)
+    _llm_map(session, "costco whse", WHOLESALE)
+    txn = add_txn(
+        session, seed, 1, merchant_key="costco whse", category=DINING, classified_by="user_rule"
+    )
+    session.commit()
+
+    body = client.get(f"/api/transactions/{txn.id}/candidates").json()
+
+    assert body["conflict"] is False
+    assert [c["source"] for c in body["candidates"]] == ["user_rule", "builtin_rule", "llm"]
+    assert client.get("/api/transactions", params={"conflict": True}).json()["total"] == 0
 
 
 def test_candidates_endpoint_for_an_edited_row_marks_the_edit_current(
@@ -123,7 +156,6 @@ def test_candidates_endpoint_for_an_edited_row_marks_the_edit_current(
     assert body["conflict"] is False
     assert [(c["source"], c["is_current"]) for c in body["candidates"]] == [
         ("one_time_edit", True),
-        ("user_rule", False),
         ("builtin_rule", False),
     ]
 
@@ -161,17 +193,7 @@ def test_review_queue_items_carry_candidates_and_conflict(
 ) -> None:
     seed = base(session)
     sync_builtin_rules(session)
-    _user_rule(session, seed[0].id, "costco", DINING)
-    category_id, subcategory_id = category_ids(session, *WHOLESALE)
-    session.add(
-        MerchantMap(
-            merchant_key="costco whse",
-            category_id=category_id,
-            subcategory_id=subcategory_id,
-            source="llm",
-            confidence=0.5,
-        )
-    )
+    _llm_map(session, "costco whse", DINING)
     add_txn(
         session,
         seed,
@@ -191,9 +213,9 @@ def test_review_queue_items_carry_candidates_and_conflict(
 
     (item,) = response.json()["items"]
     assert item["conflict"] is True
-    assert [c["source"] for c in item["candidates"]] == ["user_rule", "builtin_rule", "llm"]
-    llm = item["candidates"][2]
-    assert llm["is_current"] is False  # the user rule outranks the saved LLM answer
+    assert [c["source"] for c in item["candidates"]] == ["builtin_rule", "llm"]
+    llm = item["candidates"][1]
+    assert llm["is_current"] is False  # the built-in rule outranks the saved LLM answer
     assert llm["label"] == "learned from LLM"
 
 
@@ -224,14 +246,14 @@ def test_conflict_filter_composes_with_other_filters_and_paginates(
 ) -> None:
     seed = base(session)
     sync_builtin_rules(session)
-    _user_rule(session, seed[0].id, "costco", DINING)
+    _llm_map(session, "costco whse", DINING)
     for i in range(7):
         add_txn(
             session,
             seed,
             i,
             merchant_key="costco whse",
-            category=DINING,
+            category=WHOLESALE,
             amount_minor=100 * (i + 1),
             posted_date=f"2026-01-{i + 1:02d}",
         )
@@ -274,13 +296,13 @@ def test_applying_a_suggestion_is_a_one_time_edit_that_survives_and_stays_listed
     )
 
     assert patched.status_code == 200, patched.text
-    assert patched.json()["subcategory_key"] == "wholesale_clubs"
+    assert patched.json()["subcategory_key"] == "dine_in"
     after = client.get(f"/api/transactions/{txn_id}/candidates").json()
     assert after["conflict"] is False  # the edit settles it
     assert [(c["source"], c["is_current"]) for c in after["candidates"]] == [
         ("one_time_edit", True),
-        ("user_rule", False),
         ("builtin_rule", False),
+        ("llm", False),
     ]
     session.expire_all()
     stored = session.get(Transaction, txn_id)
@@ -325,7 +347,7 @@ def test_applying_a_suggestion_through_accept_carries_the_kind_and_undoes_cleanl
     assert restored is not None
     assert (restored.kind, restored.classified_by, restored.is_spend) == (
         "purchase",
-        "user_rule",
+        "builtin_rule",
         True,
     )
     assert fake_llm.requests == []
