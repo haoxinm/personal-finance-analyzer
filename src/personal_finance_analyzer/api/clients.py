@@ -362,7 +362,6 @@ class BlockLog:
             peer,
         )
 
-
     def warn_gateway_peer(self, gateway: str) -> None:
         """Once per process: a request arrived from this container's default gateway."""
         with self._lock:

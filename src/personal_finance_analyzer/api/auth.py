@@ -37,6 +37,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import contextlib
 import hashlib
 import hmac
 import html
@@ -324,13 +325,8 @@ class LoginThrottle:
             if not queue:
                 del self._by_client[client]
 
-    def retry_after(self, client: str) -> int:
-        """Seconds until ``client`` may try again; 0 when it may try now. Does not count anything."""
-        now = self._clock()
-        with self._lock:
-            return self._wait(client, now)
-
     def _wait(self, client: str, now: float) -> int:
+        """Seconds until ``client`` may try again; 0 when it may try now. Lock held by the caller."""
         self._trim(self._all, now)
         limit = self._max_client
         if len(self._all) >= self._max_global:
@@ -371,16 +367,12 @@ class LoginThrottle:
 
     def _refund(self, attempt: Attempt) -> None:
         # Entries are a queue of stamps; remove one equal stamp from each (any equal one will do).
-        try:
+        with contextlib.suppress(ValueError):
             self._all.remove(attempt.stamp)
-        except ValueError:
-            pass
         queue = self._by_client.get(attempt.client)
         if queue is not None:
-            try:
+            with contextlib.suppress(ValueError):
                 queue.remove(attempt.stamp)
-            except ValueError:
-                pass
             if not queue:
                 del self._by_client[attempt.client]
 
