@@ -28,6 +28,8 @@ from personal_finance_analyzer.core.paths import config_path, ensure_home
 
 #: keyring service name; the account within it is the provider name (e.g. "anthropic").
 _KEYRING_SERVICE = "personal-finance-analyzer"
+#: The keychain service the key lived under before the product was renamed (see `get_api_key`).
+_LEGACY_KEYRING_SERVICE = "spend-analyzer"
 
 
 #: The wire formats `personal_finance_analyzer.llm.client` can speak.
@@ -216,12 +218,19 @@ def without_stale_tax_consent(settings: Settings) -> Settings:
     )
 
 
+#: Prefix of the environment overrides (``PFA_LLM__ENABLED``), and the pre-rename prefix that is
+#: still honored when the new one is not set for the same field.
+ENV_PREFIX = "PFA_"
+LEGACY_ENV_PREFIX = "SPEND_ANALYZER_"
+
+
 def load_settings(path: Path | None = None) -> Settings:
     """Load settings: defaults -> `config.toml` (if present) -> environment variable overrides.
 
     Env var overrides use the pattern ``PFA_<SECTION>__<FIELD>`` (double underscore),
     e.g. ``PFA_LLM__ENABLED=true``. This lets CI and power users override settings
-    without writing a file.
+    without writing a file. The product's former prefix, ``SPEND_ANALYZER_``, is still read as a
+    fallback; when both name the same setting, ``PFA_`` wins.
     """
     toml_path = path if path is not None else config_path()
     data: dict[str, object] = {}
@@ -234,17 +243,18 @@ def load_settings(path: Path | None = None) -> Settings:
 
 
 def _apply_env_overrides(settings: Settings) -> Settings:
-    prefix = "PFA_"
     overrides: dict[str, dict[str, str]] = {}
-    for key, value in os.environ.items():
-        if not key.startswith(prefix) or "__" not in key:
-            continue
-        section, _, field_name = key[len(prefix) :].partition("__")
-        section = section.lower()
-        field_name = field_name.lower()
-        if section not in ("llm", "privacy", "ingest", "tax", "server"):
-            continue
-        overrides.setdefault(section, {})[field_name] = value
+    # Legacy prefix first, so a `PFA_` variable for the same field overwrites it.
+    for prefix in (LEGACY_ENV_PREFIX, ENV_PREFIX):
+        for key, value in os.environ.items():
+            if not key.startswith(prefix) or "__" not in key:
+                continue
+            section, _, field_name = key[len(prefix) :].partition("__")
+            section = section.lower()
+            field_name = field_name.lower()
+            if section not in ("llm", "privacy", "ingest", "tax", "server"):
+                continue
+            overrides.setdefault(section, {})[field_name] = value
 
     if not overrides:
         return settings
@@ -314,28 +324,51 @@ def _drop_none(value: Any) -> Any:
 
 #: Env var that supplies the LLM API key without touching the keychain (CI, containers).
 LLM_API_KEY_ENV = "PFA_LLM_API_KEY"
+#: Its pre-rename name, still read when `LLM_API_KEY_ENV` is unset.
+LEGACY_LLM_API_KEY_ENV = "SPEND_ANALYZER_LLM_API_KEY"
 
 
 def get_api_key(account: str) -> str | None:
     """Return the API key stored under keychain ``account``: checks the
     ``{ACCOUNT}_API_KEY`` env var first (for a plain name like ``openai``), then the OS
     keychain (service ``personal-finance-analyzer``). Never logs the value. A keychain backend that is
-    unavailable (no Secret Service on a headless Linux box) reads as "no key"."""
+    unavailable (no Secret Service on a headless Linux box) reads as "no key".
+
+    A key saved under the pre-rename service (``spend-analyzer``) is moved to the new one on first
+    read: copied, then the old entry deleted (both best-effort; the key is returned either way)."""
     if account.replace("_", "").replace("-", "").isalnum():
         env_value = os.environ.get(f"{account.upper().replace('-', '_')}_API_KEY")
         if env_value:
             return env_value
     try:
         with KEYRING_LOCK:
-            return keyring.get_password(_KEYRING_SERVICE, account)
+            value = keyring.get_password(_KEYRING_SERVICE, account)
+            if value is None:
+                value = _adopt_legacy_key(account)
+            return value
     except keyring.errors.KeyringError:
         return None
+
+
+def _adopt_legacy_key(account: str) -> str | None:
+    """Caller holds `KEYRING_LOCK`. Move ``account``'s key from the pre-rename keychain service to
+    the current one, so a user who saved a key before the rename keeps working."""
+    legacy = keyring.get_password(_LEGACY_KEYRING_SERVICE, account)
+    if legacy is None:
+        return None
+    try:
+        keyring.set_password(_KEYRING_SERVICE, account, legacy)
+    except keyring.errors.KeyringError:
+        return legacy  # could not copy: leave the old entry alone and keep using it
+    with contextlib.suppress(keyring.errors.KeyringError):
+        keyring.delete_password(_LEGACY_KEYRING_SERVICE, account)
+    return legacy
 
 
 def get_llm_api_key(cfg: LLMConfig) -> str | None:
     """The API key for ``cfg``'s endpoint: `PFA_LLM_API_KEY`, else the key saved in
     the OS keychain for ``cfg.base_url``'s host (see `LLMConfig.key_account`)."""
-    env_value = os.environ.get(LLM_API_KEY_ENV)
+    env_value = os.environ.get(LLM_API_KEY_ENV) or os.environ.get(LEGACY_LLM_API_KEY_ENV)
     if env_value:
         return env_value
     return get_api_key(cfg.key_account) if cfg.key_account else None
@@ -346,9 +379,14 @@ def set_api_key(provider: str, key: str) -> None:
     database."""
     with KEYRING_LOCK:
         keyring.set_password(_KEYRING_SERVICE, provider, key)
+        # A key under the pre-rename service would be stale now; drop it (best-effort).
+        with contextlib.suppress(keyring.errors.KeyringError):
+            keyring.delete_password(_LEGACY_KEYRING_SERVICE, provider)
 
 
 def delete_api_key(provider: str) -> None:
     """Remove ``provider``'s key from the OS keychain, if present."""
-    with KEYRING_LOCK, contextlib.suppress(keyring.errors.PasswordDeleteError):
-        keyring.delete_password(_KEYRING_SERVICE, provider)
+    with KEYRING_LOCK:
+        for service in (_KEYRING_SERVICE, _LEGACY_KEYRING_SERVICE):
+            with contextlib.suppress(keyring.errors.PasswordDeleteError):
+                keyring.delete_password(service, provider)

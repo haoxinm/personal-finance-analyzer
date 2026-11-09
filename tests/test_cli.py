@@ -3,15 +3,65 @@ from __future__ import annotations
 import csv
 import io
 import json
+import sys
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
 
+from personal_finance_analyzer import cli
 from personal_finance_analyzer.cli import app
 from personal_finance_analyzer.db.session import make_engine_for_path
 
 runner = CliRunner()
+
+
+def _run_entry_point(
+    entry: Callable[[], None], argv0: str, capsys: pytest.CaptureFixture[str]
+) -> tuple[str, str]:
+    sys.argv = [argv0, "--help"]
+    with pytest.raises(SystemExit) as exit_info:
+        entry()
+    assert exit_info.value.code == 0
+    captured = capsys.readouterr()
+    return captured.out, captured.err
+
+
+def test_pfa_entry_point_documents_pfa_and_prints_no_notice(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(sys, "argv", sys.argv)
+    out, err = _run_entry_point(cli.main, "personal-finance-analyzer", capsys)
+    assert "Usage: pfa" in out
+    assert "Personal Finance Analyzer" in out
+    assert err == ""
+
+
+def test_spend_analyzer_alias_prints_one_stderr_notice_then_runs_the_same_app(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(sys, "argv", sys.argv)
+    out, err = _run_entry_point(cli.legacy_main, "spend-analyzer", capsys)
+    assert err.strip().splitlines() == [
+        "spend-analyzer has been renamed to pfa; this alias will be removed in a future release"
+    ]
+    assert "Usage: pfa" in out  # stdout is the normal help, so scripts parsing it keep working
+
+
+def test_console_scripts_are_declared() -> None:
+    import tomllib
+
+    pyproject = tomllib.loads(
+        (Path(__file__).resolve().parent.parent / "pyproject.toml").read_text()
+    )
+    assert pyproject["project"]["name"] == "personal-finance-analyzer"
+    assert pyproject["project"]["scripts"] == {
+        "pfa": "personal_finance_analyzer.cli:main",
+        "personal-finance-analyzer": "personal_finance_analyzer.cli:main",
+        "spend-analyzer": "personal_finance_analyzer.cli:legacy_main",
+    }
+
 
 #: The generated fixtures Gate 2 walks (§ tests/fixtures/generated/**): each layout's own
 #: fictional bank name (found by `uv run python -c "extract(...)..."` against page 1's text)

@@ -118,6 +118,102 @@ def test_round_trip_reproduces_rows_and_files(
         assert (home_b / sub).is_dir()
 
 
+def _make_legacy_archive(src: Path, dest: Path) -> None:
+    """Rewrite a new-format archive the way the app wrote it before it was renamed: the old
+    manifest `format` and the database under `db/spend.db`."""
+    manifest = _manifest_of(src)
+    manifest["format"] = archive.LEGACY_FORMAT_NAME
+    for entry in manifest["files"]:  # type: ignore[attr-defined]
+        if entry["path"] == archive.DB_MEMBER:
+            entry["path"] = archive.LEGACY_DB_MEMBER
+    with zipfile.ZipFile(src) as zf:
+        database = zf.read(archive.DB_MEMBER)
+    _rewrite_zip(
+        src,
+        dest,
+        {
+            archive.MANIFEST_NAME: json.dumps(manifest).encode(),
+            archive.DB_MEMBER: None,
+            archive.LEGACY_DB_MEMBER: database,
+        },
+    )
+
+
+def test_new_archives_use_the_new_names(
+    source: tuple[Path, dict[str, str]], tmp_path: Path
+) -> None:
+    backup = tmp_path / archive.default_filename()
+    archive.create_backup(backup, passphrase=None)
+    assert backup.suffix == ".pfabackup"
+    manifest = _manifest_of(backup)
+    assert manifest["format"] == "personal-finance-analyzer-backup"
+    assert {f["path"] for f in manifest["files"]} >= {"db/finance.db"}  # type: ignore[attr-defined]
+    with zipfile.ZipFile(backup) as zf:
+        assert "db/spend.db" not in zf.namelist()
+
+
+def test_legacy_archive_is_inspected_and_restored(
+    source: tuple[Path, dict[str, str]], tmp_path: Path
+) -> None:
+    home_a, shas = source
+    current = tmp_path / "current.pfabackup"
+    archive.create_backup(current, passphrase=None)
+    legacy = tmp_path / "mine.spendbackup"
+    _make_legacy_archive(current, legacy)
+
+    info = archive.inspect_backup(legacy)
+    assert archive.database_member(info.manifest) == "db/spend.db"
+    assert info.manifest.counts["transactions"] == 1
+
+    home_b = _target(tmp_path)
+    result = archive.restore_backup(legacy, passphrase=None, home=home_b)
+    assert not result.migrated
+    assert (home_b / "finance.db").is_file()
+    assert not (home_b / "spend.db").exists()
+    assert not (home_b / "db").exists()
+    assert table_rows(home_b / "finance.db", "transactions", skip=("stored_path",)) == table_rows(
+        home_a / "finance.db", "transactions", skip=("stored_path",)
+    )
+    assert (home_b / "statements" / f"{shas['statement_sha']}.pdf").is_file()
+
+
+def test_manifest_listing_both_database_members_is_rejected(
+    source: tuple[Path, dict[str, str]], tmp_path: Path
+) -> None:
+    current = tmp_path / "current.pfabackup"
+    archive.create_backup(current, passphrase=None)
+    manifest = _manifest_of(current)
+    with zipfile.ZipFile(current) as zf:
+        database = zf.read(archive.DB_MEMBER)
+    manifest["files"].append(  # type: ignore[attr-defined]
+        {
+            **next(f for f in manifest["files"] if f["path"] == archive.DB_MEMBER),  # type: ignore[attr-defined]
+            "path": archive.LEGACY_DB_MEMBER,
+        }
+    )
+    bad = tmp_path / "both.pfabackup"
+    _rewrite_zip(
+        current,
+        bad,
+        {archive.MANIFEST_NAME: json.dumps(manifest).encode(), archive.LEGACY_DB_MEMBER: database},
+    )
+    with pytest.raises(BackupFormatError, match="more than one database"):
+        archive.inspect_backup(bad)
+
+
+def test_backup_of_a_data_dir_that_still_has_spend_db(
+    source: tuple[Path, dict[str, str]], tmp_path: Path
+) -> None:
+    home_a, _shas = source
+    (home_a / "finance.db").rename(home_a / "spend.db")
+    backup = tmp_path / "from-old-layout.pfabackup"
+    manifest = archive.create_backup(backup, passphrase=None)
+    assert manifest.counts["transactions"] == 1
+    assert (
+        archive.database_member(manifest) == archive.DB_MEMBER
+    )  # always written under the new name
+
+
 def test_stored_paths_point_into_the_new_home(
     source: tuple[Path, dict[str, str]], tmp_path: Path
 ) -> None:

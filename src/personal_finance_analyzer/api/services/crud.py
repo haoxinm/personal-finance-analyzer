@@ -21,7 +21,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from personal_finance_analyzer.api.services import gateway
-from personal_finance_analyzer.core.paths import statements_dir
+from personal_finance_analyzer.core.paths import kept_pdf, statements_dir
 from personal_finance_analyzer.core.types import USER_CLASSIFIED, Kind
 from personal_finance_analyzer.db.models import (
     Account,
@@ -186,8 +186,9 @@ def staged_pdf_path(statement: Statement) -> Path | None:
     Checks `stored_path` first (the copy kept because `store_pdf_copies` is on), then the
     content-hash staging path every upload writes to at `propose_import` time (still present for
     a statement not yet confirmed, or whose Phase 2 hasn't reached a terminal outcome)."""
-    if statement.stored_path and Path(statement.stored_path).is_file():
-        return Path(statement.stored_path)
+    kept = kept_pdf(statement.stored_path, statement.file_sha256)
+    if kept is not None:
+        return kept
     staged = statements_dir() / f"{statement.file_sha256}.pdf"
     return staged if staged.is_file() else None
 

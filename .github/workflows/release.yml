@@ -89,6 +89,10 @@ jobs:
           export PFA_HOME=/tmp/release-smoke-home
           mkdir -p "$PFA_HOME"
           /tmp/release-smoke-venv/bin/pfa migrate
+          # The deprecated `spend-analyzer` alias must still run, and say it was renamed (stderr).
+          /tmp/release-smoke-venv/bin/spend-analyzer --help 2>&1 >/dev/null | grep -q "renamed to pfa" \
+            || { echo "::error::spend-analyzer alias missing or silent"; exit 1; }
+          /tmp/release-smoke-venv/bin/personal-finance-analyzer --help > /dev/null
 
           /tmp/release-smoke-venv/bin/pfa serve --no-open-browser > /tmp/serve.log 2>&1 &
           server_pid=$!

@@ -42,7 +42,9 @@ class FrontendBuildHook(BuildHookInterface):  # type: ignore[misc]
         frontend_dir = root / "frontend"
         web_dir = root / "src" / "personal_finance_analyzer" / "web"
 
-        if os.environ.get("PFA_SKIP_FRONTEND_BUILD"):
+        if os.environ.get("PFA_SKIP_FRONTEND_BUILD") or os.environ.get(
+            "SPEND_ANALYZER_SKIP_FRONTEND_BUILD"  # deprecated name
+        ):
             self.app.display_info(
                 "frontend build hook: PFA_SKIP_FRONTEND_BUILD set, skipping "
                 "`npm run build` (the wheel will not include the web UI)."

@@ -48,7 +48,7 @@ from personal_finance_analyzer.api.routers import (
 from personal_finance_analyzer.api.security import LocalhostGuardMiddleware, generate_token
 from personal_finance_analyzer.backup import archive as backup_archive
 from personal_finance_analyzer.config import Settings
-from personal_finance_analyzer.core.paths import get_home
+from personal_finance_analyzer.core.paths import get_home, prepare_home
 from personal_finance_analyzer.db.session import make_engine, make_session_factory
 from personal_finance_analyzer.ingest.tax import staging as tax_staging
 from personal_finance_analyzer.jobs.runner import JobRunner
@@ -68,7 +68,11 @@ def create_app(
     """Build a fresh FastAPI app. `engine` defaults to the configured data directory's database;
     tests pass a temp-file engine. `token` defaults to a fresh random per-launch token (A31)."""
     resolved_settings = settings if settings is not None else Settings()
-    resolved_engine = engine if engine is not None else make_engine()
+    if engine is None:
+        prepare_home()  # app startup is an explicit step: carries a pre-rename data dir/db over
+        resolved_engine = make_engine()
+    else:
+        resolved_engine = engine
     resolved_token = token if token is not None else generate_token()
     session_factory: sessionmaker[Session] = make_session_factory(resolved_engine)
 

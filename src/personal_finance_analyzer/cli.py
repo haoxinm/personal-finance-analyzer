@@ -27,7 +27,7 @@ from personal_finance_analyzer.api.services import crud, gateway
 from personal_finance_analyzer.config import load_settings
 from personal_finance_analyzer.core.errors import PfaError
 from personal_finance_analyzer.core.logging import configure_logging, get_logger
-from personal_finance_analyzer.core.paths import ensure_home
+from personal_finance_analyzer.core.paths import ensure_home, prepare_home
 from personal_finance_analyzer.core.shellquote import join_command
 from personal_finance_analyzer.core.tax_types import TaxFallbackExtractor
 from personal_finance_analyzer.core.webui import web_ui_warning
@@ -36,7 +36,10 @@ from personal_finance_analyzer.db.models import Transaction
 
 app = typer.Typer(
     name="pfa",
-    help="Locally-run spend analysis for credit/debit card bills and bank statements.",
+    help=(
+        "Personal Finance Analyzer: local-first spending, income and tax, and net worth analysis "
+        "from your own statements and tax forms."
+    ),
     no_args_is_help=True,
 )
 
@@ -70,7 +73,7 @@ def _stub(command: str) -> None:
 def _open_engine() -> Iterator[Engine]:
     from personal_finance_analyzer.db.session import make_engine
 
-    home = ensure_home()
+    home = prepare_home()  # the explicit startup step: carries a pre-rename data dir/db over
     configure_logging(home=home)
     engine = make_engine()
     try:
@@ -773,8 +776,26 @@ def eval_cmd(
     typer.echo(report.to_json() if as_json else report.text_table())
 
 
-def main() -> None:  # pragma: no cover - thin wrapper around Typer's own entry point
-    app()
+#: The command users type. Click derives the usage line's program name from `argv[0]`, so every
+#: entry point pins it: `personal-finance-analyzer` and the deprecated `spend-analyzer` alias
+#: both document `pfa`, the name the rest of the docs and every printed hint use.
+PROG_NAME = "pfa"
+
+LEGACY_COMMAND_NOTICE = (
+    "spend-analyzer has been renamed to pfa; this alias will be removed in a future release"
+)
+
+
+def main() -> None:
+    """Console-script entry point for `pfa` and `personal-finance-analyzer`."""
+    app(prog_name=PROG_NAME)
+
+
+def legacy_main() -> None:
+    """Console-script entry point for the deprecated `spend-analyzer` alias: a one-line notice on
+    stderr (stdout stays clean for `report --csv` and friends), then the same app."""
+    print(LEGACY_COMMAND_NOTICE, file=sys.stderr)
+    app(prog_name=PROG_NAME)
 
 
 if __name__ == "__main__":  # pragma: no cover

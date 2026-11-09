@@ -27,6 +27,10 @@ logger = get_logger("ingest.registry")
 #: ``[project.entry-points."personal_finance_analyzer.parsers"]``).
 ENTRY_POINT_GROUP = "personal_finance_analyzer.parsers"
 
+#: The group third-party packages registered under before the product was renamed. Still loaded,
+#: with a deprecation warning, so a plugin that has not been updated keeps working.
+LEGACY_ENTRY_POINT_GROUP = "spend_analyzer.parsers"
+
 #: A parser must score strictly above this to be selected over the generic fallback.
 DETECT_THRESHOLD = 0.5
 
@@ -68,9 +72,26 @@ def discover_builtin_parsers() -> tuple[StatementParser, ...]:
 
 def discover_entrypoint_parsers() -> tuple[StatementParser, ...]:
     """Load third-party parsers registered under the ``personal_finance_analyzer.parsers`` entry-point
-    group. A broken or non-conforming entry point is skipped with a warning, never raised."""
+    group, and (with a deprecation warning) under its pre-rename name ``spend_analyzer.parsers``.
+    A broken or non-conforming entry point is skipped with a warning, never raised. An entry point
+    registered under both groups loads once."""
     found: list[StatementParser] = []
-    for ep in entry_points(group=ENTRY_POINT_GROUP):
+    seen: set[tuple[str, str]] = set()
+    current = list(entry_points(group=ENTRY_POINT_GROUP))
+    legacy = list(entry_points(group=LEGACY_ENTRY_POINT_GROUP))
+    for ep in legacy:
+        logger.warning(
+            "parser entry point %r (%s) is registered under the deprecated group %r; register it "
+            "under %r instead (the old group will stop being read in a future release)",
+            ep.name,
+            ep.value,
+            LEGACY_ENTRY_POINT_GROUP,
+            ENTRY_POINT_GROUP,
+        )
+    for ep in (*current, *legacy):
+        if (ep.name, ep.value) in seen:
+            continue
+        seen.add((ep.name, ep.value))
         try:
             obj = ep.load()
         except Exception:  # a broken third-party entry point must not crash startup

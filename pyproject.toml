@@ -41,8 +41,10 @@ dev = [
 ]
 
 [project.scripts]
-pfa = "personal_finance_analyzer.cli:app"
-personal-finance-analyzer = "personal_finance_analyzer.cli:app"
+pfa = "personal_finance_analyzer.cli:main"
+personal-finance-analyzer = "personal_finance_analyzer.cli:main"
+# Deprecated alias for the product's old name: prints a one-line notice on stderr, then runs the same CLI.
+spend-analyzer = "personal_finance_analyzer.cli:legacy_main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/personal_finance_analyzer"]

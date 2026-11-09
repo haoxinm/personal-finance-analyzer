@@ -47,6 +47,7 @@ from personal_finance_analyzer.api.services.uploads import (
 from personal_finance_analyzer.config import Settings
 from personal_finance_analyzer.core import tax_calc, tax_params
 from personal_finance_analyzer.core.errors import PfaError
+from personal_finance_analyzer.core.paths import kept_pdf
 from personal_finance_analyzer.core.tax_types import (
     INCOME_CATEGORY_LABELS,
     MEMO_INCOME_CATEGORIES,
@@ -160,8 +161,8 @@ def _stored_pdf(doc: TaxDocument) -> Path | None:
     """The kept PDF copy (`[privacy] store_tax_pdf_copies`), or `None`."""
     if not doc.stored_path:
         return None
-    path = Path(doc.stored_path)
-    return path if path.is_file() else None
+    # Resolved against the current data directory when the recorded absolute path is stale.
+    return kept_pdf(doc.stored_path, doc.file_sha256)
 
 
 def _document_detail(doc: TaxDocument) -> schemas.TaxDocumentDetail:

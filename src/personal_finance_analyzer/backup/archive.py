@@ -67,15 +67,22 @@ from personal_finance_analyzer.backup.errors import (
     RestoreTargetError,
     SchemaTooNewError,
 )
-from personal_finance_analyzer.core.paths import create_home_layout, get_home
+from personal_finance_analyzer.core.paths import create_home_layout, existing_db_file, get_home
 from personal_finance_analyzer.db.migrate import build_alembic_config, upgrade_head
 
 FORMAT_NAME = "personal-finance-analyzer-backup"
+#: The manifest `format` of archives written before the product was renamed; still accepted.
+LEGACY_FORMAT_NAME = "spend-analyzer-backup"
 FORMAT_VERSION = 1
+#: The extension written. Restore and inspect take any file name, so a `.spendbackup` made before
+#: the rename still works.
 FILE_EXTENSION = ".pfabackup"
 
 MANIFEST_NAME = "manifest.json"
 DB_MEMBER = "db/finance.db"
+#: Where archives written before the rename keep the database; still accepted (and never written).
+LEGACY_DB_MEMBER = "db/spend.db"
+_DB_MEMBERS = (DB_MEMBER, LEGACY_DB_MEMBER)
 CONFIG_MEMBER = "config.toml"
 
 #: Tables counted into the manifest (names are constants, never caller input).
@@ -199,7 +206,7 @@ def _db_revision(db_file: Path) -> str | None:
 def _is_allowed_member(name: str) -> bool:
     """Whether ``name`` is a member this format may contain: an allow-list, so a crafted archive
     cannot write outside the staging directory (zip-slip) or add files we never created."""
-    if name in (DB_MEMBER, CONFIG_MEMBER):
+    if name in (*_DB_MEMBERS, CONFIG_MEMBER):
         return True
     if "\\" in name or name.startswith("/") or ":" in name:
         return False
@@ -216,15 +223,19 @@ def _parse_manifest(raw: bytes) -> Manifest:
         doc = json.loads(raw)
     except ValueError:
         raise BackupFormatError("the backup's manifest is not valid JSON") from None
-    if not isinstance(doc, dict) or doc.get("format") != FORMAT_NAME:
+    if not isinstance(doc, dict) or doc.get("format") not in (
+        FORMAT_NAME,
+        LEGACY_FORMAT_NAME,
+    ):
         raise BackupFormatError("not a Personal Finance Analyzer backup")
     version = doc.get("format_version")
     if not isinstance(version, int) or isinstance(version, bool) or version < 1:
         raise BackupFormatError("the backup's manifest has no valid format version")
     if version > FORMAT_VERSION:
         raise BackupFormatError(
-            f"this backup uses format version {version}, newer than this version of Spend "
-            f"Analyzer understands ({FORMAT_VERSION}); upgrade the app and try again"
+            f"this backup uses format version {version}, newer than this version of "
+            f"Personal Finance Analyzer understands ({FORMAT_VERSION}); upgrade the app and "
+            "try again"
         )
     try:
         files = tuple(
@@ -252,9 +263,19 @@ def _parse_manifest(raw: bytes) -> Manifest:
         if entry.size < 0 or re.fullmatch(r"[0-9a-f]{64}", entry.sha256) is None:
             raise BackupFormatError(f"the backup's manifest entry for {entry.path!r} is malformed")
         seen.add(entry.path)
-    if DB_MEMBER not in seen:
+    databases = [member for member in _DB_MEMBERS if member in seen]
+    if not databases:
         raise BackupFormatError("the backup contains no database")
+    if len(databases) > 1:
+        raise BackupFormatError("the backup contains more than one database")
     return manifest
+
+
+def database_member(manifest: Manifest) -> str:
+    """The archive member holding the database: `DB_MEMBER`, or `LEGACY_DB_MEMBER` for a backup
+    made before the product was renamed. `_parse_manifest` guarantees exactly one is listed."""
+    listed = {f.path for f in manifest.files}
+    return LEGACY_DB_MEMBER if LEGACY_DB_MEMBER in listed else DB_MEMBER
 
 
 # --------------------------------------------------------------------------------------------
@@ -345,7 +366,7 @@ def _iter_home_files(home: Path) -> Iterator[tuple[str, Path]]:
 
 
 def _write_zip(home: Path, zip_path: Path, work: Path) -> Manifest:
-    db_file = home / "finance.db"
+    db_file = existing_db_file(home)
     if not db_file.is_file():
         raise BackupError(f"nothing to back up: no database in {home}")
     snapshot = work / "finance.db"
@@ -609,7 +630,7 @@ def inspect_backup(path: Path, *, passphrase: str | None = None) -> BackupInfo:
 def _home_has_data(home: Path) -> bool:
     """Whether ``home`` holds anything a restore would replace: a database, a config, a kept
     statement PDF or a layout spec. Empty directories and logs do not count."""
-    if (home / "finance.db").exists() or (home / "config.toml").exists():
+    if existing_db_file(home).exists() or (home / "config.toml").exists():
         return True
     return any(
         child.is_file() for sub in ("statements", "specs") for child in (home / sub).rglob("*")
@@ -832,7 +853,7 @@ def restore_backup(
         shutil.rmtree(work)  # the decrypted archive is plaintext; do not leave it lying around
         create_home_layout(new_home)
         staged_db = new_home / "finance.db"
-        (new_home / "db" / "finance.db").replace(staged_db)
+        (new_home / database_member(manifest)).replace(staged_db)
         (new_home / "db").rmdir()
         _verify_database(staged_db, revision)
         _rewrite_stored_paths(staged_db, new_home, target)
@@ -843,7 +864,7 @@ def restore_backup(
         if before_swap is not None:
             before_swap()
         _check_target(target, replace=replace)
-        if _db_in_use(target / "finance.db"):
+        if _db_in_use(existing_db_file(target)):
             raise RestoreTargetError(
                 "the current database is open in another process (is `pfa serve` "
                 "running?). Stop it, then restore again."

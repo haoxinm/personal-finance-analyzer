@@ -46,7 +46,7 @@ def _isolate_process_from_the_real_user_profile() -> None:
     """
     scratch = Path(tempfile.mkdtemp(prefix="pfa-tests-"))
     atexit.register(shutil.rmtree, scratch, ignore_errors=True)
-    for name in [n for n in os.environ if n.startswith("PFA_")]:
+    for name in [n for n in os.environ if n.startswith(("PFA_", "SPEND_ANALYZER_"))]:
         del os.environ[name]
     user_home = str(scratch / "user_home")
     os.environ["PFA_HOME"] = str(scratch / "data_home")
@@ -83,6 +83,15 @@ def _isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "fake_user_home" / "AppData" / "Local"))
     monkeypatch.setenv("APPDATA", str(tmp_path / "fake_user_home" / "AppData" / "Roaming"))
     monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _no_legacy_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The product's pre-rename `SPEND_ANALYZER_*` variables are still honored as a fallback, so a
+    developer's shell that still exports one must not leak into a test. Tests of the fallback set
+    their own."""
+    for name in [n for n in os.environ if n.startswith("SPEND_ANALYZER_")]:
+        monkeypatch.delenv(name)
 
 
 class _MemoryKeyring(keyring.backend.KeyringBackend):

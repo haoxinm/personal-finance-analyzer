@@ -49,7 +49,7 @@ from personal_finance_analyzer.core.errors import (
     UnsupportedLayoutError,
 )
 from personal_finance_analyzer.core.logging import get_logger
-from personal_finance_analyzer.core.paths import ensure_home, statements_dir
+from personal_finance_analyzer.core.paths import ensure_home, kept_pdf, statements_dir
 from personal_finance_analyzer.core.tax_types import (
     FORM_ROLE,
     ParsedIncomeItem,
@@ -835,17 +835,21 @@ def delete_tax_document(session: Session, document_id: int) -> bool:
     doc = session.get(TaxDocument, document_id)
     if doc is None:
         return False
-    stored = doc.stored_path
+    sha = doc.file_sha256
+    # The real file, even when the recorded absolute path went stale with a moved data directory.
+    kept = kept_pdf(doc.stored_path, sha) if doc.stored_path else None
     session.delete(doc)
     session.commit()
     staging.discard(document_id)
-    if stored:
+    if kept is not None:
         # Another user's document imported from the same PDF shares the kept copy (it is named by
-        # content hash); only remove it when nothing else points at it.
+        # content hash); only remove it when nothing else keeps a copy of that file.
         still_used = session.scalar(
-            select(TaxDocument.id).where(TaxDocument.stored_path == stored).limit(1)
+            select(TaxDocument.id)
+            .where(TaxDocument.file_sha256 == sha, TaxDocument.stored_path.is_not(None))
+            .limit(1)
         )
         if still_used is None:
-            Path(stored).unlink(missing_ok=True)
+            kept.unlink(missing_ok=True)
     logger.info("tax document deleted: document_id=%s", document_id)
     return True

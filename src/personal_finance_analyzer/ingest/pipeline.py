@@ -50,7 +50,7 @@ from personal_finance_analyzer.classify.kinds import is_spend, resolve_kind
 from personal_finance_analyzer.config import Settings, load_settings
 from personal_finance_analyzer.core.errors import ParserError, PfaError, UnsupportedLayoutError
 from personal_finance_analyzer.core.logging import get_logger
-from personal_finance_analyzer.core.paths import ensure_home, statements_dir
+from personal_finance_analyzer.core.paths import ensure_home, kept_pdf, statements_dir
 from personal_finance_analyzer.core.pii import merge_entries
 from personal_finance_analyzer.core.types import (
     USER_CLASSIFIED,
@@ -962,7 +962,10 @@ def reparse(
     if account is None:  # pragma: no cover - defensive; FK integrity guarantees this
         raise PfaError(f"account {statement.account_id} not found")
 
-    full_doc = extract(Path(statement.stored_path))
+    # The recorded path is absolute and goes stale when the data directory moves; kept_pdf falls
+    # back to the copy under the current data directory (statements/<sha256>.pdf).
+    pdf_path = kept_pdf(statement.stored_path, statement.file_sha256) or Path(statement.stored_path)
+    full_doc = extract(pdf_path)
     doc = _apply_page_selection(statement, full_doc, pages)
     parser = _resolve_parser(
         session, parser_id=parser_id, layout_spec_id=layout_spec_id, user_id=account.user_id
