@@ -13,10 +13,14 @@ offline machine does not retry on every page view (a manual check always runs an
 date). The automatic check runs in a daemon thread, never blocks a request, and fails silently with
 an info log.
 
-**Acceptance.** The downloaded text must pass the same schema loader as the bundled file
-(`core/tax_params.parse_params_text`) *and* carry a ``params_version`` higher than both the bundled
-and the already-cached file. It is then stored (mode 0600) as the cached copy. Anything else leaves
-the data directory untouched. See `core/tax_params.resolve` for which file is used.
+**Acceptance.** The download is never trusted wholesale and never replaces the app's own figures.
+The text must pass the same schema loader as the bundled file
+(`core/tax_params.parse_params_text`), and it may only ADD tax years that the bundled file lacks
+(a bundled year always comes from the app; corrections ship with an app update). Every added year
+must follow a known year and pass the range, structure and year-over-year checks of
+`core/tax_params.added_years`; one violation rejects the whole download. Only then is the file
+stored (mode 0600) as the cached copy; anything else leaves the data directory untouched. See
+`core/tax_params.resolve` for how the years are merged.
 """
 
 from __future__ import annotations
@@ -82,8 +86,8 @@ def fetch_text(url: str) -> str:
 
 @dataclass(frozen=True, slots=True)
 class UpdateResult:
-    """One check: ``updated`` (a newer valid file is now cached), ``current`` (nothing newer),
-    ``rejected`` (downloaded but invalid) or ``unreachable``. `detail` is fixed text, never the
+    """One check: ``updated`` (new tax years are now cached), ``current`` (nothing to add),
+    ``rejected`` (downloaded but invalid or implausible) or ``unreachable``. `detail` is fixed text, never the
     response body."""
 
     outcome: UpdateOutcome
@@ -98,33 +102,50 @@ def check_for_update(*, fetch: Fetcher | None = None, today: date | None = None)
     """
     day = today if today is not None else date.today()
     fetcher = fetch if fetch is not None else fetch_text
-    result = _check(fetcher)
+    result = _check(fetcher, day)
     tax_params.record_check(day, result.outcome)
     _log.info("tax parameter update check: %s", result.outcome)
     return result
 
 
-def _check(fetch: Fetcher) -> UpdateResult:
+def _check(fetch: Fetcher, today: date) -> UpdateResult:
     try:
         text = fetch(PARAMS_URL)
     except FetchError as exc:
         return UpdateResult("unreachable", f"Could not download the file ({exc}).")
     try:
         candidate = tax_params.parse_params_text(text, source="cached")
+        bundled_years = tax_params.load_bundled().years
+        added = tax_params.added_years(bundled_years, candidate, latest_year=today.year + 1)
     except ValueError as exc:
-        return UpdateResult("rejected", f"The downloaded file is not valid: {exc}")
-    known = max(v for v in tax_params.versions().values() if v is not None)
-    if candidate.version <= known:
+        return UpdateResult("rejected", f"The downloaded file was rejected: {exc}")
+    have = _cached_additions()
+    if not added or all(have.get(year) == params for year, params in added.items()):
         return UpdateResult(
-            "current", f"Parameters are up to date (version {known}).", version=known
+            "current",
+            "No new tax years are available (the app's own figures always take precedence).",
+            version=tax_params.load_bundled().version,
         )
     try:
         tax_params.install_cached(text)
     except OSError:
         return UpdateResult("rejected", "The downloaded file could not be saved.")
     return UpdateResult(
-        "updated", f"Updated to parameter version {candidate.version}.", version=candidate.version
+        "updated",
+        f"Added tax year(s) {', '.join(str(y) for y in sorted(added))}.",
+        version=candidate.version,
     )
+
+
+def _cached_additions() -> dict[int, tax_params.FederalParams]:
+    """The years the already-cached download currently contributes (empty when none or invalid)."""
+    cached = tax_params.read_cached()
+    if cached is None:
+        return {}
+    try:
+        return tax_params.added_years(tax_params.load_bundled().years, cached)
+    except ValueError:
+        return {}
 
 
 # --- automatic, once a year ------------------------------------------------------------------------

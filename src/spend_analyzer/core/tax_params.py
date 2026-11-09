@@ -7,11 +7,19 @@ offline fallback and always present. Two optional files live in ``<data dir>/tax
   (`api/services/tax_params_update.py`, the only code that may make that request);
 - ``override.yaml``: a file the user imported themselves (``spend-analyzer tax params import``).
 
-**Precedence** (`resolve`): a valid *override* always wins (the user chose it deliberately, for
-example to correct a figure or to use a newer year before a release); otherwise the valid file with
-the highest ``params_version`` of the cached download and the bundled one, the bundled one winning a
-tie (so an app upgrade that ships newer data is never shadowed by an older cached copy). An invalid
-or unreadable optional file is ignored (logged, never raised): the bundled data always loads.
+**Precedence** (`resolve`), merged *per tax year*, never wholesale:
+
+1. the bundled years always come from the app (corrections to a published year ship with an app
+   update, never with a download);
+2. a *downloaded* copy may only ADD tax years that the bundled set lacks, and only after
+   `added_years` has checked every figure against the previous year (plausible ranges, the same
+   bracket structure, indexed amounts within +/-15% of the year before, statutory amounts
+   unchanged); a copy that fails any check is ignored as a whole;
+3. a *user override* (a file imported deliberately, e.g. to correct a figure or to use a newer year
+   before a release) replaces the years it lists and leaves the others alone.
+
+An invalid or unreadable optional file is ignored (logged, never raised): the bundled data always
+loads and no year can disappear. ``params_version`` is informational (shown to the user).
 
 Every file is validated by `parse_params`, whichever way it arrived. Amounts in the file are whole
 dollars; the loader converts to integer cents. Files are written atomically with mode 0600.
@@ -25,7 +33,7 @@ import json
 import logging
 import os
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from importlib import resources
 from pathlib import Path
@@ -79,6 +87,26 @@ class FederalParams:
     niit_threshold_minor: Mapping[str, int]
     additional_medicare_threshold_minor: Mapping[str, int]
     tables: Mapping[str, Table]
+    #: IRC 151(d)(5)(C), taxable years 2025-2028 only: the per-person deduction for age 65+
+    #: (0 in every other year), its MAGI phase-out rate in basis points and, per filing status
+    #: that may claim it (not mfs: a married filer must file jointly), the MAGI above which it
+    #: phases out.
+    senior_deduction_minor: int = 0
+    senior_phaseout_rate_bp: int = 0
+    senior_phaseout_threshold_minor: Mapping[str, int] = field(default_factory=dict)
+
+    def senior_deduction(self, filing_status: str, qualifying_people: int, magi_minor: int) -> int:
+        """The senior deduction for `qualifying_people` (age 65+ with an SSN) at `magi_minor`
+        (cents): the combined amount is reduced by the rate times the MAGI above the threshold
+        (not below zero). 0 for married filing separately and in years the deduction does not
+        exist."""
+        threshold = self.senior_phaseout_threshold_minor.get(filing_status)
+        if threshold is None or self.senior_deduction_minor <= 0 or qualifying_people <= 0:
+            return 0
+        people = min(qualifying_people, 2 if filing_status == "mfj" else 1)
+        reduction = max(magi_minor - threshold, 0) * self.senior_phaseout_rate_bp // 10_000
+        # the phase-out reduces the combined amount of a joint return (Schedule 1-A, Part V)
+        return max(self.senior_deduction_minor * people - reduction, 0)
 
     def standard_deduction(self, filing_status: str, aged_or_blind_count: int = 0) -> int:
         """Basic standard deduction plus the additional amount per aged / blind box (0-4 boxes;
@@ -164,6 +192,31 @@ def _parse_table(brackets: object, ltcg: object, where: str) -> Table:
     return Table(brackets=tuple(rows), ltcg_0_to=zero_to, ltcg_15_to=fifteen_to)
 
 
+_SENIOR_STATUSES = tuple(s for s in FILING_STATUSES if s != "mfs")
+
+
+def _parse_senior(value: object, where: str) -> tuple[int, int, dict[str, int]]:
+    """The optional ``senior_deduction`` block: (amount, phase-out rate in bp, thresholds)."""
+    if value is None:
+        return 0, 0, {}
+    block = _mapping(value, f"{where}.senior_deduction")
+    amount = _dollars(block.get("amount"), f"{where}.senior_deduction.amount")
+    rate = block.get("phaseout_rate_percent")
+    if isinstance(rate, bool) or not isinstance(rate, int) or not 0 < rate < 100:
+        raise ValueError(f"{where}.senior_deduction: phaseout_rate_percent must be 1 to 99")
+    raw = _mapping(block.get("phaseout_threshold"), f"{where}.senior_deduction.phaseout_threshold")
+    if set(raw) != set(_SENIOR_STATUSES):
+        raise ValueError(
+            f"{where}.senior_deduction.phaseout_threshold: "
+            f"must list exactly {', '.join(_SENIOR_STATUSES)} (married filing separately cannot claim it)"
+        )
+    thresholds = {
+        status: _dollars(raw[status], f"{where}.senior_deduction.phaseout_threshold.{status}")
+        for status in _SENIOR_STATUSES
+    }
+    return amount, rate * 100, thresholds
+
+
 def _parse_year(year: int, raw: Mapping[str, object]) -> FederalParams:
     where = str(year)
     sources_raw = _need(raw, "sources", where)
@@ -189,6 +242,9 @@ def _parse_year(year: int, raw: Mapping[str, object]) -> FederalParams:
     }
     if tables["qss"] != tables["mfj"] or standard["qss"] != standard["mfj"]:
         raise ValueError(f"{where}: qss must use the mfj tables and standard deduction")
+    senior_amount, senior_rate_bp, senior_thresholds = _parse_senior(
+        raw.get("senior_deduction"), where
+    )
     return FederalParams(
         tax_year=year,
         sources=tuple(cast("list[str]", sources_raw)),
@@ -213,6 +269,9 @@ def _parse_year(year: int, raw: Mapping[str, object]) -> FederalParams:
             f"{where}.additional_medicare_threshold",
         ),
         tables=tables,
+        senior_deduction_minor=senior_amount,
+        senior_phaseout_rate_bp=senior_rate_bp,
+        senior_phaseout_threshold_minor=senior_thresholds,
     )
 
 
@@ -248,6 +307,150 @@ def parse_params_text(text: str, *, source: ParamSource = "bundled") -> ParamSet
     except yaml.YAMLError:
         raise ValueError("params file is not valid YAML") from None
     return parse_params(raw, source=source)
+
+
+# --- sanity checks for years that arrive from outside the app --------------------------------------
+
+#: Indexed amounts may move at most this far (percent) from the previous tax year's value. The real
+#: annual indexing is 3 to 8 percent; a figure outside the band is a typo or an attack, not data.
+_YOY_TOLERANCE_PCT = 15
+
+#: Plausible absolute ranges in whole dollars (a guard against slow drift the year-over-year band
+#: alone would allow).
+_RANGES: dict[str, tuple[int, int]] = {
+    "standard_deduction": (5_000, 200_000),
+    "additional_standard_deduction": (500, 10_000),
+    "ss_wage_base": (50_000, 1_000_000),
+    "elective_deferral_limit": (5_000, 100_000),
+    "ltcg_threshold": (10_000, 20_000_000),
+    "bracket_threshold": (1_000, 20_000_000),
+}
+
+
+def _in_range(name: str, cents: int, where: str) -> None:
+    low, high = _RANGES[name]
+    if not low * _CENTS <= cents <= high * _CENTS:
+        raise ValueError(f"{where}: {name} is outside the plausible range")
+
+
+def _near(name: str, cur: int, prev: int, where: str) -> None:
+    if abs(cur - prev) * 100 > prev * _YOY_TOLERANCE_PCT:
+        raise ValueError(
+            f"{where}: {name} changed by more than {_YOY_TOLERANCE_PCT}% from the previous year"
+        )
+
+
+def _same(name: str, cur: object, prev: object, where: str) -> None:
+    if cur != prev:
+        raise ValueError(f"{where}: {name} (not indexed) differs from the previous year")
+
+
+def _check_year(p: FederalParams, prev: FederalParams) -> None:
+    """Raise `ValueError` unless `p` is a plausible successor of the year `prev`.
+
+    Indexed amounts (standard deductions, wage base, deferral limit, bracket and capital-gain
+    thresholds) must be inside absolute ranges and within +/-15% of the previous year; statutory
+    amounts that Congress does not index (loss limits, NIIT and Additional Medicare thresholds,
+    the bracket rates and count, the senior deduction) must be unchanged (the senior deduction may
+    end, not begin). A real statutory change ships with an app update instead.
+    """
+    where = str(p.tax_year)
+    std = p.standard_deduction_minor
+    for status in FILING_STATUSES:
+        _in_range("standard_deduction", std[status], f"{where}.{status}")
+        _near("standard_deduction", std[status], prev.standard_deduction_minor[status], where)
+    if not std["single"] <= std["hoh"] <= std["mfj"] or std["mfs"] > std["mfj"]:
+        raise ValueError(f"{where}: standard deductions are not ordered single <= hoh <= mfj")
+    for name, cur, was in (
+        (
+            "additional_standard_deduction.unmarried",
+            p.additional_standard_deduction_unmarried_minor,
+            prev.additional_standard_deduction_unmarried_minor,
+        ),
+        (
+            "additional_standard_deduction.married",
+            p.additional_standard_deduction_married_minor,
+            prev.additional_standard_deduction_married_minor,
+        ),
+    ):
+        _in_range("additional_standard_deduction", cur, where)
+        _near(name, cur, was, where)
+    _in_range("ss_wage_base", p.ss_wage_base_minor, where)
+    _near("ss_wage_base", p.ss_wage_base_minor, prev.ss_wage_base_minor, where)
+    _in_range("elective_deferral_limit", p.elective_deferral_limit_minor, where)
+    _near(
+        "elective_deferral_limit",
+        p.elective_deferral_limit_minor,
+        prev.elective_deferral_limit_minor,
+        where,
+    )
+    _same("capital_loss_limit", p.capital_loss_limit_minor, prev.capital_loss_limit_minor, where)
+    _same(
+        "capital_loss_limit.mfs",
+        p.capital_loss_limit_mfs_minor,
+        prev.capital_loss_limit_mfs_minor,
+        where,
+    )
+    _same("niit_threshold", dict(p.niit_threshold_minor), dict(prev.niit_threshold_minor), where)
+    _same(
+        "additional_medicare_threshold",
+        dict(p.additional_medicare_threshold_minor),
+        dict(prev.additional_medicare_threshold_minor),
+        where,
+    )
+    for status in FILING_STATUSES:
+        table, old = p.tables[status], prev.tables[status]
+        label = f"{where}.{status}"
+        if [r for _, r in table.brackets] != [r for _, r in old.brackets]:
+            raise ValueError(f"{label}: bracket rates differ from the previous year")
+        for (cur_t, _), (old_t, _) in zip(table.brackets[1:], old.brackets[1:], strict=True):
+            _in_range("bracket_threshold", cur_t, label)
+            _near("bracket threshold", cur_t, old_t, label)
+        for name, cur, prev_value in (
+            ("ltcg 0% top", table.ltcg_0_to, old.ltcg_0_to),
+            ("ltcg 15% top", table.ltcg_15_to, old.ltcg_15_to),
+        ):
+            _in_range("ltcg_threshold", cur, label)
+            _near(name, cur, prev_value, label)
+    if prev.senior_deduction_minor > 0:
+        senior_ok = p.senior_deduction_minor == 0 or (
+            p.senior_deduction_minor == prev.senior_deduction_minor
+            and p.senior_phaseout_rate_bp == prev.senior_phaseout_rate_bp
+            and dict(p.senior_phaseout_threshold_minor)
+            == dict(prev.senior_phaseout_threshold_minor)
+        )
+    else:
+        senior_ok = p.senior_deduction_minor == 0
+    if not senior_ok:
+        raise ValueError(f"{where}: senior_deduction differs from the previous year")
+
+
+def added_years(
+    known_years: Mapping[int, FederalParams], candidate: ParamSet, *, latest_year: int | None = None
+) -> dict[int, FederalParams]:
+    """The tax years of `candidate` that `known_years` lacks, each checked against its predecessor.
+
+    A year already known is ignored (the app's own figures always win). Each new year must directly
+    follow a known year (or an earlier accepted new year), be no later than `latest_year` (default:
+    next calendar year), and pass `_check_year`.
+
+    Raises:
+        ValueError: any new year fails; the caller rejects the whole file.
+    """
+    limit = latest_year if latest_year is not None else date.today().year + 1
+    known = dict(known_years)
+    added: dict[int, FederalParams] = {}
+    for year in sorted(set(candidate.years) - set(known_years)):
+        if year > limit:
+            raise ValueError(f"{year}: a tax year this far ahead is not accepted")
+        prev = known.get(year - 1)
+        if prev is None:
+            raise ValueError(f"{year}: no parameters for {year - 1} to check it against")
+        params = candidate.years[year]
+        _check_year(params, prev)
+        known[year] = params
+        added[year] = params
+    return added
 
 
 # --- files -----------------------------------------------------------------------------------------
@@ -302,21 +505,37 @@ _resolved: tuple[tuple[tuple[str, int, int], ...], ParamSet] | None = None
 
 
 def resolve() -> ParamSet:
-    """The parameter set in effect (see the module docstring for the precedence)."""
+    """The parameter set in effect (see the module docstring for the per-year precedence)."""
     global _resolved
     sig = _signature()
     if _resolved is not None and _resolved[0] == sig:
         return _resolved[1]
     bundled = load_bundled()
-    override = _read_optional(override_path(), "override")
+    years: dict[int, FederalParams] = dict(bundled.years)
+    version = bundled.version
+    source: ParamSource = "bundled"
     cached = _read_optional(cached_path(), "cached")
-    chosen = bundled
-    if cached is not None and cached.version > bundled.version:
-        chosen = cached
+    if cached is not None:
+        try:
+            extra = added_years(bundled.years, cached)
+        except ValueError as exc:
+            _log.warning("ignoring cached tax parameter file: %s", exc)
+            extra = {}
+        if extra:
+            years.update(extra)
+            version, source = max(version, cached.version), "cached"
+    override = _read_optional(override_path(), "override")
     if override is not None:
-        chosen = override
+        years.update(override.years)
+        version, source = override.version, "override"
+    chosen = ParamSet(version=version, years=years, source=source)
     _resolved = (sig, chosen)
     return chosen
+
+
+def read_cached() -> ParamSet | None:
+    """The downloaded copy when present and schema-valid (not yet sanity-checked)."""
+    return _read_optional(cached_path(), "cached")
 
 
 def versions() -> dict[ParamSource, int | None]:

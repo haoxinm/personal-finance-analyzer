@@ -4,7 +4,6 @@ every test injects a fake fetcher (and the suite's socket guard would fail any r
 from __future__ import annotations
 
 from datetime import date
-from importlib import resources
 from pathlib import Path
 
 import pytest
@@ -13,22 +12,19 @@ import yaml
 from spend_analyzer.api.services import tax_params_update as upd
 from spend_analyzer.config import Settings, TaxConfig
 from spend_analyzer.core import tax_params
+from tests.tax_params_support import with_next_year
 
 ENABLED = Settings(tax=TaxConfig(auto_update_params=True))
 
 
-def _bundled_text() -> str:
-    return (
-        resources.files("spend_analyzer.core")
-        .joinpath("tax_data", "federal_params.yaml")
-        .read_text(encoding="utf-8")
-    )
-
-
-def _remote(version: int, *, wage_base_2026: int = 190_000) -> str:
-    raw = yaml.safe_load(_bundled_text())
-    raw["params_version"] = version
-    raw["years"][2026]["ss_wage_base"] = wage_base_2026
+def _remote(version: int, *, year_2027: bool = True, wage_base_2027: int | None = None) -> str:
+    """The shipped file, plus (by default) a plausible 2027, as the project's main branch might
+    publish after the next revenue procedure."""
+    raw = with_next_year(version)
+    if not year_2027:
+        del raw["years"][2027]
+    elif wage_base_2027 is not None:
+        raw["years"][2027]["ss_wage_base"] = wage_base_2027
     return yaml.safe_dump(raw)
 
 
@@ -60,32 +56,55 @@ def test_request_is_the_fixed_plain_url() -> None:
     assert (Path(__file__).resolve().parents[2] / "src/spend_analyzer/core/tax_data").is_dir()
 
 
-def test_newer_valid_file_is_cached_and_used(home: Path) -> None:
+def test_new_tax_year_is_cached_and_used(home: Path) -> None:
     fetch = FakeFetcher(_remote(_bundled_version() + 1))
-    result = upd.check_for_update(fetch=fetch, today=date(2027, 2, 1))
+    result = upd.check_for_update(fetch=fetch, today=date(2026, 11, 1))
     assert result.outcome == "updated"
     assert fetch.urls == [upd.PARAMS_URL]
-    assert tax_params.resolve().source == "cached"
+    resolved = tax_params.resolve()
+    assert resolved.source == "cached"
+    assert sorted(resolved.years) == [2022, 2023, 2024, 2025, 2026, 2027]
     state = tax_params.read_check_state()
-    assert (state.last_checked, state.outcome) == (date(2027, 2, 1), "updated")
+    assert (state.last_checked, state.outcome) == (date(2026, 11, 1), "updated")
 
 
-def test_same_or_older_version_is_not_installed(home: Path) -> None:
-    result = upd.check_for_update(fetch=FakeFetcher(_remote(_bundled_version())))
+def test_a_higher_version_alone_changes_nothing(home: Path) -> None:
+    # The app's own years always win: a bumped params_version with no new year is not installed.
+    raw = yaml.safe_load(_remote(_bundled_version() + 50, year_2027=False))
+    raw["years"][2026]["ss_wage_base"] = 190_000
+    del raw["years"][2022]
+    result = upd.check_for_update(fetch=FakeFetcher(yaml.safe_dump(raw)))
     assert result.outcome == "current"
-    older = upd.check_for_update(fetch=FakeFetcher(_remote(max(_bundled_version() - 1, 1))))
-    assert older.outcome == "current"
     assert not tax_params.cached_path().exists()
+    assert sorted(tax_params.resolve().years) == [2022, 2023, 2024, 2025, 2026]
 
 
-def test_must_beat_the_cached_copy_too(home: Path) -> None:
-    tax_params.install_cached(_remote(_bundled_version() + 3))
+def test_download_that_drops_years_never_drops_them(home: Path) -> None:
+    raw = yaml.safe_load(_remote(_bundled_version() + 2))
+    for year in (2022, 2023, 2024, 2025):
+        del raw["years"][year]
+    result = upd.check_for_update(fetch=FakeFetcher(yaml.safe_dump(raw)))
+    assert result.outcome == "updated"
+    assert sorted(tax_params.resolve().years) == [2022, 2023, 2024, 2025, 2026, 2027]
+
+
+def test_same_content_again_is_current(home: Path) -> None:
+    assert upd.check_for_update(fetch=FakeFetcher(_remote(_bundled_version() + 1))).outcome == (
+        "updated"
+    )
     assert upd.check_for_update(fetch=FakeFetcher(_remote(_bundled_version() + 2))).outcome == (
         "current"
     )
-    assert upd.check_for_update(fetch=FakeFetcher(_remote(_bundled_version() + 4))).outcome == (
-        "updated"
+
+
+def test_a_corrected_next_year_replaces_the_cached_one(home: Path) -> None:
+    upd.check_for_update(fetch=FakeFetcher(_remote(_bundled_version() + 1)))
+    result = upd.check_for_update(
+        fetch=FakeFetcher(_remote(_bundled_version() + 2, wage_base_2027=190_000))
     )
+    assert result.outcome == "updated"
+    params = tax_params.resolve().years[2027]
+    assert params.ss_wage_base_minor == 190_000 * 100
 
 
 @pytest.mark.parametrize(
@@ -96,6 +115,34 @@ def test_invalid_download_is_rejected_and_nothing_is_written(home: Path, body: s
     assert result.outcome == "rejected"
     assert not tax_params.cached_path().exists()
     assert tax_params.resolve().source == "bundled"
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda y: y.update(ss_wage_base=900_000),
+        lambda y: y["standard_deduction"].update(single=60_000, mfs=60_000),
+        lambda y: y["capital_loss_limit"].update(default=30_000),
+        lambda y: y["brackets"]["single"].__setitem__(1, [12_000, 15]),
+    ],
+)
+def test_implausible_new_year_rejects_the_whole_download(home: Path, mutate: object) -> None:
+    raw = yaml.safe_load(_remote(_bundled_version() + 1))
+    mutate(raw["years"][2027])  # type: ignore[operator]
+    for key in ("standard_deduction", "brackets", "ltcg"):
+        raw["years"][2027][key]["qss"] = raw["years"][2027][key]["mfj"]
+    result = upd.check_for_update(fetch=FakeFetcher(yaml.safe_dump(raw)))
+    assert result.outcome == "rejected"
+    assert not tax_params.cached_path().exists()
+    assert sorted(tax_params.resolve().years) == [2022, 2023, 2024, 2025, 2026]
+
+
+def test_year_too_far_ahead_is_rejected(home: Path) -> None:
+    raw = yaml.safe_load(_remote(_bundled_version() + 1))
+    raw["years"][2030] = raw["years"][2027]
+    result = upd.check_for_update(fetch=FakeFetcher(yaml.safe_dump(raw)), today=date(2026, 12, 1))
+    assert result.outcome == "rejected"
+    assert not tax_params.cached_path().exists()
 
 
 def test_network_error_falls_back_silently_but_still_records_the_check(home: Path) -> None:
@@ -154,15 +201,16 @@ def test_only_one_background_check_in_flight(home: Path) -> None:
 
 
 def test_cache_is_used_on_later_loads_without_fetching(home: Path) -> None:
-    upd.check_for_update(fetch=FakeFetcher(_remote(_bundled_version() + 1, wage_base_2026=191_000)))
+    upd.check_for_update(fetch=FakeFetcher(_remote(_bundled_version() + 1, wage_base_2027=191_000)))
     from spend_analyzer.core import tax_calc
 
-    params = tax_calc.params_for(2026)
+    params = tax_calc.params_for(2027)
     assert params is not None and params.ss_wage_base_minor == 191_000 * 100
     # a fresh resolve (as after a restart) reads the stored copy and makes no request
     tax_params._resolved = None
-    again = tax_calc.params_for(2026)
+    again = tax_calc.params_for(2027)
     assert again is not None and again.ss_wage_base_minor == 191_000 * 100
+    assert tax_calc.params_for(2026) is not None  # the bundled years are still there
 
 
 def test_fetch_text_refuses_oversized_and_wraps_errors(monkeypatch: pytest.MonkeyPatch) -> None:

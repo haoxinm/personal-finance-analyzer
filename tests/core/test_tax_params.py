@@ -18,10 +18,12 @@ import yaml
 from spend_analyzer.core import tax_calc, tax_params
 from spend_analyzer.core.tax_params import (
     FILING_STATUSES,
+    added_years,
     load_bundled,
     parse_params,
     parse_params_text,
 )
+from tests.tax_params_support import grown_year, with_next_year
 
 D = 100
 
@@ -53,7 +55,10 @@ def test_bundled_file_validates_and_covers_2022_to_2026() -> None:
 def test_every_year_cites_a_revenue_procedure() -> None:
     for year, params in load_bundled().years.items():
         assert params.sources, year
-        assert all(s.startswith("Rev. Proc. 20") for s in params.sources), year
+        assert params.sources[0].startswith("Rev. Proc. 20"), year
+        assert all(s.startswith(("Rev. Proc. 20", "IRC 151(d)(5)(C)")) for s in params.sources), (
+            year
+        )
 
 
 def test_every_year_has_every_filing_status() -> None:
@@ -186,33 +191,59 @@ def _with_version(version: int, *, wage_base_2026: int | None = None) -> str:
     return _text(raw)
 
 
-def _wage_base_2026() -> int:
-    p = tax_calc.params_for(2026)
+def _wage_base(year: int) -> int:
+    p = tax_calc.params_for(year)
     assert p is not None
     return p.ss_wage_base_minor // D
 
 
 def test_bundled_is_used_without_optional_files(home: Path) -> None:
     assert tax_params.resolve().source == "bundled"
-    assert _wage_base_2026() == 184_500
+    assert _wage_base(2026) == 184_500
 
 
-def test_cached_download_wins_only_when_newer(home: Path) -> None:
+def test_download_adds_a_new_year_and_never_replaces_a_bundled_one(home: Path) -> None:
+    raw = with_next_year(load_bundled().version + 1)
+    raw["years"][2026]["ss_wage_base"] = 190_000  # a "correction" of a bundled year: ignored
+    tax_params.install_cached(_text(raw))
+    resolved = tax_params.resolve()
+    assert resolved.source == "cached"
+    assert sorted(resolved.years) == [2022, 2023, 2024, 2025, 2026, 2027]
+    assert _wage_base(2026) == 184_500  # the app's figure wins
+    assert _wage_base(2027) == round(184_500 * 1.04)
+
+
+def test_download_cannot_drop_years(home: Path) -> None:
+    raw = with_next_year(load_bundled().version + 9)
+    for year in (2022, 2023, 2024):
+        del raw["years"][year]
+    tax_params.install_cached(_text(raw))
+    assert sorted(tax_params.resolve().years) == [2022, 2023, 2024, 2025, 2026, 2027]
+
+
+def test_cached_copy_without_new_years_changes_nothing(home: Path) -> None:
+    tax_params.install_cached(_with_version(load_bundled().version + 1, wage_base_2026=191_000))
+    assert tax_params.resolve().source == "bundled"
+    assert _wage_base(2026) == 184_500
+
+
+def test_implausible_cached_file_is_ignored_as_a_whole(home: Path) -> None:
+    raw = with_next_year(load_bundled().version + 1)
+    raw["years"][2027]["standard_deduction"]["single"] *= 2
+    raw["years"][2027]["standard_deduction"]["mfs"] *= 2
+    tax_params.install_cached(_text(raw))  # structurally valid, so it installs...
+    assert tax_params.resolve().source == "bundled"  # ...but resolve re-checks it
+    assert 2027 not in tax_params.resolve().years
+
+
+def test_override_replaces_listed_years_and_keeps_the_rest(home: Path) -> None:
     bundled = load_bundled().version
-    tax_params.install_cached(_with_version(bundled + 1, wage_base_2026=190_000))
-    assert tax_params.resolve().source == "cached"
-    assert _wage_base_2026() == 190_000  # picked up without a restart
-    tax_params.install_cached(_with_version(bundled, wage_base_2026=191_000))
-    assert tax_params.resolve().source == "bundled"  # a tie goes to the bundled file
-    assert _wage_base_2026() == 184_500
-
-
-def test_override_wins_over_a_newer_cached_copy(home: Path) -> None:
-    bundled = load_bundled().version
-    tax_params.install_cached(_with_version(bundled + 5, wage_base_2026=190_000))
+    tax_params.install_cached(_text(with_next_year(bundled + 5)))
     tax_params.install_override(_with_version(1, wage_base_2026=185_000))
-    assert tax_params.resolve().source == "override"
-    assert _wage_base_2026() == 185_000
+    resolved = tax_params.resolve()
+    assert resolved.source == "override"
+    assert _wage_base(2026) == 185_000
+    assert _wage_base(2027) > 0  # the cached addition survives an override that lacks 2027
     assert tax_params.clear_override() is True
     assert tax_params.clear_override() is False
     assert tax_params.resolve().source == "cached"
@@ -256,3 +287,121 @@ def test_check_state_round_trip_and_corruption(home: Path) -> None:
     assert (state.last_checked, state.outcome) == (date(2026, 3, 4), "updated")
     (tax_params.tax_params_dir() / "state.json").write_text("{broken", encoding="utf-8")
     assert tax_params.read_check_state() == tax_params.CheckState()
+
+
+# --- sanity checks on downloaded years -------------------------------------------------------------
+
+
+def _candidate(mutate: Any, year: int = 2027) -> tax_params.ParamSet:
+    raw = with_next_year(5, year=year)
+    mutate(raw["years"][year])
+    return parse_params(raw, source="cached")
+
+
+def test_a_plausible_next_year_is_accepted() -> None:
+    added = added_years(load_bundled().years, _candidate(lambda y: None))
+    assert sorted(added) == [2027]
+    assert added[2027].senior_deduction_minor == 6_000 * D  # statutory amount carried over
+
+
+def test_bundled_years_pass_their_own_year_over_year_checks() -> None:
+    years = load_bundled().years
+    for year in sorted(years)[1:]:
+        if year == 2025:
+            continue  # the senior deduction begins in 2025 (a download may not begin one)
+        tax_params._check_year(years[year], years[year - 1])
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (lambda y: y["standard_deduction"].update(single=40_000, mfs=40_000), "15%"),
+        (lambda y: y.update(ss_wage_base=300_000), "15%"),
+        (lambda y: y.update(ss_wage_base=1), "plausible|15%"),
+        (lambda y: y.update(elective_deferral_limit=50_000), "15%"),
+        (lambda y: y["additional_standard_deduction"].update(unmarried=9_000), "15%"),
+        (lambda y: y["brackets"]["single"][6].__setitem__(0, 800_000), "15%"),
+        (lambda y: y["ltcg"].update(single=[1_000_000, 2_000_000]), "15%|increasing|0% band"),
+        (lambda y: y["brackets"]["single"][1].__setitem__(1, 11), "rates differ"),
+        (lambda y: y["brackets"]["single"].pop(), "rates differ|zip"),
+        (lambda y: y["capital_loss_limit"].update(default=4_000), "not indexed"),
+        (lambda y: y["niit_threshold"].update(single=250_000), "not indexed"),
+        (lambda y: y["additional_medicare_threshold"].update(mfj=300_000), "not indexed"),
+        (lambda y: y["senior_deduction"].update(amount=7_000), "senior_deduction"),
+        (lambda y: y["standard_deduction"].update(hoh=40_000), "ordered|15%"),
+    ],
+)
+def test_implausible_added_year_is_rejected(mutate: Any, message: str) -> None:
+    def both(y: dict[str, Any]) -> None:
+        mutate(y)
+        # keep qss tied to mfj so only the sanity check (not the schema) can object
+        y["standard_deduction"]["qss"] = y["standard_deduction"]["mfj"]
+        y["brackets"]["qss"] = y["brackets"]["mfj"]
+        y["ltcg"]["qss"] = y["ltcg"]["mfj"]
+
+    with pytest.raises(ValueError, match=message):
+        added_years(load_bundled().years, _candidate(both))
+
+
+def test_senior_deduction_may_end_but_not_begin() -> None:
+    known = dict(load_bundled().years)
+    raw = with_next_year(5, year=2027)
+    raw["years"][2028] = grown_year(raw["years"][2027])
+    raw["years"][2029] = grown_year(raw["years"][2028])
+    del raw["years"][2029]["senior_deduction"]  # the deduction expires after 2028
+    added = added_years(known, parse_params(raw, source="cached"), latest_year=2029)
+    assert added[2029].senior_deduction_minor == 0
+    raw["years"][2030] = grown_year(raw["years"][2029])
+    raw["years"][2030]["senior_deduction"] = raw["years"][2028]["senior_deduction"]
+    with pytest.raises(ValueError, match="senior_deduction"):
+        added_years(known, parse_params(raw, source="cached"), latest_year=2030)
+
+
+def test_a_year_needs_a_known_predecessor_and_cannot_be_far_ahead() -> None:
+    raw = with_next_year(5, year=2027)
+    raw["years"][2029] = grown_year(raw["years"][2027])
+    with pytest.raises(ValueError, match="2028"):
+        added_years(load_bundled().years, parse_params(raw, source="cached"), latest_year=2030)
+    with pytest.raises(ValueError, match="far ahead"):
+        added_years(load_bundled().years, parse_params(raw, source="cached"), latest_year=2026)
+
+
+def test_existing_years_in_a_download_are_ignored_even_if_different() -> None:
+    raw = with_next_year(5)
+    raw["years"][2024]["ss_wage_base"] = 999_999
+    added = added_years(load_bundled().years, parse_params(raw, source="cached"))
+    assert sorted(added) == [2027]
+
+
+# --- the 2025-2028 senior deduction ----------------------------------------------------------------
+
+
+def test_senior_deduction_params_and_phaseout() -> None:
+    years = load_bundled().years
+    assert years[2024].senior_deduction_minor == 0
+    assert years[2024].senior_deduction("single", 1, 0) == 0
+    p = years[2025]
+    assert p.senior_deduction("single", 1, 50_000 * D) == 6_000 * D
+    assert p.senior_deduction("single", 1, 95_000 * D) == 4_800 * D  # 6% of 20,000 = 1,200
+    assert p.senior_deduction("single", 1, 175_000 * D) == 0  # fully phased out at 175,000
+    assert p.senior_deduction("mfj", 2, 150_000 * D) == 12_000 * D
+    assert p.senior_deduction("mfj", 2, 190_000 * D) == (12_000 - 2_400) * D
+    assert p.senior_deduction("mfj", 1, 100_000 * D) == 6_000 * D
+    assert p.senior_deduction("mfj", 3, 100_000 * D) == 12_000 * D  # at most two on a joint return
+    assert p.senior_deduction("single", 2, 0) == 6_000 * D  # one taxpayer
+    assert p.senior_deduction("mfs", 1, 0) == 0  # a married filer must file jointly
+    assert p.senior_deduction("qss", 1, 70_000 * D) == 6_000 * D
+    assert p.senior_deduction("hoh", 0, 0) == 0
+    assert years[2026].senior_deduction_minor == 6_000 * D
+
+
+def test_senior_block_schema_rejects() -> None:
+    def break_it(mutate: Any) -> dict[str, Any]:
+        return _mutated(lambda r: mutate(r["years"][2025]["senior_deduction"]))
+
+    with pytest.raises(ValueError, match="phaseout_rate_percent"):
+        parse_params(break_it(lambda b: b.update(phaseout_rate_percent=0)))
+    with pytest.raises(ValueError, match="exactly"):
+        parse_params(break_it(lambda b: b["phaseout_threshold"].update(mfs=75_000)))
+    with pytest.raises(ValueError, match="amount"):
+        parse_params(break_it(lambda b: b.pop("amount")))

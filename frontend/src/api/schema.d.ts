@@ -2652,6 +2652,7 @@ export interface components {
             privacy: components["schemas"]["PrivacySettings"];
             ingest: components["schemas"]["IngestSettings"];
             server: components["schemas"]["ServerSettings"];
+            tax?: components["schemas"]["TaxSettings"];
         };
         /** Statement */
         Statement: {
@@ -3113,6 +3114,18 @@ export interface components {
             suggested: boolean;
             /** Excluded Reason */
             excluded_reason: string | null;
+        };
+        /**
+         * TaxSettings
+         * @description `[tax]`: `auto_update_params` is the opt-in once-a-year check for updated federal tax
+         *     parameters (a plain GET of one public file, no user data; off by default).
+         */
+        TaxSettings: {
+            /**
+             * Auto Update Params
+             * @default false
+             */
+            auto_update_params: boolean;
         };
         /**
          * TaxSkippedFrom

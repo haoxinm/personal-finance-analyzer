@@ -9883,6 +9883,9 @@
           },
           "server": {
             "$ref": "#/components/schemas/ServerSettings"
+          },
+          "tax": {
+            "$ref": "#/components/schemas/TaxSettings"
           }
         },
         "type": "object",
@@ -11505,6 +11508,18 @@
         ],
         "title": "TaxPageInfo",
         "description": "`GET /api/tax/documents/{id}/pages` row. A thumbnail is at\n`GET /api/tax/documents/{id}/pages/{page_number}/image`."
+      },
+      "TaxSettings": {
+        "properties": {
+          "auto_update_params": {
+            "type": "boolean",
+            "title": "Auto Update Params",
+            "default": false
+          }
+        },
+        "type": "object",
+        "title": "TaxSettings",
+        "description": "`[tax]`: `auto_update_params` is the opt-in once-a-year check for updated federal tax\nparameters (a plain GET of one public file, no user data; off by default)."
       },
       "TaxSkippedFrom": {
         "properties": {
