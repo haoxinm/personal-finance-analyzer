@@ -17,9 +17,11 @@ from personal_finance_analyzer.api.app import create_app
 from personal_finance_analyzer.api.auth import AuthConfig, hash_password
 from personal_finance_analyzer.api.clients import (
     BlockLog,
+    ClientGuardMiddleware,
     ClientPolicy,
     ResolvedClient,
     TrustedProxies,
+    default_gateway,
     parse_ip,
     resolve_client,
 )
@@ -524,3 +526,99 @@ def test_hint_when_an_untrusted_private_peer_forwards_headers(
     hints = [r for r in caplog.records if "PFA_TRUSTED_PROXIES" in r.getMessage()]
     assert len(hints) == 1
     assert PROXY in hints[0].getMessage()
+
+
+# --- Docker gateway detection ---------------------------------------------------------------
+
+ROUTE_TABLE = (
+    "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n"
+    "eth0\t00000000\t010012AC\t0003\t0\t0\t0\t00000000\t0\t0\t0\n"
+    "eth0\t000012AC\t00000000\t0001\t0\t0\t0\t0000FFFF\t0\t0\t0\n"
+)
+
+
+def test_default_gateway_is_read_from_the_route_table() -> None:
+    assert default_gateway(ROUTE_TABLE) == "172.18.0.1"
+
+
+@pytest.mark.parametrize(
+    "table",
+    [
+        "",
+        "Iface\tDestination\tGateway\tFlags\n",
+        # a default route without the gateway flag (a point-to-point link) has no gateway
+        "Iface\tDestination\tGateway\tFlags\neth0\t00000000\t0100A8C0\t0001\n",
+        "Iface\tDestination\tGateway\tFlags\neth0\t00000000\t00000000\t0003\n",
+        "Iface\tDestination\tGateway\tFlags\neth0\t00000000\tzzzz\t0003\n",
+        "garbage",
+    ],
+)
+def test_default_gateway_is_none_when_there_is_none(table: str) -> None:
+    assert default_gateway(table) is None
+
+
+def test_default_gateway_reads_proc_when_not_given_a_table(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    route = tmp_path / "route"
+    route.write_text(ROUTE_TABLE, encoding="ascii")
+    monkeypatch.setattr("personal_finance_analyzer.api.clients.ROUTE_TABLE", route)
+    assert default_gateway() == "172.18.0.1"
+    monkeypatch.setattr("personal_finance_analyzer.api.clients.ROUTE_TABLE", tmp_path / "missing")
+    assert default_gateway() is None
+
+
+def _guarded(gateway: str | None) -> FastAPI:
+    from starlette.responses import PlainTextResponse
+    from starlette.routing import Route
+
+    async def ok(_request: object) -> PlainTextResponse:
+        return PlainTextResponse("ok")
+
+    app = FastAPI(routes=[Route("/", ok)])
+    app.add_middleware(
+        ClientGuardMiddleware,
+        policy=ClientPolicy(),
+        block_log=BlockLog(allowed="private"),
+        gateway=gateway,
+    )
+    return app
+
+
+def test_a_request_from_the_container_gateway_logs_a_one_time_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.WARNING, logger="personal_finance_analyzer.api.clients")
+    app = _guarded("172.18.0.1")
+    for _ in range(3):
+        assert _browser(app, "172.18.0.1").get("/").status_code == 200
+    lines = [r.getMessage() for r in caplog.records if "default gateway" in r.getMessage()]
+    assert len(lines) == 1
+    assert "172.18.0.1" in lines[0]
+    assert "0.0.0.0:8756:8756" in lines[0]
+
+
+def test_other_peers_do_not_trigger_the_gateway_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.WARNING, logger="personal_finance_analyzer.api.clients")
+    app = _guarded("172.18.0.1")
+    assert _browser(app, "192.168.1.50").get("/").status_code == 200
+    assert _browser(app, "172.18.0.7").get("/").status_code == 200
+    assert not [r for r in caplog.records if "default gateway" in r.getMessage()]
+    # and without a known gateway there is nothing to compare with
+    quiet = _guarded(None)
+    assert _browser(quiet, "172.18.0.1").get("/").status_code == 200
+    assert not [r for r in caplog.records if "default gateway" in r.getMessage()]
+
+
+def test_the_app_passes_the_detected_gateway_to_the_guard(
+    make_app: Callable[..., FastAPI],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.WARNING, logger="personal_finance_analyzer.api.clients")
+    monkeypatch.setattr("personal_finance_analyzer.api.app.default_gateway", lambda: "172.18.0.1")
+    app = make_app(policy=ClientPolicy())
+    assert _browser(app, "172.18.0.1").get("/login").status_code == 200
+    assert any("default gateway" in r.getMessage() for r in caplog.records)

@@ -21,9 +21,13 @@ trusting that the router never forwards the port:
   runs, the login page included. It replaces uvicorn's own proxy-header handling, which cannot fail
   closed and, for ``*``, believes the left-most (client-controlled) entry.
 
-This is defense in depth. The address the app sees is whatever the network stack hands it; behind
-some Docker network setups every client arrives from the same private gateway address and no IP
-check can tell them apart. The guarantee is not forwarding the port on the router (docs/DOCKER.md).
+This is defense in depth, not the guarantee. The address the app sees is whatever the network
+stack hands it. Docker's port publishing often replaces it: IPv6 connections to a published port
+are proxied by docker-proxy over IPv4 and arrive from the bridge gateway (172.x), and Docker
+Desktop and rootless Docker make every client one private address. Every client then looks
+"local" and no IP check can tell them apart. The guarantee is not exposing the port (publish it on
+a LAN address or IPv4 only, never forward it on the router; docs/DOCKER.md). `default_gateway`
+and `BlockLog.warn_gateway_peer` exist so the app can say so in the log when it sees this.
 """
 
 from __future__ import annotations
@@ -34,6 +38,7 @@ import threading
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Final
 
 from starlette.responses import JSONResponse
@@ -69,6 +74,38 @@ _MIN_PREFIX_V4: Final = 8
 _MIN_PREFIX_V6: Final = 7
 
 _log = logging.getLogger("personal_finance_analyzer.api.clients")
+
+
+ROUTE_TABLE: Final = Path("/proc/net/route")
+
+_RTF_GATEWAY: Final = 0x2
+
+
+def default_gateway(route_table: str | None = None) -> str | None:
+    """The IPv4 address of this host's (container's) default gateway, or None when unknown.
+
+    Read from ``/proc/net/route`` (Linux) unless ``route_table`` is given (tests). The table has
+    one route per line after a header; the default route has destination ``00000000`` and the
+    ``RTF_GATEWAY`` flag, and the gateway is a little-endian hex word.
+    """
+    if route_table is None:
+        try:
+            route_table = ROUTE_TABLE.read_text(encoding="ascii", errors="replace")
+        except OSError:
+            return None
+    for line in route_table.splitlines()[1:]:
+        fields = line.split()
+        if len(fields) < 4 or fields[1] != "00000000":
+            continue
+        try:
+            flags = int(fields[3], 16)
+            gateway = int(fields[2], 16)
+        except ValueError:
+            continue
+        if not flags & _RTF_GATEWAY or gateway == 0:
+            continue
+        return str(ipaddress.IPv4Address(gateway.to_bytes(4, "little")))
+    return None
 
 
 def parse_ip(text: str | None) -> IPAddress | None:
@@ -269,6 +306,7 @@ class BlockLog:
         self._recent: list[float] = []
         self._suppressed = 0
         self._hinted = False
+        self._gateway_warned = False
 
     def blocked(self, resolved: ResolvedClient) -> None:
         """Record a refusal (``resolved.address`` is None when it could not be determined)."""
@@ -325,6 +363,24 @@ class BlockLog:
         )
 
 
+    def warn_gateway_peer(self, gateway: str) -> None:
+        """Once per process: a request arrived from this container's default gateway."""
+        with self._lock:
+            if self._gateway_warned:
+                return
+            self._gateway_warned = True
+        _log.warning(
+            "Requests are arriving from %s, this container's default gateway. With Docker's port "
+            "publishing (docker-proxy, IPv6 connections to a published port, Docker Desktop, "
+            "rootless Docker) every client can look like this one private address, so the "
+            "local-network check and the per-client login limits cannot tell clients apart here. "
+            "Do not rely on them: publish the port on your LAN address only (for example "
+            "'192.168.1.10:8756:8756') or on IPv4 only ('0.0.0.0:8756:8756'), and never forward "
+            "it on your router.",
+            gateway,
+        )
+
+
 _FORBIDDEN_BODY = {"detail": "This server only accepts connections from the local network."}
 
 
@@ -333,7 +389,9 @@ class ClientGuardMiddleware:
     no further processing for a client outside it), and publishes the resolved address and
     scheme to everything inside (``scope["client"]``, ``scope["scheme"]``).
 
-    With ``policy=None`` it only performs the proxy-header rewriting.
+    With ``policy=None`` it only performs the proxy-header rewriting. ``gateway`` is the
+    container's default gateway (`default_gateway`): the first request whose peer is exactly that
+    address logs a one-time warning that the check cannot distinguish clients in this setup.
     """
 
     def __init__(
@@ -343,11 +401,14 @@ class ClientGuardMiddleware:
         policy: ClientPolicy | None = None,
         trusted: TrustedProxies | None = None,
         block_log: BlockLog | None = None,
+        gateway: str | None = None,
     ) -> None:
         self.app = app
         self._policy = policy
         self._trusted = trusted
         self._block_log = block_log
+        gateway_ip = parse_ip(gateway)
+        self._gateway = str(gateway_ip) if gateway_ip is not None else None
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] not in ("http", "websocket"):
@@ -371,6 +432,13 @@ class ClientGuardMiddleware:
                     self._block_log.blocked(resolved)
                 await self._refuse(scope, receive, send)
                 return
+            if (
+                self._gateway is not None
+                and self._block_log is not None
+                and not resolved.via_proxy
+                and resolved.peer == self._gateway
+            ):
+                self._block_log.warn_gateway_peer(self._gateway)
             if (
                 forwarded_for
                 and not resolved.via_proxy

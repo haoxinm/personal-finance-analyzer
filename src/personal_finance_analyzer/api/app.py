@@ -35,6 +35,7 @@ from personal_finance_analyzer.api.clients import (
     ClientGuardMiddleware,
     ClientPolicy,
     TrustedProxies,
+    default_gateway,
 )
 from personal_finance_analyzer.api.restore_gate import RestoreGate, RestoreGateMiddleware
 from personal_finance_analyzer.api.routers import (
@@ -148,6 +149,7 @@ def create_app(
             policy=client_policy,
             trusted=trusted_proxies,
             block_log=BlockLog(allowed=client_policy.describe()) if client_policy else None,
+            gateway=default_gateway() if client_policy else None,
         )
 
     @app.get(HEALTH_PATH, include_in_schema=False)
