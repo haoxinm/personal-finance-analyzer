@@ -46,8 +46,8 @@ from personal_finance_analyzer.api.services.uploads import (
 )
 from personal_finance_analyzer.config import Settings
 from personal_finance_analyzer.core import tax_calc, tax_params
+from personal_finance_analyzer.core.documents import kept_pdf
 from personal_finance_analyzer.core.errors import PfaError
-from personal_finance_analyzer.core.paths import kept_pdf
 from personal_finance_analyzer.core.tax_types import (
     INCOME_CATEGORY_LABELS,
     MEMO_INCOME_CATEGORIES,
@@ -141,6 +141,7 @@ def _form_fields(form: TaxForm) -> dict[str, object]:
 
 
 def _document(doc: TaxDocument) -> schemas.TaxDocument:
+    stored = _stored_pdf(doc)
     return schemas.TaxDocument(
         id=doc.id,
         user_id=doc.user_id,
@@ -152,7 +153,8 @@ def _document(doc: TaxDocument) -> schemas.TaxDocument:
         warnings=_warnings(doc),
         error_detail=doc.error_detail,
         created_at=doc.ingested_at,
-        has_pdf=_stored_pdf(doc) is not None,
+        has_pdf=stored is not None,
+        pdf_missing=bool(doc.stored_path) and stored is None,
         staged_until=staging.expires_at(doc.id),
     )
 
@@ -161,7 +163,7 @@ def _stored_pdf(doc: TaxDocument) -> Path | None:
     """The kept PDF copy (`[privacy] store_tax_pdf_copies`), or `None`."""
     if not doc.stored_path:
         return None
-    # Resolved against the current data directory when the recorded absolute path is stale.
+    # Relative to the documents folder; found by content when the user moved or renamed the file.
     return kept_pdf(doc.stored_path, doc.file_sha256)
 
 
@@ -297,6 +299,12 @@ PDF_NEEDED_MESSAGE = (
 )
 
 
+PDF_NOT_FOUND_MESSAGE = (
+    "PDF not found: the copy of this document is no longer in your documents folder (it was "
+    "moved out or deleted). Put it back, or select the same file again to read its pages."
+)
+
+
 def _document_with_pdf(session: Session, document_id: int) -> tuple[TaxDocument, Path]:
     """The document and its PDF: the kept copy, else the copy the user re-selected (staged
     temporarily). 409 with ``code: pdf_needed`` when neither exists, so the UI asks for the file."""
@@ -305,9 +313,8 @@ def _document_with_pdf(session: Session, document_id: int) -> tuple[TaxDocument,
         raise HTTPException(status_code=404, detail="tax document not found")
     pdf = _stored_pdf(doc) or staging.get(doc.id)
     if pdf is None:
-        raise HTTPException(
-            status_code=409, detail={"code": "pdf_needed", "message": PDF_NEEDED_MESSAGE}
-        )
+        message = PDF_NOT_FOUND_MESSAGE if doc.stored_path else PDF_NEEDED_MESSAGE
+        raise HTTPException(status_code=409, detail={"code": "pdf_needed", "message": message})
     return doc, pdf
 
 

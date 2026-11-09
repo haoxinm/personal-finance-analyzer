@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
 from personal_finance_analyzer.api.services import gateway
-from personal_finance_analyzer.core.paths import statements_dir
+from personal_finance_analyzer.core.paths import staging_dir
 from personal_finance_analyzer.db.models import Statement, utcnow_iso
 from personal_finance_analyzer.ingest.extract import sha256_file
 from tests.fixtures.gen.base import render_lines_pdf
@@ -26,8 +26,8 @@ def _staged_statement(session: Session, tmp_path: Path, **fields: object) -> int
         ],
     )
     sha = sha256_file(src)
-    statements_dir().mkdir(parents=True, exist_ok=True)
-    (statements_dir() / f"{sha}.pdf").write_bytes(src.read_bytes())
+    staging_dir().mkdir(parents=True, exist_ok=True)
+    (staging_dir() / f"{sha}.pdf").write_bytes(src.read_bytes())
     statement = Statement(
         file_sha256=sha,
         original_name="s.pdf",

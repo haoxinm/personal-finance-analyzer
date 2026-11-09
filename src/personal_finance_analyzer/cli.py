@@ -52,11 +52,13 @@ app.add_typer(issuers_app, name="issuers")
 
 from personal_finance_analyzer.cli_auth import auth_app  # noqa: E402
 from personal_finance_analyzer.cli_backup import backup_app  # noqa: E402
+from personal_finance_analyzer.cli_documents import documents_app  # noqa: E402
 from personal_finance_analyzer.cli_llm import llm_app  # noqa: E402
 
 app.add_typer(auth_app, name="auth")
 app.add_typer(llm_app, name="llm")
 app.add_typer(backup_app, name="backup")
+app.add_typer(documents_app, name="documents")
 
 tax_app = typer.Typer(help="Import and report W-2 / 1099 / 1040 tax forms (income & tax analysis).")
 app.add_typer(tax_app, name="tax")
@@ -73,12 +75,15 @@ def _stub(command: str) -> None:
 
 
 @contextmanager
-def _open_engine() -> Iterator[Engine]:
+def _open_engine(*, prepare_documents: bool = True) -> Iterator[Engine]:
+    from personal_finance_analyzer.db import documents
     from personal_finance_analyzer.db.session import make_engine
 
     home = prepare_home()  # the explicit startup step: carries a pre-rename data dir/db over
     configure_logging(home=home)
     engine = make_engine()
+    if prepare_documents:  # documents folder + README; carries old statements/ PDFs over
+        documents.prepare_documents(engine)
     try:
         yield engine
     finally:
@@ -163,10 +168,13 @@ def _resolve_user_filter(session: Session, user_id: int | None, *, all_users: bo
 def migrate() -> None:
     """Create/upgrade the local database to the latest schema, sync the taxonomy and builtin
     rules, and ensure a default user exists (D4)."""
+    from personal_finance_analyzer.db import documents
+
     with _open_engine() as engine:
         upgrade_head()
         with _open_session(engine) as session:
             _sync_taxonomy_and_defaults(session)
+        documents.prepare_documents(engine)  # the schema is current now: carry old PDFs over
 
     get_logger("cli").info("migrate: database ready")
     typer.echo("Database migrated and taxonomy synced.")

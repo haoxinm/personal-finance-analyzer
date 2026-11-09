@@ -266,11 +266,13 @@ def test_send_needs_a_configured_llm_and_valid_pages(
 
 
 def test_deleting_a_document_removes_its_kept_pdf(client: TestClient, doc: dict[str, Any]) -> None:
-    from personal_finance_analyzer.core.paths import statements_dir
+    from personal_finance_analyzer.core.paths import documents_dir
 
-    assert list(statements_dir().glob("*.pdf")) != []
+    (kept,) = documents_dir().rglob("*.pdf")
+    assert kept.relative_to(documents_dir()).parts[1] == "Tax"  # a readable path, not a hash
     assert client.delete(f"/api/tax/documents/{doc['id']}").status_code == 204
-    assert list(statements_dir().glob("*.pdf")) == []
+    assert list(documents_dir().rglob("*.pdf")) == []
+    assert not kept.parent.exists()  # the folders it left empty are gone too
 
 
 def test_send_adds_a_form_to_a_partly_parsed_document(

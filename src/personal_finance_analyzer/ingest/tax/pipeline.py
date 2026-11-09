@@ -7,9 +7,11 @@ items in one transaction. No LLM, no network, no job.
 Privacy (plan 3.4): a tax PDF holds full SSNs/EINs. This module therefore
 
 - extracts with ``write_cache=False`` so `[privacy] store_extract_cache` can never dump the text;
-- keeps the PDF only when `[privacy] store_tax_pdf_copies` is on (default off). When off, the
-  hash-named upload under `statements_dir()` is deleted once the outcome is recorded (the caller's
-  own original file is never touched);
+- keeps the PDF only when `[privacy] store_tax_pdf_copies` is on (default off). When on, the file
+  is copied into the documents directory under a readable name (``<Person>/Tax/<year>/W-2 -
+  Acme Corp.pdf``, see `core/doc_names.py`) once the forms are known; when off, the hash-named
+  upload under `staging_dir()` is deleted once the outcome is recorded (the caller's own original
+  file is never touched);
 - stores only generic error text and logs only ids, counts, form types and parser id/version
   (for an unexpected failure, only the exception class name);
 - scrubs the display name (`tin.scrub_display_name`): no SSN shape and no 6+ digit run is stored.
@@ -49,7 +51,7 @@ from personal_finance_analyzer.core.errors import (
     UnsupportedLayoutError,
 )
 from personal_finance_analyzer.core.logging import get_logger
-from personal_finance_analyzer.core.paths import ensure_home, kept_pdf, statements_dir
+from personal_finance_analyzer.core.paths import staging_dir
 from personal_finance_analyzer.core.tax_types import (
     FORM_ROLE,
     ParsedIncomeItem,
@@ -57,6 +59,7 @@ from personal_finance_analyzer.core.tax_types import (
     ParsedTaxItem,
     TaxFallbackExtractor,
 )
+from personal_finance_analyzer.db import documents as doc_files
 from personal_finance_analyzer.db.models import IncomeItem, TaxDocument, TaxForm, TaxItem
 from personal_finance_analyzer.db.pii_terms import user_pii_terms
 from personal_finance_analyzer.ingest.extract import extract, sha256_file
@@ -103,7 +106,7 @@ def _utcnow_iso() -> str:
 
 
 def _staged_path(file_sha256: str) -> Path:
-    return statements_dir() / f"{file_sha256}.pdf"
+    return staging_dir() / f"{file_sha256}.pdf"
 
 
 def _is_staged_upload(pdf_path: Path, file_sha256: str) -> bool:
@@ -113,17 +116,15 @@ def _is_staged_upload(pdf_path: Path, file_sha256: str) -> bool:
         return False
 
 
-def _keep_or_unstage(pdf_path: Path, file_sha256: str, *, keep: bool) -> str | None:
-    """Apply `[privacy] store_tax_pdf_copies`: return `stored_path` (None when not kept)."""
-    staged = _staged_path(file_sha256)
-    if keep:
-        ensure_home()
-        if not staged.exists():
-            staged.write_bytes(pdf_path.read_bytes())
-        return str(staged)
-    if _is_staged_upload(pdf_path, file_sha256):
-        staged.unlink(missing_ok=True)
-    return None
+def _finalize_copy(
+    session: Session, doc: TaxDocument, pdf_path: Path, file_sha256: str, *, keep: bool
+) -> None:
+    """Apply `[privacy] store_tax_pdf_copies` once the outcome is recorded: file the PDF in the
+    documents directory when kept, and remove the hash-named upload (the caller's own original
+    file is never touched). If filing fails the upload stays, so the copy is not lost."""
+    if keep and doc_files.file_tax_document(session, doc, pdf_path) is None:
+        return
+    _unstage(pdf_path, file_sha256)
 
 
 def _form_fingerprint(
@@ -474,7 +475,6 @@ def _record_unexpected_failure(
             ingested_at=_utcnow_iso(),
         )
         session.add(doc)
-    doc.stored_path = None
     session.flush()
     return _failure(session, doc, status=STATUS_ERROR, message=GENERIC_ERROR_MESSAGE, tax_year=None)
 
@@ -659,7 +659,7 @@ def _import(
         )
         if has_forms is not None:
             # Re-import of an identical, already-parsed file is a no-op (I9 analogue).
-            _keep_or_unstage(pdf_path, file_sha256, keep=keep)
+            _finalize_copy(session, doc_row, pdf_path, file_sha256, keep=keep)
             return _existing_summary(session, doc_row)
         # Parsed but holds no forms (they were all deduped into another document that has since
         # been deleted): the import is re-run so the figures come back.
@@ -680,8 +680,6 @@ def _import(
             tax_year=tax_year,
             page_count=None,
         )
-
-    stored_path = _keep_or_unstage(pdf_path, file_sha256, keep=keep)
 
     # Parse (and, when opted in, consult the LLM fallback) BEFORE anything is written: a network
     # call must never happen while a database write transaction is open.
@@ -710,7 +708,6 @@ def _import(
         )
         session.add(doc_row)
     doc_row.original_name = original_name
-    doc_row.stored_path = stored_path
     doc_row.page_count = extracted.page_count
     session.flush()
 
@@ -718,7 +715,9 @@ def _import(
         status, message = failure or (STATUS_ERROR, GENERIC_ERROR_MESSAGE)
         if extracted.has_text_layer:
             message += _no_result_hint(tried=run.attempted)
-        return _failure(session, doc_row, status=status, message=message, tax_year=tax_year)
+        result = _failure(session, doc_row, status=status, message=message, tax_year=tax_year)
+        _finalize_copy(session, doc_row, pdf_path, file_sha256, keep=keep)
+        return result
     if outcome is not None:
         doc_row.parser_id = outcome.parser_id
         doc_row.parser_version = outcome.parser_version
@@ -778,6 +777,7 @@ def _import(
         run.requests_sent,
         llm_forms,
     )
+    _finalize_copy(session, doc_row, pdf_path, file_sha256, keep=keep)
     return TaxImportResult(
         document_id=doc_row.id,
         status=STATUS_PARSED,
@@ -810,7 +810,6 @@ def _record_failure(
     page_count: int | None,
 ) -> TaxImportResult:
     """Record a failure that happened before extraction produced a document (unreadable PDF)."""
-    stored_path = _keep_or_unstage(pdf_path, file_sha256, keep=keep)
     if doc_row is None:
         doc_row = TaxDocument(
             user_id=user_id,
@@ -820,14 +819,16 @@ def _record_failure(
             ingested_at=_utcnow_iso(),
         )
         session.add(doc_row)
-    doc_row.stored_path = stored_path
     doc_row.page_count = page_count
     session.flush()
-    return _failure(session, doc_row, status=status, message=message, tax_year=tax_year)
+    result = _failure(session, doc_row, status=status, message=message, tax_year=tax_year)
+    _finalize_copy(session, doc_row, pdf_path, file_sha256, keep=keep)
+    return result
 
 
 def delete_tax_document(session: Session, document_id: int) -> bool:
-    """Delete a tax document and (by cascade) its forms and items; remove a kept PDF copy.
+    """Delete a tax document and (by cascade) its forms and items; remove its kept PDF copy
+    unless another row still uses the same file.
 
     Returns:
         True if a document was deleted, False if ``document_id`` does not exist.
@@ -835,21 +836,12 @@ def delete_tax_document(session: Session, document_id: int) -> bool:
     doc = session.get(TaxDocument, document_id)
     if doc is None:
         return False
-    sha = doc.file_sha256
-    # The real file, even when the recorded absolute path went stale with a moved data directory.
-    kept = kept_pdf(doc.stored_path, sha) if doc.stored_path else None
+    sha, stored_path = doc.file_sha256, doc.stored_path
     session.delete(doc)
     session.commit()
     staging.discard(document_id)
-    if kept is not None:
-        # Another user's document imported from the same PDF shares the kept copy (it is named by
-        # content hash); only remove it when nothing else keeps a copy of that file.
-        still_used = session.scalar(
-            select(TaxDocument.id)
-            .where(TaxDocument.file_sha256 == sha, TaxDocument.stored_path.is_not(None))
-            .limit(1)
-        )
-        if still_used is None:
-            kept.unlink(missing_ok=True)
+    # Another document imported from the same PDF (another user's copy) shares the file; it is
+    # removed only when no row refers to it any more.
+    doc_files.discard_copy(session, stored_path, sha)
     logger.info("tax document deleted: document_id=%s", document_id)
     return True

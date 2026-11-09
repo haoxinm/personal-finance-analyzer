@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from personal_finance_analyzer.classify import cascade
 from personal_finance_analyzer.config import PrivacyConfig, Settings, save_settings
-from personal_finance_analyzer.core.paths import extract_cache_dir, statements_dir
+from personal_finance_analyzer.core.paths import documents_dir, extract_cache_dir, staging_dir
 from personal_finance_analyzer.db.models import (
     Account,
     IncomeItem,
@@ -112,7 +112,7 @@ def test_no_tin_on_disk_in_db_or_logs(
 
     # (1) no file under the data home contains a full TIN; the kept-PDF directory is the only
     # allowed exception, and only when store_tax_pdf_copies is on.
-    stmts = statements_dir()
+    stmts = documents_dir()
     for path in privacy_home.rglob("*"):
         if not path.is_file():
             continue
@@ -123,7 +123,9 @@ def test_no_tin_on_disk_in_db_or_logs(
         for needle in needles:
             assert needle.encode() not in blob, f"identifier found in {path.name}"
     if not keep_tax_pdfs:
-        assert not stmts.exists() or list(stmts.iterdir()) == []
+        assert not any(p.suffix == ".pdf" for p in stmts.rglob("*")) if stmts.exists() else True
+    # an upload never lingers in staging after its import
+    assert not staging_dir().exists() or list(staging_dir().glob("*.pdf")) == []
 
     # (2) the SQL dump has only last-4 fields
     con = sqlite3.connect(privacy_home / "finance.db")

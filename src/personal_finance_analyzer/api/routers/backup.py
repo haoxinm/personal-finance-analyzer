@@ -67,6 +67,13 @@ class BackupRestoreResponse(BaseModel):
     counts: dict[str, int]
     migrated: bool
     previous_dir: str | None
+    #: PDFs written into the documents folder / already there with the same content, and other
+    #: files in that folder that are not part of the backup (left untouched).
+    documents_restored: int = 0
+    documents_already_present: int = 0
+    documents_unrelated: int = 0
+    #: Set when some PDFs could not be moved into place (see the CLI message); empty otherwise.
+    documents_pending: str | None = None
 
 
 def _http_error(exc: BackupError) -> HTTPException:
@@ -194,4 +201,8 @@ async def restore_backup(
         counts=result.manifest.counts,
         migrated=result.migrated,
         previous_dir=str(result.previous_dir) if result.previous_dir else None,
+        documents_restored=result.documents_restored,
+        documents_already_present=result.documents_already_present,
+        documents_unrelated=result.documents_unrelated,
+        documents_pending=str(result.documents_pending) if result.documents_pending else None,
     )

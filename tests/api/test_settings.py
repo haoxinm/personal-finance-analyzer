@@ -79,6 +79,30 @@ def test_put_settings_preserves_config_toml_only_tax_pdf_flag(client: TestClient
     assert load_settings().privacy.store_tax_pdf_copies is True
 
 
+def test_put_settings_preserves_the_documents_folder_setting(client: TestClient) -> None:
+    """`[storage] documents_dir` names a place on disk: config.toml-only, never in the API, and a
+    save from the Settings screen must neither drop nor change it."""
+    from personal_finance_analyzer.config import StorageConfig, load_settings, save_settings
+
+    saved = load_settings()
+    save_settings(saved.model_copy(update={"storage": StorageConfig(documents_dir="/mnt/nas/pfa")}))
+    body = client.get("/api/settings").json()
+    assert "storage" not in body and "documents_dir" not in str(body)
+    assert client.put("/api/settings", json=body).status_code == 200
+    assert load_settings().storage.documents_dir == "/mnt/nas/pfa"
+
+
+def test_the_documents_env_var_is_never_written_to_config_toml(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from personal_finance_analyzer.config import load_file_settings
+
+    monkeypatch.setenv("PFA_DOCUMENTS_DIR", str(tmp_path / "from-env"))
+    body = client.get("/api/settings").json()
+    assert client.put("/api/settings", json=body).status_code == 200
+    assert load_file_settings().storage.documents_dir == ""
+
+
 def test_test_llm_reports_disabled_when_mode_is_none(client: TestClient) -> None:
     response = client.post("/api/settings/test-llm")
     assert response.status_code == 200

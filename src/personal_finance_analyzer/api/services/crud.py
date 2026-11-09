@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session
 
 from personal_finance_analyzer.api.services import gateway
 from personal_finance_analyzer.classify.candidates import conflict_flags
-from personal_finance_analyzer.core.paths import kept_pdf, statements_dir
+from personal_finance_analyzer.core import documents as docs
 from personal_finance_analyzer.core.types import USER_CLASSIFIED, Kind
 from personal_finance_analyzer.db.models import (
     Account,
@@ -180,18 +180,24 @@ def get_statement(session: Session, statement_id: int) -> Statement | None:
 
 
 def staged_pdf_path(statement: Statement) -> Path | None:
-    """The one PDF `statement` can still be re-read from, or `None` if none is available
-    (`[privacy] store_pdf_copies` was off and it was already confirmed, so `ingest.pipeline`
-    deleted its staged copy — see that module's own docstring on durable staging).
+    """The one PDF `statement` can still be re-read from, or `None` if none is available (it was
+    never kept, `[privacy] store_pdf_copies` was off, and it is already confirmed so its upload
+    was deleted; or the kept copy was moved out of the documents folder or deleted).
 
-    Checks `stored_path` first (the copy kept because `store_pdf_copies` is on), then the
-    content-hash staging path every upload writes to at `propose_import` time (still present for
-    a statement not yet confirmed, or whose Phase 2 hasn't reached a terminal outcome)."""
-    kept = kept_pdf(statement.stored_path, statement.file_sha256)
+    Checks the kept copy first (`stored_path`, relative to the documents folder, with a lookup by
+    content when the user renamed or moved the file), then the content-hash upload in
+    ``incoming/`` every upload writes at `propose_import` time (still present for a statement
+    not yet confirmed)."""
+    kept = docs.kept_pdf(statement.stored_path, statement.file_sha256)
     if kept is not None:
         return kept
-    staged = statements_dir() / f"{statement.file_sha256}.pdf"
-    return staged if staged.is_file() else None
+    return docs.staged_pdf(statement.file_sha256)
+
+
+def statement_pdf_missing(statement: Statement) -> bool:
+    """The statement recorded a kept copy, but it is gone from the documents folder (moved out or
+    deleted by hand) and no upload is left to fall back to."""
+    return bool(statement.stored_path) and staged_pdf_path(statement) is None
 
 
 def list_statements(session: Session, *, user_id: int | None) -> Sequence[Statement]:
@@ -240,9 +246,21 @@ def patch_statement(session: Session, statement: Statement, *, account_id: int |
     return statement
 
 
-def delete_statement(session: Session, statement: Statement) -> None:
+def delete_statement(session: Session, statement: Statement) -> tuple[str | None, str]:
+    """Delete the row (and, by cascade, its transactions). Returns ``(stored_path, sha256)`` for
+    `discard_pdf_copy`, which the caller runs after committing: the PDF is removed with the row
+    unless another row still refers to the same file."""
+    kept = (statement.stored_path, statement.file_sha256)
     session.delete(statement)
     session.flush()
+    return kept
+
+
+def discard_pdf_copy(session: Session, stored_path: str | None, sha256: str) -> None:
+    """Remove the PDF of a deleted statement (after the delete was committed)."""
+    from personal_finance_analyzer.db import documents as doc_files
+
+    doc_files.discard_copy(session, stored_path, sha256)
 
 
 # --- Transactions ----------------------------------------------------------------------------------

@@ -16,7 +16,7 @@ from pathlib import Path
 
 from fastapi import HTTPException, Request, UploadFile
 
-from personal_finance_analyzer.core.paths import statements_dir
+from personal_finance_analyzer.core.paths import staging_dir
 from personal_finance_analyzer.ingest.extract import sha256_file
 
 #: A12: hard cap on an uploaded file's size.
@@ -92,10 +92,10 @@ async def stream_body_to_file(request: Request, dest: Path, *, max_bytes: int) -
 
 
 def save_upload(file_bytes: bytes) -> Path:
-    """Write `file_bytes` to `<statements_dir>/<sha256>.pdf` (A12) and return the path. Byte-
+    """Write `file_bytes` to `<staging_dir>/<sha256>.pdf` (A12) and return the path. Byte-
     identical re-uploads simply overwrite the same path (I9's no-op is enforced downstream, by
     `propose_import` matching on `file_sha256`, not by skipping the write here)."""
-    tmp_dir = statements_dir()
+    tmp_dir = staging_dir()
     tmp_dir.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(dir=tmp_dir, delete=False, suffix=".pdf") as tmp:
         tmp.write(file_bytes)

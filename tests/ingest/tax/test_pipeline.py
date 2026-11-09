@@ -12,7 +12,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from personal_finance_analyzer.config import PrivacyConfig, Settings, save_settings
-from personal_finance_analyzer.core.paths import extract_cache_dir, statements_dir
+from personal_finance_analyzer.core.paths import documents_dir, extract_cache_dir, staging_dir
 from personal_finance_analyzer.db.models import IncomeItem, TaxDocument, TaxForm, TaxItem, User
 from personal_finance_analyzer.ingest.tax.pipeline import (
     UNSUPPORTED_MESSAGE,
@@ -215,18 +215,19 @@ def test_pdf_not_retained_by_default(session: Session) -> None:
     result = _import(session, "tax_w2", "normal", uid)
     doc = session.get(TaxDocument, result.document_id)
     assert doc is not None and doc.stored_path is None
-    kept = list(statements_dir().glob("*.pdf")) if statements_dir().exists() else []
+    kept = list(documents_dir().rglob("*.pdf")) if documents_dir().exists() else []
     assert kept == []
+    assert not staging_dir().exists() or list(staging_dir().glob("*.pdf")) == []
 
 
 def test_staged_upload_is_removed_when_not_retained(session: Session) -> None:
-    """The API saves uploads at statements_dir()/<sha>.pdf; the pipeline must delete that copy."""
+    """The API saves uploads at staging_dir()/<sha>.pdf; the pipeline must delete that copy."""
     from personal_finance_analyzer.core.paths import ensure_home
     from personal_finance_analyzer.ingest.extract import sha256_file
 
     ensure_home()
     src = generated_pdf("tax_w2", "normal")
-    staged = statements_dir() / f"{sha256_file(src)}.pdf"
+    staged = staging_dir() / f"{sha256_file(src)}.pdf"
     staged.write_bytes(src.read_bytes())
     uid = _user(session)
     result = import_tax_document(session, staged, user_id=uid, original_name="w2.pdf")
@@ -241,7 +242,12 @@ def test_pdf_retained_when_enabled_and_deleted_with_document(session: Session) -
     result = _import(session, "tax_w2", "normal", uid)
     doc = session.get(TaxDocument, result.document_id)
     assert doc is not None and doc.stored_path is not None
-    stored = Path(doc.stored_path)
+    # A path relative to the documents folder, readable: <person>/Tax/<year>/<form> - <payer>.pdf
+    assert not Path(doc.stored_path).is_absolute()
+    person, kind, year, name = doc.stored_path.split("/")
+    assert (person, kind, year) == ("alice", "Tax", str(doc.tax_year))
+    assert name.startswith("W-2 - ") and name.endswith(".pdf")
+    stored = documents_dir() / doc.stored_path
     assert stored.exists()
     assert delete_tax_document(session, result.document_id) is True
     assert not stored.exists()
@@ -305,9 +311,9 @@ def test_deleting_one_users_document_keeps_the_shared_kept_copy(session: Session
     doc_b = session.get(TaxDocument, second.document_id)
     assert doc_b is not None and doc_b.stored_path is not None
     assert delete_tax_document(session, first.document_id)
-    assert Path(doc_b.stored_path).exists()
+    assert (documents_dir() / doc_b.stored_path).exists()
     assert delete_tax_document(session, second.document_id)
-    assert not Path(doc_b.stored_path).exists()
+    assert not (documents_dir() / doc_b.stored_path).exists()
 
 
 def test_original_name_is_scrubbed(session: Session) -> None:
@@ -329,7 +335,7 @@ def _stage(src: Path) -> Path:
     from personal_finance_analyzer.ingest.extract import sha256_file
 
     ensure_home()
-    staged = statements_dir() / f"{sha256_file(src)}.pdf"
+    staged = staging_dir() / f"{sha256_file(src)}.pdf"
     staged.write_bytes(src.read_bytes())
     return staged
 

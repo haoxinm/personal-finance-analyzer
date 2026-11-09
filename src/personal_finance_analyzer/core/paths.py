@@ -1,7 +1,14 @@
 """Data directory locations (§3.11).
 
-All application state lives under one data directory: the SQLite database, statement PDF copies,
-the extract-only-if-enabled debug cache, layout-spec YAML mirrors, `config.toml`, and log files.
+Application state lives under one data directory: the SQLite database, `config.toml`, layout-spec
+YAML mirrors, the extract-only-if-enabled debug cache, log files and the ``incoming/`` staging
+folder for uploads that have not been filed yet.
+
+The kept PDF copies live elsewhere, in the **documents directory** (`documents_dir`): by default
+``<data dir>/documents``, or wherever `PFA_DOCUMENTS_DIR` (or ``[storage] documents_dir`` in
+`config.toml`) points, e.g. a NAS share. It holds ordinary, human-readable paths such as
+``Alex/Statements/Chase/2024-03 Chase credit 1234.pdf`` (see `core/documents.py`), so the files can
+be browsed without the app and survive losing the data directory.
 
 The default location is the platform's per-user application-data directory:
 
@@ -35,12 +42,12 @@ override:
 - both exist: the new one is used and a warning names the old one (it is left untouched);
 - a concurrent start that loses the rename race simply finds the new directory in place.
 
-The database and the kept PDF copies record their absolute path (``statements.stored_path``,
-``tax_documents.stored_path``). After a successful move `prepare_home` rewrites the old directory
-prefix to the new one in both tables, in one transaction, and in any case `kept_pdf` resolves a
-copy relative to the current data directory at read time (``statements/<sha256>.pdf``) when the
-recorded path no longer exists, so a path left stale (a crash between the move and the rewrite, a
-restored backup from another machine) never loses a PDF.
+Before documents had their own folder the database recorded an absolute path for every kept PDF
+(``statements.stored_path``, ``tax_documents.stored_path``) under ``<data dir>/statements/``. Such
+paths are still understood (and rewritten when the data directory moves: `prepare_home` swaps the
+old directory prefix for the new one in both tables, in one transaction); new rows hold a path
+*relative to the documents directory*, and `core/documents.kept_pdf` falls back to finding a file by
+its SHA-256 when the recorded one is gone.
 
 `prepare_home` then does the same for the file: ``spend.db`` becomes ``finance.db`` (in any data
 directory, override or not) when the new name is absent and the database is not in use.
@@ -95,7 +102,10 @@ def _platform_home(camel: str, kebab: str, platform: str | None) -> Path:
 
 
 #: Directories created (mode 0700) inside the data home.
-_SUBDIRS = ("statements", "extract_cache", "specs", "logs")
+_SUBDIRS = ("incoming", "extract_cache", "specs", "logs")
+
+#: Environment variable that overrides where the readable PDF copies are kept (see `documents_dir`).
+DOCUMENTS_DIR_ENV = "PFA_DOCUMENTS_DIR"
 
 
 def env_home_override() -> Path | None:
@@ -351,8 +361,62 @@ def config_path() -> Path:
     return get_home() / "config.toml"
 
 
-def statements_dir() -> Path:
+def legacy_statements_dir() -> Path:
+    """Where PDFs used to be kept, named ``<sha256>.pdf``. Read only by the one-time upgrade
+    (`db/documents.py`) and as a last-resort lookup; nothing new is ever written here."""
     return get_home() / "statements"
+
+
+def staging_dir() -> Path:
+    """Hash-named PDFs that are uploaded but not filed yet (``incoming/<sha256>.pdf``): the upload
+    waiting for its extractor to be confirmed, and tax uploads on their way to being parsed. Once
+    an import finishes the copy is either filed in the documents directory (when kept) or deleted."""
+    return get_home() / "incoming"
+
+
+def documents_dir() -> Path:
+    """The directory holding the kept PDF copies under readable names. Pure: never creates it.
+
+    ``PFA_DOCUMENTS_DIR`` wins, then ``[storage] documents_dir`` in `config.toml` (a relative path
+    is taken relative to the data directory), else ``<data dir>/documents``. The Docker image sets
+    ``PFA_DOCUMENTS_DIR=/pfa/documents``, beside the data directory."""
+    env = os.environ.get(DOCUMENTS_DIR_ENV)
+    if env and env.strip():
+        return Path(env).expanduser()
+    configured = _configured_documents_dir()
+    if configured:
+        path = Path(configured).expanduser()
+        return path if path.is_absolute() else get_home() / path
+    return get_home() / "documents"
+
+
+#: ``config.toml`` path -> (mtime_ns, configured documents dir), so the per-call lookup is a stat.
+_CONFIG_DOCS_CACHE: dict[str, tuple[int, str]] = {}
+
+
+def _configured_documents_dir() -> str:
+    """``[storage] documents_dir`` from `config.toml` ('' when unset or the file is unreadable).
+    Read here, not through `config.py` (which imports this module)."""
+    import tomllib
+
+    path = config_path()
+    try:
+        mtime = path.stat().st_mtime_ns
+    except OSError:
+        return ""
+    cached = _CONFIG_DOCS_CACHE.get(str(path))
+    if cached is not None and cached[0] == mtime:
+        return cached[1]
+    value = ""
+    try:
+        with path.open("rb") as fh:
+            storage = tomllib.load(fh).get("storage")
+        if isinstance(storage, dict) and isinstance(storage.get("documents_dir"), str):
+            value = storage["documents_dir"].strip()
+    except (OSError, tomllib.TOMLDecodeError, UnicodeDecodeError):
+        value = ""
+    _CONFIG_DOCS_CACHE[str(path)] = (mtime, value)
+    return value
 
 
 def tax_staging_dir() -> Path:
@@ -377,22 +441,6 @@ def specs_dir() -> Path:
 
 def logs_dir() -> Path:
     return get_home() / "logs"
-
-
-def kept_pdf(stored_path: str | None, file_sha256: str) -> Path | None:
-    """The kept copy of an imported PDF (a statement, or a tax document), or ``None`` if there is
-    none on disk.
-
-    ``stored_path`` is an absolute path recorded when the PDF was imported, so it goes stale when
-    the data directory moves (`prepare_home`) or comes from another machine (a restored backup).
-    It is used when it still exists; otherwise the copy is looked up where this version of the app
-    keeps it, ``statements/<sha256>.pdf`` under the *current* data directory."""
-    if stored_path:
-        recorded = Path(stored_path)
-        if recorded.is_file():
-            return recorded
-    current = statements_dir() / f"{file_sha256}.pdf"
-    return current if current.is_file() else None
 
 
 #: The tables holding a ``stored_path`` column (names are constants, never caller input).

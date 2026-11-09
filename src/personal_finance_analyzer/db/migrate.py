@@ -13,6 +13,7 @@ from pathlib import Path
 
 from alembic import command
 from alembic.config import Config
+from sqlalchemy.engine import Engine
 
 _MIGRATIONS_DIR = Path(__file__).resolve().parent / "migrations"
 
@@ -30,3 +31,13 @@ def upgrade_head(db_url: str | None = None) -> None:
     `finance.db`, honoring `PFA_HOME`)."""
     config = build_alembic_config(db_url)
     command.upgrade(config, "head")
+
+
+def is_at_head(engine: Engine) -> bool:
+    """Whether ``engine``'s database is at the newest schema revision (read-only)."""
+    from alembic.runtime.migration import MigrationContext
+    from alembic.script import ScriptDirectory
+
+    head = ScriptDirectory.from_config(build_alembic_config()).get_current_head()
+    with engine.connect() as connection:
+        return MigrationContext.configure(connection).get_current_revision() == head

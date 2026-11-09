@@ -221,6 +221,17 @@ class ServerConfig(BaseModel):
     port: int = 8756
 
 
+class StorageConfig(BaseModel):
+    """Where kept PDF copies live. config.toml-only (not in the Settings API: it names a place on
+    disk, which only the person who runs the app should set)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    #: Folder for the readable PDF copies ("" = ``<data dir>/documents``). The environment variable
+    #: `PFA_DOCUMENTS_DIR` overrides it. Always read through `core.paths.documents_dir()`.
+    documents_dir: str = ""
+
+
 class SecretsConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -240,6 +251,7 @@ class Settings(BaseModel):
     ingest: IngestConfig = IngestConfig()
     tax: TaxConfig = TaxConfig()
     server: ServerConfig = ServerConfig()
+    storage: StorageConfig = StorageConfig()
     secrets: SecretsConfig = SecretsConfig()
 
 

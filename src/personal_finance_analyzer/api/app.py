@@ -71,6 +71,7 @@ from personal_finance_analyzer.api.security import (
 from personal_finance_analyzer.backup import archive as backup_archive
 from personal_finance_analyzer.config import Settings
 from personal_finance_analyzer.core.paths import get_home, prepare_home
+from personal_finance_analyzer.db.documents import prepare_documents
 from personal_finance_analyzer.db.session import make_engine, make_session_factory
 from personal_finance_analyzer.ingest.tax import staging as tax_staging
 from personal_finance_analyzer.jobs.runner import JobRunner
@@ -104,6 +105,7 @@ def create_app(
     if engine is None:
         prepare_home()  # app startup is an explicit step: carries a pre-rename data dir/db over
         resolved_engine = make_engine()
+        prepare_documents(resolved_engine)
     else:
         resolved_engine = engine
     resolved_token = token if token is not None else generate_token()
