@@ -271,7 +271,13 @@ def test_export_neutralizes_csv_formula_cells_but_keeps_numbers_numeric(
         "-2+3",
         "@SUM(A1)",
         "\tTAB LEAD",
+        " =1+1",
+        "  @SUM(A1)",
+        "\u00a0-5",
+        "|calc!A1",
+        " |calc",
         "Plain Merchant",
+        "Shop - Main St",
     )
     for i, description in enumerate(descriptions):
         _add(session, base, i, description=description, amount_minor=-1500, notes=description)
@@ -279,10 +285,13 @@ def test_export_neutralizes_csv_formula_cells_but_keeps_numbers_numeric(
 
     rows = _csv_rows(client.get("/api/export").text)
     by_clean = {r["description_clean"]: r for r in rows}
-    for description in descriptions[:-1]:
-        assert "'" + description in by_clean
-        assert by_clean["'" + description]["notes"] == "'" + description
-    assert by_clean["Plain Merchant"]["notes"] == "Plain Merchant"
+    plain = ("Plain Merchant", "Shop - Main St")
+    for description in descriptions:
+        if description in plain:
+            assert by_clean[description]["notes"] == description
+        else:
+            assert "'" + description in by_clean, description
+            assert by_clean["'" + description]["notes"] == "'" + description
     assert all(r["amount_minor"] == "-1500" for r in rows)  # not prefixed: still a number
 
     # JSON is not a spreadsheet format and stays verbatim.

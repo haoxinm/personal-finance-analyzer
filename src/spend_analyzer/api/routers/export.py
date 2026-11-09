@@ -41,13 +41,17 @@ _FIELDS = (
 
 #: A spreadsheet treats a cell starting with one of these as a formula (CSV injection): a
 #: description like `=HYPERLINK(...)` copied from a statement would run when the export is opened.
-_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
+#: `|` starts a DDE-style command in some spreadsheets. Leading whitespace is skipped first, since
+#: spreadsheets ignore it (` =1+1` is still a formula).
+_FORMULA_PREFIXES = ("=", "+", "-", "@", "|")
 
 
 def _csv_safe(value: object) -> object:
     """Neutralize a text cell that a spreadsheet would read as a formula by prefixing `'`, which
     the spreadsheet hides. Numbers are left alone (a negative `amount_minor` must stay numeric)."""
-    if isinstance(value, str) and value.startswith(_FORMULA_PREFIXES):
+    if not isinstance(value, str) or not value:
+        return value
+    if value[0] in "\t\r\n" or value.lstrip().startswith(_FORMULA_PREFIXES):
         return "'" + value
     return value
 
