@@ -1158,17 +1158,20 @@ class NetWorthHistory(_Model):
     updated_at: str
 
 
-#: "mixed" only in the all-users view, when some people's year came from entries and others'
-#: from a manual value (the choice is made per person per year, then summed).
-ForecastNetWorthSource = Literal["entries", "manual", "mixed"]
+#: "carried": nothing was recorded for the year, so an earlier balance is carried forward.
+#: "mixed" only in the all-users view, when people's years came from different kinds (the choice is
+#: made per person per year, then summed).
+ForecastNetWorthSource = Literal["entries", "manual", "carried", "mixed"]
 
 
 class ForecastHistoryRow(_Model):
     year: int
-    #: Year-end net worth: from balance entries when the year has any, else the manual value.
+    #: Year-end net worth: from balance entries recorded in the year, else the manual value, else
+    #: the balance carried forward from earlier entries.
     net_worth_minor: int | None
     source: ForecastNetWorthSource | None
-    #: "YYYY-MM" of the entries-derived value (the last month with data in that year).
+    #: "YYYY-MM" of the entries-derived value (the year's last month with data; for a carried
+    #: value, the month of the real entry it comes from).
     as_of: str | None
     #: The manual value for the year, even when entries override it (so the editor can show both).
     manual_net_worth_minor: int | None
@@ -1207,6 +1210,10 @@ class ForecastDefaults(_Model):
     #: Compound annual growth over the years with data; None with fewer than two such years.
     income_growth_pct: float | None
     spending_growth_pct: float | None
+    #: True when the observed rate was outside the allowed -50..50 range (typically a partial
+    #: first year) and `*_growth_pct` was clamped to it.
+    income_growth_clamped: bool
+    spending_growth_clamped: bool
     savings_rate_pct: float | None
 
 

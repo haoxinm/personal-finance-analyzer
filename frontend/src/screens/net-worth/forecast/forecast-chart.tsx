@@ -79,7 +79,7 @@ export function ForecastChart({ history, rows, baseYear, startNetWorthMinor, tar
           <Line
             type="monotone"
             dataKey="history"
-            name="Actual"
+            name={mode === "real" ? "Actual (nominal dollars)" : "Actual"}
             stroke={CHART_NET_WORTH}
             strokeWidth={3}
             dot={{ r: 3 }}

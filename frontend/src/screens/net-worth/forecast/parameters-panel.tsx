@@ -51,7 +51,12 @@ export function ParametersPanel({ state, onChange, defaults, resolved, onResetAl
       ? `Data: ${formatUsd(d.annual_spending_minor)}${d.spending_year ? ` (${d.spending_year}${d.spending_annualized ? ", scaled up from a partial year" : ""})` : ""}` +
         rebasedNote(d.spending_year, base, resolved.data.spendingMinor, state.spendingGrowthPct, "spending growth")
       : null;
-  const observed = (v: number | null | undefined) => (v != null ? `Observed: ${formatPct(v)}/yr` : null);
+  const observed = (v: number | null | undefined, clamped: boolean | undefined) =>
+    v != null
+      ? `Observed: ${formatPct(v)}/yr` +
+        (clamped ? " (capped: the raw figure was outside -50% to 50%, often a partial first year; check your data)" : "")
+      : null;
+  const clampPct = (v: number) => Math.min(Math.max(v, -50), 50);
 
   return (
     <Card>
@@ -111,10 +116,10 @@ export function ParametersPanel({ state, onChange, defaults, resolved, onResetAl
             min={-50}
             max={50}
             slider={{ min: -5, max: 15 }}
-            dataText={observed(d?.income_growth_pct)}
+            dataText={observed(d?.income_growth_pct, d?.income_growth_clamped)}
             canReset={d?.income_growth_pct != null && state.incomeGrowthPct !== d.income_growth_pct}
             onChange={(v) => v !== null && onChange({ incomeGrowthPct: v })}
-            onReset={() => d?.income_growth_pct != null && onChange({ incomeGrowthPct: d.income_growth_pct })}
+            onReset={() => d?.income_growth_pct != null && onChange({ incomeGrowthPct: clampPct(d.income_growth_pct) })}
           />
           <PercentField
             label="Effective tax rate"
@@ -123,7 +128,13 @@ export function ParametersPanel({ state, onChange, defaults, resolved, onResetAl
             min={0}
             max={100}
             placeholder={d?.effective_tax_rate_pct != null ? String(d.effective_tax_rate_pct) : "0"}
-            dataText={d?.effective_tax_rate_pct != null ? `Data: ${formatPct(d.effective_tax_rate_pct)} (all-in tax / earned income)` : null}
+            dataText={
+              d?.effective_tax_rate_pct != null
+                ? `Data: ${formatPct(d.effective_tax_rate_pct)} (all-in tax / earned income)`
+                : state.taxRatePct === null
+                  ? "No tax data found, so tax is counted as 0%. Import tax forms or type a rate to avoid overstating savings."
+                  : null
+            }
             onChange={(v) => onChange({ taxRatePct: v })}
             onReset={() => onChange({ taxRatePct: null })}
           />
@@ -146,10 +157,10 @@ export function ParametersPanel({ state, onChange, defaults, resolved, onResetAl
             min={-50}
             max={50}
             slider={{ min: -2, max: 10 }}
-            dataText={observed(d?.spending_growth_pct)}
+            dataText={observed(d?.spending_growth_pct, d?.spending_growth_clamped)}
             canReset={d?.spending_growth_pct != null && state.spendingGrowthPct !== d.spending_growth_pct}
             onChange={(v) => v !== null && onChange({ spendingGrowthPct: v })}
-            onReset={() => d?.spending_growth_pct != null && onChange({ spendingGrowthPct: d.spending_growth_pct })}
+            onReset={() => d?.spending_growth_pct != null && onChange({ spendingGrowthPct: clampPct(d.spending_growth_pct) })}
           />
           <MoneyField
             label="Fixed change in spending per year"
@@ -199,7 +210,7 @@ export function ParametersPanel({ state, onChange, defaults, resolved, onResetAl
           />
         </section>
 
-        <EventsEditor events={state.events} onChange={(events) => onChange({ events })} />
+        <EventsEditor events={state.events} baseYear={base} onChange={(events) => onChange({ events })} />
       </CardContent>
     </Card>
   );
@@ -219,9 +230,11 @@ function rebasedNote(
 
 function EventsEditor({
   events,
+  baseYear,
   onChange,
 }: {
   events: ForecastState["events"];
+  baseYear: number;
   onChange: (events: ForecastState["events"]) => void;
 }) {
   const update = (i: number, patch: Partial<ForecastState["events"][number]>) =>
@@ -251,6 +264,11 @@ function EventsEditor({
               onChange={(v) => update(i, { amountMinor: v ?? 0 })}
             />
             <EventLabel index={i} value={event.label} onChange={(label) => update(i, { label })} />
+            {event.year <= baseYear ? (
+              <p role="alert" className="col-span-2 text-xs text-destructive">
+                Event {i + 1} is ignored: the projection starts after {baseYear}, so pick a later year.
+              </p>
+            ) : null}
             <Button
               type="button"
               variant="outline"

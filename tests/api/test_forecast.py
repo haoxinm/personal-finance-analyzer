@@ -159,18 +159,23 @@ def test_preset_crud_roundtrip(client: TestClient) -> None:
         preset["params"]["start_net_worth_minor"] is None
     )  # "use the data" survives the round trip
 
-    renamed = client.put(f"{PRESETS}/{preset['id']}", json={"name": "FIRE"})
+    own = {"user_id": uid}
+    renamed = client.put(f"{PRESETS}/{preset['id']}", json={"name": "FIRE"}, params=own)
     assert renamed.status_code == 200 and renamed.json()["name"] == "FIRE"
     assert renamed.json()["params"] == preset["params"]  # params untouched by a rename
-    reparam = client.put(f"{PRESETS}/{preset['id']}", json={"params": _params(return_pct=5.0)})
+    reparam = client.put(
+        f"{PRESETS}/{preset['id']}", json={"params": _params(return_pct=5.0)}, params=own
+    )
     assert reparam.json()["params"]["return_pct"] == 5.0 and reparam.json()["name"] == "FIRE"
 
     assert [p["name"] for p in client.get(PRESETS, params={"user_id": uid}).json()["saved"]] == [
         "FIRE"
     ]
-    assert client.delete(f"{PRESETS}/{preset['id']}").status_code == 204
-    assert client.delete(f"{PRESETS}/{preset['id']}").status_code == 404
-    assert client.put(f"{PRESETS}/{preset['id']}", json={"name": "x"}).status_code == 404
+    assert client.delete(f"{PRESETS}/{preset['id']}", params=own).status_code == 204
+    assert client.delete(f"{PRESETS}/{preset['id']}", params=own).status_code == 404
+    assert (
+        client.put(f"{PRESETS}/{preset['id']}", json={"name": "x"}, params=own).status_code == 404
+    )
 
 
 def test_preset_visibility_scopes(client: TestClient) -> None:
@@ -212,16 +217,17 @@ def test_list_skips_saved_presets_with_invalid_stored_params(
     assert [p["name"] for p in client.get(PRESETS).json()["saved"]] == ["Bad", "Good"]
 
 
-def test_invalid_preset_can_be_renamed_deleted_and_its_name_reused(
+def test_invalid_preset_keeps_its_name_but_can_be_renamed_repaired_and_deleted(
     client: TestClient, session: Session
 ) -> None:
     bad = client.post(PRESETS, json={"name": "Old plan", "params": _params()}).json()
     session.get(ForecastPreset, bad["id"]).params = '{"horizon_years": 9999}'  # type: ignore[union-attr]
     session.commit()
 
-    # Its hidden name does not block a new preset with the same name.
-    fresh = client.post(PRESETS, json={"name": "old plan", "params": _params()})
-    assert fresh.status_code == 201
+    # The hidden preset still holds its name: exact and case-variant reuse are a 409, never a 500.
+    for name in ("Old plan", "old plan", "OLD PLAN"):
+        r = client.post(PRESETS, json={"name": name, "params": _params()})
+        assert r.status_code == 409, name
 
     # Renaming it works (no 500) and returns the name-only form; the row is still invalid.
     renamed = client.put(f"{PRESETS}/{bad['id']}", json={"name": "Archived"})
@@ -229,9 +235,12 @@ def test_invalid_preset_can_be_renamed_deleted_and_its_name_reused(
     assert renamed.json() == {"id": bad["id"], "user_id": None, "name": "Archived"}
     listing = client.get(PRESETS).json()
     assert [p["name"] for p in listing["invalid"]] == ["Archived"]
-    assert [p["name"] for p in listing["saved"]] == ["old plan"]
+    assert listing["saved"] == []
+    # Its old name is free once renamed.
+    fresh = client.post(PRESETS, json={"name": "Old plan", "params": _params()})
+    assert fresh.status_code == 201
 
-    # A valid preset's name still conflicts, and a repair brings the preset back.
+    # A valid preset's name conflicts, and a repair brings the preset back.
     assert client.put(f"{PRESETS}/{bad['id']}", json={"name": "Old Plan"}).status_code == 409
     fixed = client.put(f"{PRESETS}/{bad['id']}", json={"params": _params()})
     assert fixed.status_code == 200 and fixed.json()["params"]["horizon_years"] == 20
@@ -242,6 +251,42 @@ def test_invalid_preset_can_be_renamed_deleted_and_its_name_reused(
     session.commit()
     assert client.delete(f"{PRESETS}/{other['id']}").status_code == 204
     assert client.get(PRESETS).json()["invalid"] == []
+
+
+def test_repairing_an_invalid_preset_rechecks_its_name(
+    client: TestClient, session: Session
+) -> None:
+    client.post(PRESETS, json={"name": "Plan", "params": _params()})
+    bad = client.post(PRESETS, json={"name": "Spare", "params": _params()}).json()
+    row = session.get(ForecastPreset, bad["id"])
+    assert row is not None
+    row.params = "not json"
+    row.name = "PLAN"  # a legacy duplicate that the old code let through
+    session.commit()
+    assert client.put(f"{PRESETS}/{bad['id']}", json={"params": _params()}).status_code == 409
+
+
+def test_non_ascii_names_conflict_across_case(client: TestClient) -> None:
+    assert client.post(PRESETS, json={"name": "Straße", "params": _params()}).status_code == 201
+    assert client.post(PRESETS, json={"name": "STRASSE", "params": _params()}).status_code == 409
+    assert client.post(PRESETS, json={"name": "Éclair", "params": _params()}).status_code == 201
+    assert client.post(PRESETS, json={"name": "éclair", "params": _params()}).status_code == 409
+
+
+def test_preset_update_and_delete_respect_the_owner(client: TestClient) -> None:
+    alex, sam = _user(client), _user(client, "Sam")
+    mine = client.post(PRESETS, json={"name": "Mine", "user_id": alex, "params": _params()}).json()
+    shared = client.post(PRESETS, json={"name": "Shared", "params": _params()}).json()
+    url = f"{PRESETS}/{mine['id']}"
+    assert client.put(url, json={"name": "x"}, params={"user_id": sam}).status_code == 404
+    assert client.put(url, json={"name": "x"}).status_code == 404  # all-users view: shared only
+    assert client.delete(url, params={"user_id": sam}).status_code == 404
+    assert client.put(url, json={"name": "Mine2"}, params={"user_id": alex}).status_code == 200
+    # Shared presets are visible to everyone.
+    sh = f"{PRESETS}/{shared['id']}"
+    assert client.put(sh, json={"name": "Shared2"}, params={"user_id": sam}).status_code == 200
+    assert client.delete(sh).status_code == 204
+    assert client.delete(url, params={"user_id": alex}).status_code == 204
 
 
 def test_preset_keeps_the_starting_year(client: TestClient) -> None:
@@ -281,11 +326,10 @@ def test_preset_name_uniqueness_per_scope(client: TestClient) -> None:
     assert client.post(PRESETS, json={**body, "user_id": sam}).status_code == 201
     assert client.post(PRESETS, json={**body, "user_id": alex}).status_code == 409
     other = client.post(PRESETS, json={**body, "name": "Plan B", "user_id": alex}).json()
-    assert client.put(f"{PRESETS}/{other['id']}", json={"name": "plan a"}).status_code == 409
-    assert client.put(f"{PRESETS}/{other['id']}", json={"name": "Moderate"}).status_code == 409
-    assert (
-        client.put(f"{PRESETS}/{other['id']}", json={"name": "PLAN B"}).status_code == 200
-    )  # own name
+    url, own = f"{PRESETS}/{other['id']}", {"user_id": alex}
+    assert client.put(url, json={"name": "plan a"}, params=own).status_code == 409
+    assert client.put(url, json={"name": "Moderate"}, params=own).status_code == 409
+    assert client.put(url, json={"name": "PLAN B"}, params=own).status_code == 200  # own name
 
 
 def test_preset_validation(client: TestClient) -> None:

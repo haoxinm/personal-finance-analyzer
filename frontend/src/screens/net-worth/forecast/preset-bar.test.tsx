@@ -111,7 +111,7 @@ describe("PresetBar", () => {
     await userEvent.click(within(screen.getByRole("form", { name: "Rename preset" })).getByRole("button", { name: "Rename" }));
     await waitFor(() => expect(mutate("PUT")).toHaveBeenCalledTimes(1));
     expect(mutate("PUT")).toHaveBeenCalledWith("/net-worth/forecast/presets/{id}", {
-      params: { path: { id: 4 } },
+      params: { path: { id: 4 }, query: { user_id: 1 } },
       body: { name: "Renamed" },
     });
   });
@@ -136,7 +136,7 @@ describe("PresetBar", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "Delete" }));
     await userEvent.click(screen.getByRole("button", { name: "Delete preset" }));
-    await waitFor(() => expect(mutate("DELETE")).toHaveBeenCalledWith("/net-worth/forecast/presets/{id}", { params: { path: { id: 4 } } }));
+    await waitFor(() => expect(mutate("DELETE")).toHaveBeenCalledWith("/net-worth/forecast/presets/{id}", { params: { path: { id: 4 }, query: { user_id: 1 } } }));
     await waitFor(() => expect(screen.getByRole("combobox", { name: "Preset" })).toHaveValue(""));
   });
 
@@ -178,7 +178,7 @@ describe("PresetBar", () => {
     expect(screen.getByText(/“Old plan” \(shared\) cannot be loaded/)).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Delete unusable preset Old plan" }));
     await waitFor(() =>
-      expect(mutate("DELETE")).toHaveBeenCalledWith("/net-worth/forecast/presets/{id}", { params: { path: { id: 9 } } }),
+      expect(mutate("DELETE")).toHaveBeenCalledWith("/net-worth/forecast/presets/{id}", { params: { path: { id: 9 }, query: { user_id: 1 } } }),
     );
   });
 

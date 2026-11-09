@@ -105,7 +105,7 @@ export function PresetBar({ userId, builtin, saved, invalid = [], selected, stat
       return;
     }
     update.mutate(
-      { id: savedCurrent.id, name: name.trim() },
+      { id: savedCurrent.id, userId, name: name.trim() },
       {
         onSuccess: (preset) => {
           toast({ variant: "success", title: "Preset renamed", description: preset.name });
@@ -119,7 +119,7 @@ export function PresetBar({ userId, builtin, saved, invalid = [], selected, stat
   function overwrite() {
     if (!savedCurrent) return;
     update.mutate(
-      { id: savedCurrent.id, params: toApiParams(state, resolved) },
+      { id: savedCurrent.id, userId, params: toApiParams(state, resolved) },
       {
         onSuccess: (preset) => toast({ variant: "success", title: "Preset updated", description: preset.name }),
         onError: (err) => fail("Could not update preset", err),
@@ -129,7 +129,7 @@ export function PresetBar({ userId, builtin, saved, invalid = [], selected, stat
 
   function confirmDelete() {
     if (!savedCurrent) return;
-    remove.mutate(savedCurrent.id, {
+    remove.mutate({ id: savedCurrent.id, userId }, {
       onSuccess: () => {
         toast({ variant: "success", title: "Preset deleted", description: savedCurrent.name });
         onSelect(null);
@@ -205,7 +205,7 @@ export function PresetBar({ userId, builtin, saved, invalid = [], selected, stat
                 disabled={remove.isPending}
                 aria-label={`Delete unusable preset ${p.name}`}
                 onClick={() =>
-                  remove.mutate(p.id, {
+                  remove.mutate({ id: p.id, userId }, {
                     onSuccess: () => toast({ variant: "success", title: "Preset deleted", description: p.name }),
                     onError: (err) => fail("Could not delete preset", err),
                   })

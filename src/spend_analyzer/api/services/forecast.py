@@ -7,6 +7,7 @@ import logging
 
 from pydantic import ValidationError
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from spend_analyzer.api import schemas
@@ -127,20 +128,39 @@ def list_presets(session: Session, user_id: int | None) -> list[ForecastPreset]:
     return list(session.scalars(stmt))
 
 
+def preset_visible_to(row: ForecastPreset, user_id: int | None) -> bool:
+    """The same scope `list_presets` uses: shared presets, plus the given user's own."""
+    return row.user_id is None or row.user_id == user_id
+
+
 def _check_name(
     session: Session, name: str, user_id: int | None, *, exclude_id: int | None = None
 ) -> None:
+    """Raises PresetNameConflict when the name is built in or already used in that scope.
+
+    Every saved preset counts, including one whose stored parameters no longer validate: it still
+    holds its name in the database. The comparison uses ``casefold`` in Python (SQL ``lower()``
+    only folds ASCII), so it is at least as strict as the database's exact-case constraints."""
     if is_builtin_name(name):
         raise PresetNameConflict(f"{name!r} is the name of a built-in preset")
-    stmt = select(ForecastPreset).where(func.lower(ForecastPreset.name) == name.lower())
-    stmt = stmt.where(
+    stmt = select(ForecastPreset).where(
         ForecastPreset.user_id.is_(None) if user_id is None else ForecastPreset.user_id == user_id
     )
     if exclude_id is not None:
         stmt = stmt.where(ForecastPreset.id != exclude_id)
-    # A preset whose stored parameters no longer validate is not usable, so its name can be reused.
-    if any(is_valid_preset(other) for other in session.scalars(stmt)):
+    folded = name.casefold()
+    if any(other.name.casefold() == folded for other in session.scalars(stmt)):
         raise PresetNameConflict(f"a preset named {name!r} already exists")
+
+
+def _flush_checking_name(session: Session, name: str) -> None:
+    """Flush, turning a unique-constraint violation (a race, or a name the check missed) into a
+    PresetNameConflict instead of an uncaught IntegrityError."""
+    try:
+        with session.begin_nested():
+            session.flush()
+    except IntegrityError:
+        raise PresetNameConflict(f"a preset named {name!r} already exists") from None
 
 
 def create_preset(session: Session, body: schemas.ForecastPresetCreate) -> ForecastPreset:
@@ -151,7 +171,7 @@ def create_preset(session: Session, body: schemas.ForecastPresetCreate) -> Forec
     _check_name(session, name, body.user_id)
     row = ForecastPreset(user_id=body.user_id, name=name, params=body.params.model_dump_json())
     session.add(row)
-    session.flush()
+    _flush_checking_name(session, name)
     return row
 
 
@@ -160,14 +180,19 @@ def update_preset(
 ) -> ForecastPreset:
     """Raises:
     ValueError: the new name is blank. PresetNameConflict: the new name is already used.
-    """
+
+    Repairing a preset (new params for one whose stored params are invalid) re-checks its current
+    name too, since nothing guaranteed it was unique while the preset was hidden."""
+    name = row.name
     if body.name is not None:
         name = normalize_preset_name(body.name)
         _check_name(session, name, row.user_id, exclude_id=row.id)
-        row.name = name
+    elif body.params is not None and not is_valid_preset(row):
+        _check_name(session, name, row.user_id, exclude_id=row.id)
+    row.name = name
     if body.params is not None:
         row.params = body.params.model_dump_json()
-    session.flush()
+    _flush_checking_name(session, name)
     return row
 
 

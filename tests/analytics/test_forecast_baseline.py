@@ -241,3 +241,59 @@ def test_default_income_year_is_the_latest_year_with_earned_income(session: Sess
 )
 def test_cagr_pct(first: int, last: int, years: int, expected: float | None) -> None:
     assert cagr_pct(first, last, years) == expected
+
+
+def test_growth_is_clamped_to_the_api_bounds_and_flagged(session: Session) -> None:
+    uid = add_user(session, "Alex")
+    add_w2(session, uid, 2022, 1_000_000, {})  # a partial first year: $10k then $150k
+    add_w2(session, uid, 2023, 15_000_000, {})
+    session.flush()
+    d = run_forecast_baseline(session, uid).defaults
+    assert d.income_growth_pct == 50.0 and d.income_growth_clamped is True
+    assert d.spending_growth_pct is None and d.spending_growth_clamped is False
+
+
+def test_growth_within_bounds_is_not_flagged(session: Session) -> None:
+    d = run_forecast_baseline(session, _seed(session)).defaults
+    assert d.income_growth_pct == 10.0 and d.income_growth_clamped is False
+
+
+def test_carried_balance_does_not_override_a_manual_year(session: Session) -> None:
+    uid = add_user(session, "Alex")
+    add_balance(session, uid, "checking", "Chk", 2022, 12, 100_000)
+    add_balance(session, uid, "checking", "Chk", 2025, 6, 400_000)
+    session.add(NetWorthHistory(user_id=uid, year=2023, amount_minor=777_000))
+    session.flush()
+    rows = {r.year: r for r in run_forecast_baseline(session, uid).history}
+    assert (rows[2022].net_worth_minor, rows[2022].source) == (100_000, "entries")
+    # 2023 has no entries of its own: the manual value wins over the carried 100,000.
+    assert (rows[2023].net_worth_minor, rows[2023].source) == (777_000, "manual")
+    assert rows[2023].as_of is None
+    # 2024 has nothing at all: the carried balance fills in, labelled, from its real month.
+    assert (rows[2024].net_worth_minor, rows[2024].source, rows[2024].as_of) == (
+        100_000,
+        "carried",
+        "2022-12",
+    )
+    assert (rows[2025].net_worth_minor, rows[2025].source) == (400_000, "entries")
+
+
+def test_two_people_are_decided_separately_per_year(session: Session) -> None:
+    alex, sam = add_user(session, "Alex"), add_user(session, "Sam")
+    add_balance(session, alex, "checking", "A", 2022, 12, 100_000)  # then stops
+    add_balance(session, sam, "checking", "S", 2022, 12, 10_000)
+    add_balance(session, sam, "checking", "S", 2025, 12, 50_000)
+    session.add_all(
+        [
+            NetWorthHistory(user_id=alex, year=2023, amount_minor=300_000),
+            NetWorthHistory(user_id=alex, year=2024, amount_minor=400_000),
+        ]
+    )
+    session.flush()
+    rows = {r.year: r for r in run_forecast_baseline(session, None).history}
+    # Alex's manual value wins over his own carried balance; Sam is carried (nothing manual).
+    assert (rows[2023].net_worth_minor, rows[2023].source) == (310_000, "mixed")
+    assert (rows[2024].net_worth_minor, rows[2024].source) == (410_000, "mixed")
+    assert rows[2023].manual_net_worth_minor == 300_000
+    # 2025: Alex has neither entries nor manual: carried 100,000 + Sam's real 50,000.
+    assert rows[2025].net_worth_minor == 150_000

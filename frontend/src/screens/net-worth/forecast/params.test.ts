@@ -31,6 +31,8 @@ const DEFAULTS: Defaults = {
   spending_annualized: false,
   income_growth_pct: 4,
   spending_growth_pct: 3,
+  income_growth_clamped: false,
+  spending_growth_clamped: false,
   savings_rate_pct: 40,
 };
 

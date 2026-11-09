@@ -21,6 +21,7 @@ export interface HistoryEditorProps {
 const SOURCE_LABEL: Record<string, string> = {
   entries: "Balance entries",
   manual: "Manual",
+  carried: "Carried forward",
   mixed: "Mixed (per person)",
 };
 
@@ -74,7 +75,7 @@ export function HistoryEditor({ userId, history }: HistoryEditorProps) {
             </table>
           </div>
         )}
-        {readOnly ? null : <AddYearForm userId={userId} />}
+        {readOnly ? null : <AddYearForm userId={userId} manualYears={new Set(rows.filter((r) => r.manual_net_worth_minor != null).map((r) => r.year))} />}
       </CardContent>
     </Card>
   );
@@ -95,7 +96,7 @@ function HistoryTableRow({ row, userId }: { row: HistoryRow; userId: number | nu
       </td>
       <td className="py-2 pr-3">
         {row.source ? (
-          <Badge variant={hasEntries ? "secondary" : "outline"} title={row.as_of ? `As of ${row.as_of}` : undefined}>
+          <Badge variant={hasEntries ? "secondary" : "outline"} title={row.as_of ? (row.source === "carried" ? `Carried forward from ${row.as_of}` : `As of ${row.as_of}`) : undefined}>
             {SOURCE_LABEL[row.source] ?? row.source}
           </Badge>
         ) : (
@@ -184,7 +185,7 @@ function ManualCell({ year, userId, manual, note }: { year: number; userId: numb
 }
 
 /** Adds a net worth for a year the table doesn't list yet (typically before any data existed). */
-function AddYearForm({ userId }: { userId: number }) {
+function AddYearForm({ userId, manualYears }: { userId: number; manualYears: ReadonlySet<number> }) {
   const uid = React.useId();
   const { toast } = useToast();
   const put = usePutHistory();
@@ -202,6 +203,7 @@ function AddYearForm({ userId }: { userId: number }) {
     if (amount === null) next.amount = "Enter the net worth at the end of that year (negative if you owed more than you owned).";
     setErrors(next);
     if (Object.keys(next).length > 0 || amount === null) return;
+    if (manualYears.has(y) && !window.confirm(`A manual net worth for ${y} already exists. Replace it?`)) return;
     put.mutate(
       { userId, year: y, amountMinor: amount, note: note.trim() ? note.trim() : null },
       {

@@ -80,6 +80,8 @@ const EMPTY_BASELINE = {
     spending_annualized: false,
     income_growth_pct: null,
     spending_growth_pct: null,
+    income_growth_clamped: false,
+    spending_growth_clamped: false,
     savings_rate_pct: null,
   },
 };
@@ -110,6 +112,8 @@ const BASELINE = {
     spending_annualized: false,
     income_growth_pct: 12.5,
     spending_growth_pct: 3,
+    income_growth_clamped: false,
+    spending_growth_clamped: false,
     savings_rate_pct: 33.06,
   },
 };
@@ -456,5 +460,44 @@ describe("ForecastScreen", () => {
     await userEvent.click(screen.getByRole("button", { name: "Save as preset…" }));
     expect(screen.getByText("Saved for all users (no one is selected).")).toBeInTheDocument();
     expect(screen.queryByRole("checkbox", { name: "Share with everyone" })).not.toBeInTheDocument();
+  });
+
+  it("warns when there is no tax data, instead of silently using 0%", async () => {
+    mockApi({
+      "/net-worth/forecast/baseline": {
+        ...BASELINE,
+        defaults: { ...BASELINE.defaults, effective_tax_rate_pct: null },
+      },
+    });
+    renderScreen();
+    await screen.findByTestId("forecast-summary");
+    expect(screen.getByText(/No tax data found, so tax is counted as 0%/)).toBeInTheDocument();
+    await replace(spin("Effective tax rate"), "20");
+    expect(screen.queryByText(/No tax data found/)).not.toBeInTheDocument();
+  });
+
+  it("notes a capped observed growth rate and never resets beyond the API's bounds", async () => {
+    mockApi({
+      "/net-worth/forecast/baseline": {
+        ...BASELINE,
+        defaults: { ...BASELINE.defaults, income_growth_pct: 287.5, income_growth_clamped: true },
+      },
+    });
+    renderScreen();
+    await screen.findByTestId("forecast-summary");
+    expect(screen.getByText(/Observed: 287.5%\/yr \(capped/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Reset Income growth per year to data" }));
+    expect(spin("Income growth per year")).toHaveValue(50);
+  });
+
+  it("flags one-off events that fall in or before the starting year", async () => {
+    mockApi({ "/net-worth/forecast/baseline": BASELINE });
+    renderScreen();
+    await screen.findByTestId("forecast-summary");
+    await userEvent.click(screen.getByRole("button", { name: "Add event" }));
+    await replace(spin("Event 1 year"), "2020");
+    expect(screen.getByText(/Event 1 is ignored/)).toBeInTheDocument();
+    await replace(spin("Event 1 year"), "2030");
+    expect(screen.queryByText(/Event 1 is ignored/)).not.toBeInTheDocument();
   });
 });

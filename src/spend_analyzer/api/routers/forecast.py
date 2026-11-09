@@ -128,13 +128,13 @@ def create_preset(
     response_model=schemas.ForecastPreset | schemas.InvalidForecastPreset,
 )
 def update_preset(
-    id: int, body: schemas.ForecastPresetUpdate, session: SessionDep
+    id: int, body: schemas.ForecastPresetUpdate, session: SessionDep, user_id: int | None = None
 ) -> schemas.ForecastPreset | schemas.InvalidForecastPreset:
     """Rename and/or replace the parameters. A preset whose stored parameters are invalid can be
     renamed (the response is then the name-only `InvalidForecastPreset`) or repaired by sending
-    new `params`."""
+    new `params`. `user_id` is the viewing user, as for the list: another user's preset is 404."""
     row = service.get_preset(session, id)
-    if row is None:
+    if row is None or not service.preset_visible_to(row, user_id):
         raise HTTPException(status_code=404, detail="preset not found")
     try:
         service.update_preset(session, row, body)
@@ -149,9 +149,9 @@ def update_preset(
 
 
 @router.delete("/net-worth/forecast/presets/{id}", status_code=204)
-def delete_preset(id: int, session: SessionDep) -> None:
+def delete_preset(id: int, session: SessionDep, user_id: int | None = None) -> None:
     row = service.get_preset(session, id)
-    if row is None:
+    if row is None or not service.preset_visible_to(row, user_id):
         raise HTTPException(status_code=404, detail="preset not found")
     service.delete_preset(session, row)
     session.commit()

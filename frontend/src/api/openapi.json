@@ -4602,7 +4602,7 @@
           "net-worth"
         ],
         "summary": "Update Preset",
-        "description": "Rename and/or replace the parameters. A preset whose stored parameters are invalid can be\nrenamed (the response is then the name-only `InvalidForecastPreset`) or repaired by sending\nnew `params`.",
+        "description": "Rename and/or replace the parameters. A preset whose stored parameters are invalid can be\nrenamed (the response is then the name-only `InvalidForecastPreset`) or repaired by sending\nnew `params`. `user_id` is the viewing user, as for the list: another user's preset is 404.",
         "operationId": "update_preset_api_net_worth_forecast_presets__id__put",
         "parameters": [
           {
@@ -4612,6 +4612,22 @@
             "schema": {
               "type": "integer",
               "title": "Id"
+            }
+          },
+          {
+            "name": "user_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "User Id"
             }
           }
         ],
@@ -4670,6 +4686,22 @@
             "schema": {
               "type": "integer",
               "title": "Id"
+            }
+          },
+          {
+            "name": "user_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "User Id"
             }
           }
         ],
@@ -7200,6 +7232,14 @@
             ],
             "title": "Spending Growth Pct"
           },
+          "income_growth_clamped": {
+            "type": "boolean",
+            "title": "Income Growth Clamped"
+          },
+          "spending_growth_clamped": {
+            "type": "boolean",
+            "title": "Spending Growth Clamped"
+          },
           "savings_rate_pct": {
             "anyOf": [
               {
@@ -7224,6 +7264,8 @@
           "spending_annualized",
           "income_growth_pct",
           "spending_growth_pct",
+          "income_growth_clamped",
+          "spending_growth_clamped",
           "savings_rate_pct"
         ],
         "title": "ForecastDefaults",
@@ -7281,6 +7323,7 @@
                 "enum": [
                   "entries",
                   "manual",
+                  "carried",
                   "mixed"
                 ]
               },

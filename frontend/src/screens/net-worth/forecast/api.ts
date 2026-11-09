@@ -88,10 +88,10 @@ export function useCreatePreset() {
 export function useUpdatePreset() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (args: { id: number; name?: string; params?: ApiParams }) => {
-      const { id, ...body } = args;
+    mutationFn: async (args: { id: number; userId: number | null; name?: string; params?: ApiParams }) => {
+      const { id, userId, ...body } = args;
       const { data, error } = await apiClient.PUT("/net-worth/forecast/presets/{id}", {
-        params: { path: { id } },
+        params: { path: { id }, query: { user_id: userId ?? undefined } },
         body,
       });
       throwIfError(error);
@@ -106,9 +106,9 @@ export function useUpdatePreset() {
 export function useDeletePreset() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (id: number) => {
+    mutationFn: async (args: { id: number; userId: number | null }) => {
       const { error } = await apiClient.DELETE("/net-worth/forecast/presets/{id}", {
-        params: { path: { id } },
+        params: { path: { id: args.id }, query: { user_id: args.userId ?? undefined } },
       });
       throwIfError(error);
     },

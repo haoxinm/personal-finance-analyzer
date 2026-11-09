@@ -1021,7 +1021,7 @@ export interface paths {
          * Update Preset
          * @description Rename and/or replace the parameters. A preset whose stored parameters are invalid can be
          *     renamed (the response is then the name-only `InvalidForecastPreset`) or repaired by sending
-         *     new `params`.
+         *     new `params`. `user_id` is the viewing user, as for the list: another user's preset is 404.
          */
         put: operations["update_preset_api_net_worth_forecast_presets__id__put"];
         post?: never;
@@ -1720,6 +1720,10 @@ export interface components {
             income_growth_pct: number | null;
             /** Spending Growth Pct */
             spending_growth_pct: number | null;
+            /** Income Growth Clamped */
+            income_growth_clamped: boolean;
+            /** Spending Growth Clamped */
+            spending_growth_clamped: boolean;
             /** Savings Rate Pct */
             savings_rate_pct: number | null;
         };
@@ -1742,7 +1746,7 @@ export interface components {
             /** Net Worth Minor */
             net_worth_minor: number | null;
             /** Source */
-            source: ("entries" | "manual" | "mixed") | null;
+            source: ("entries" | "manual" | "carried" | "mixed") | null;
             /** As Of */
             as_of: string | null;
             /** Manual Net Worth Minor */
@@ -5629,7 +5633,9 @@ export interface operations {
     };
     update_preset_api_net_worth_forecast_presets__id__put: {
         parameters: {
-            query?: never;
+            query?: {
+                user_id?: number | null;
+            };
             header?: never;
             path: {
                 id: number;
@@ -5664,7 +5670,9 @@ export interface operations {
     };
     delete_preset_api_net_worth_forecast_presets__id__delete: {
         parameters: {
-            query?: never;
+            query?: {
+                user_id?: number | null;
+            };
             header?: never;
             path: {
                 id: number;

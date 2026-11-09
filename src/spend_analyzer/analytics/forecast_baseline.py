@@ -4,11 +4,14 @@ Read-only aggregation over three existing sources, joined by calendar year:
 
 - **Net worth** (year-end): per person, the last month with data in that year from
   `run_net_worth_query` (balance entries, carried forward per account), else that person's manual
-  value from `net_worth_history`; entries win over a manual value for the same person and year, and
-  a manual value for a year with entries is reported next to it (`manual_net_worth_minor`) but never
-  used. With ``user_id=None`` (all users) the choice is made per person and per year, then summed,
-  so one person's entries never hide another person's manual value; the row's `source` is
-  ``"mixed"`` when both kinds contributed.
+  value from `net_worth_history`; a person's own entries *in that year* win over a manual value for
+  the same year, and a manual value for such a year is reported next to it
+  (`manual_net_worth_minor`) but never used. A year in which the person recorded nothing is not
+  "a year with entries" just because an earlier balance carries forward: the manual value wins,
+  and with no manual value the carried balance fills in, labelled ``"carried"`` (`as_of` is the
+  month of the real entry it comes from). With ``user_id=None`` (all users) the choice is made per
+  person and per year, then summed, so one person's entries never hide another person's manual
+  value; the row's `source` is ``"mixed"`` when several kinds contributed.
 - **Income and tax**: `run_tax_summary`. `income_minor` is the gross taxable income on the imported
   forms (`total_income_minor`, so it includes interest, dividends and capital gains) and
   `earned_income_minor` is its wages + self-employment part; tax is the all-in figure
@@ -58,7 +61,7 @@ _EARNED_CATEGORIES: Final[tuple[IncomeCategory, ...]] = ("salary_wages", "self_e
 class HistoryRow:
     year: int
     net_worth_minor: int | None
-    source: str | None  # "entries" | "manual" | "mixed" (all-users view only) | None
+    source: str | None  # "entries" | "manual" | "carried" | "mixed" (all-users view only) | None
     as_of: str | None
     manual_net_worth_minor: int | None
     manual_note: str | None
@@ -83,6 +86,8 @@ class Defaults:
     spending_annualized: bool
     income_growth_pct: float | None
     spending_growth_pct: float | None
+    income_growth_clamped: bool
+    spending_growth_clamped: bool
     savings_rate_pct: float | None
 
 
@@ -97,33 +102,50 @@ class ForecastBaseline:
 @dataclass(frozen=True)
 class _NetWorthYear:
     net_worth_minor: int
-    source: str  # "entries" | "manual" | "mixed"
+    source: str  # "entries" | "manual" | "carried" | "mixed"
     as_of: str | None
     manual_minor: int | None
     manual_note: str | None
 
 
+@dataclass(frozen=True)
+class _EntryYear:
+    net_worth_minor: int
+    period: str  # "YYYY-MM": the year-end month the value is read at
+    real: bool  # the person has a balance entry of their own in that year
+    as_of: str | None  # the latest real entry month at or before the period
+
+
 def _entries_by_user_year(
     session: Session, user_id: int | None
-) -> dict[int, dict[int, tuple[int, str]]]:
-    """user -> year -> (that user's year-end net worth, "YYYY-MM") from balance entries.
+) -> dict[int, dict[int, _EntryYear]]:
+    """user -> year -> that user's year-end net worth from balance entries.
 
     The year-end month is the last month of the (combined) series in that year, so with several
     users a person whose entries stop early is carried forward exactly as the net-worth screen
-    does. A user with no account in effect at that month has no value for the year."""
+    does. `real` says whether that person recorded a balance in the year itself: a value that is
+    only carried forward from an earlier year is not evidence about the year, so a manual value
+    for it wins (see `_net_worth_by_year`)."""
     result = run_net_worth_query(session, NetWorthQuery(user_id=user_id, currency=CURRENCY))
     year_end: dict[int, str] = {}
     for point in result.series:  # chronological, so the last point of a year wins
         year_end[int(point.period[:4])] = point.period
     ends = set(year_end.values())
     totals: dict[tuple[int, str], int] = defaultdict(int)
+    real_years: set[tuple[int, int]] = set()
+    real_periods: dict[int, set[str]] = defaultdict(set)
     for acc in result.account_series:
         for pt in acc.points:
+            if not pt.carried:
+                real_years.add((acc.user_id, int(pt.period[:4])))
+                real_periods[acc.user_id].add(pt.period)
             if pt.period in ends:
                 totals[(acc.user_id, pt.period)] += signed_balance(acc.category, pt.balance_minor)
-    out: dict[int, dict[int, tuple[int, str]]] = defaultdict(dict)
+    out: dict[int, dict[int, _EntryYear]] = defaultdict(dict)
     for (uid, period), total in sorted(totals.items()):
-        out[uid][int(period[:4])] = (total, period)
+        year = int(period[:4])
+        as_of = max((p for p in real_periods[uid] if p <= period), default=None)
+        out[uid][year] = _EntryYear(total, period, (uid, year) in real_years, as_of)
     return out
 
 
@@ -141,8 +163,11 @@ def _manual_by_user_year(
 
 
 def _net_worth_by_year(session: Session, user_id: int | None) -> dict[int, _NetWorthYear]:
-    """year -> year-end net worth, choosing entries over manual **per person per year**, then
-    summing. The note is kept only for a single user's value."""
+    """year -> year-end net worth, decided **per person per year**, then summed.
+
+    For each person and year: their own balance entries in that year win; else their manual value;
+    else (nothing recorded for the year) the balance carried forward from their earlier entries,
+    labelled ``"carried"``. The note is kept only for a single user's value."""
     entries = _entries_by_user_year(session, user_id)
     manual = _manual_by_user_year(session, user_id)
     years = {y for per_user in entries.values() for y in per_user}
@@ -161,13 +186,20 @@ def _net_worth_by_year(session: Session, user_id: int | None) -> dict[int, _NetW
                 manual_total = (manual_total or 0) + m[0]
                 if user_id is not None:
                     note = m[1]
-            if e is not None:
-                total += e[0]
+            if e is not None and e.real:
+                total += e.net_worth_minor
                 kinds.add("entries")
-                periods.append(e[1])
+                periods.append(e.period)
             elif m is not None:
                 total += m[0]
                 kinds.add("manual")
+            elif e is not None:
+                total += e.net_worth_minor
+                kinds.add("carried")
+                if e.as_of is not None:
+                    periods.append(e.as_of)
+        if "entries" in kinds:  # a carried balance alongside real entries is how the screen works
+            kinds.discard("carried")
         source = next(iter(kinds)) if len(kinds) == 1 else "mixed"
         as_of = max(periods) if periods else None
         out[year] = _NetWorthYear(total, source, as_of, manual_total, note)
@@ -222,11 +254,21 @@ def cagr_pct(first: int, last: int, years: int) -> float | None:
     return round((ratio - 1) * 100, 2)
 
 
-def _growth(values: dict[int, int]) -> float | None:
+#: The forecast API accepts growth rates in this range; observed rates are clamped to it.
+MAX_GROWTH_PCT: Final = 50.0
+
+
+def _growth(values: dict[int, int]) -> tuple[float | None, bool]:
+    """(rate, clamped?). A rate outside +/-`MAX_GROWTH_PCT` (a partial first year, say $10k then
+    $150k, gives ~287%) is clamped to it so "Reset to data" stays savable."""
     years = sorted(values)
     if len(years) < 2:
-        return None
-    return cagr_pct(values[years[0]], values[years[-1]], years[-1] - years[0])
+        return None, False
+    rate = cagr_pct(values[years[0]], values[years[-1]], years[-1] - years[0])
+    if rate is None:
+        return None, False
+    clamped = min(max(rate, -MAX_GROWTH_PCT), MAX_GROWTH_PCT)
+    return clamped, clamped != rate
 
 
 def run_forecast_baseline(session: Session, user_id: int | None) -> ForecastBaseline:
@@ -313,6 +355,8 @@ def _defaults(rows: list[HistoryRow]) -> Defaults:
         for r in rows
         if r.spending_months == 12 and r.spending_minor is not None and r.spending_minor > 0
     }
+    income_growth, income_clamped = _growth(earned_by_year)
+    spending_growth, spending_clamped = _growth(complete_spending)
     return Defaults(
         net_worth_minor=latest_nw.net_worth_minor if latest_nw else None,
         net_worth_year=latest_nw.year if latest_nw else None,
@@ -322,7 +366,9 @@ def _defaults(rows: list[HistoryRow]) -> Defaults:
         annual_spending_minor=spending[0] if spending else None,
         spending_year=spending_year,
         spending_annualized=spending[1] if spending else False,
-        income_growth_pct=_growth(earned_by_year),
-        spending_growth_pct=_growth(complete_spending),
+        income_growth_pct=income_growth,
+        spending_growth_pct=spending_growth,
+        income_growth_clamped=income_clamped,
+        spending_growth_clamped=spending_clamped,
         savings_rate_pct=savings_rate,
     )
