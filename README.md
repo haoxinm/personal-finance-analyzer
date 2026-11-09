@@ -115,6 +115,26 @@ found". `pfa documents reorganize` re-applies the names after you rename a perso
 app never renames files by itself), and `pfa documents check` lists what is missing or not
 referenced. Details: [docs/CLI.md](docs/CLI.md#documents).
 
+**Drop PDFs in, they get imported.** The folders say whose a file is and what it is, so you can
+also put PDFs there yourself (from any computer, over the NAS share) and the app imports them,
+with the same recognition, categorization and review queue as an upload:
+
+```
+<documents folder>/
+  Alex/Statements/Chase/anything.pdf      -> a statement for Alex (any name, any subfolders)
+  Alex/Tax/2024/W-2 from Acme.pdf         -> a tax form for Alex (the form's own year wins)
+  Sam/Statements/Amex/march.pdf           -> a statement for Sam
+```
+
+The folder name must be the name of a person in the app (capitals and spacing do not matter);
+an unknown name is reported, never created. Files stay exactly where you put them, a PDF still
+being copied waits until it is complete, and anything the app cannot import (unknown person, a
+password-protected PDF, a layout it does not recognise yet) is listed on the Import page with the
+reason and a Retry button. It is **off by default**: turn on *Folder imports* in Settings (or run
+`pfa documents scan` once). If an LLM is enabled, new statements' descriptions are sent to it for
+categorization without a click, exactly as after an upload. See
+[docs/CLI.md](docs/CLI.md#folder-imports) and, for a NAS, [docs/DOCKER.md](docs/DOCKER.md#dropping-pdfs-into-the-folder-folder-imports).
+
 ### Everyone gets their own view
 
 Every page except Settings has a user bar ("All users" plus one chip per user, a dropdown beyond
@@ -586,7 +606,7 @@ pfa classify             run the classification cascade over unclassified transa
 pfa report               print monthly category totals for a date range
 pfa export               export transactions to CSV/JSON (never includes account masks)
 pfa backup               move all data to another machine (create / inspect / restore)
-pfa documents            your PDFs under readable names (where / reorganize [--dry-run] / check)
+pfa documents            your PDFs under readable names (where / reorganize [--dry-run] / check / scan [--dry-run])
 pfa llm                  configure the LLM (show / set / enable / disable / set-key / clear-key / test)
 pfa doctor               diagnose the local install: Python, data dir, DB, secret backend (read-only; --write-test), LLM
 pfa eval                 run the classifier evaluation harness against a labelled CSV

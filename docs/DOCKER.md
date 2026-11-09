@@ -140,6 +140,49 @@ $ docker compose exec pfa pfa documents reorganize              # do it
 $ docker compose exec pfa pfa documents check                   # missing / moved / unreferenced files
 ```
 
+### Dropping PDFs into the folder (folder imports)
+
+The folder works in both directions: put a PDF in the right place, from any computer on your
+network (the share), and the app imports it. The folder names say whose it is and what it is:
+
+```
+pfa/documents/
+  Alex/Statements/Chase/2024-03 statement.pdf          any name, any subfolders  -> Alex's statement
+  Alex/Statements/Ally/Checking/anything.pdf
+  Alex/Tax/2024/W-2 from Acme.pdf                       any name                  -> Alex's tax form
+  Sam/Statements/Amex/march.pdf                         -> Sam's statement
+  Shared/...                                            not imported: a file needs a person
+```
+
+- `Alex` and `Sam` must be the names of people in the app (capitals and spacing do not matter). An
+  unknown name is listed on the Import page with a hint ("create a person named ... or rename the
+  folder"); the app never creates a person from a folder name.
+- Turn it on in **Settings > Folder imports** (off by default), or start the container with
+  `PFA_WATCH_ENABLED=1` (and `PFA_WATCH_INTERVAL=60` for the seconds between looks at the folder).
+  A new file shows up after it has stopped changing, typically within one to two intervals; "Scan
+  now" on the Import page, or `docker compose exec pfa pfa documents scan`, does not wait for the
+  next one. `pfa documents scan --dry-run` shows what would happen first.
+- The app **polls** the folder instead of listening for file events, because those are unreliable
+  over SMB and NFS. It waits until a file's size and modification time stop changing and it looks
+  like a complete PDF, so a file still being copied is never half-imported.
+- Files stay where you put them (not renamed, moved or copied); the database just records where
+  they are. For tax forms this happens even though `store_tax_pdf_copies` is off: that setting only
+  decides whether the app copies an *upload*. Deleting a statement or tax document in the app
+  deletes that file, like any imported PDF.
+- **Permissions: the app only needs to read a dropped file** (it never rewrites it). Files created
+  over SMB are often owned by another user; make sure `PUID:PGID` can read them (a group the share
+  gives read access to, or a share-wide ACL), and that folders you create can be entered
+  (`r-x`). A file the container cannot read is reported on the Import page as unreadable. Writing
+  into the folder (the app filing its own imports) still needs write access, as above.
+- What cannot be imported is listed on the Import page with the reason and a Retry button: an
+  unknown person, a password-protected PDF, a statement layout the app does not recognise yet (open
+  the Import page once, upload that file and choose the extractor; later statements of that bank
+  are recognised), a scan with no text, or the same file already imported for someone else.
+- **If an LLM is enabled in Settings, folder imports send each new statement's descriptions to it
+  for categorization without a click**, exactly as an upload does after you confirm it (nothing is
+  sent while the LLM is off, and tax forms stay local unless you turned on the tax LLM fallback).
+  Review what would be sent under Settings first if that matters.
+
 ### Keeping the documents somewhere else (an existing NAS share)
 
 `./pfa/documents` is just a default. To keep the PDFs in a folder you already have (and already
@@ -754,6 +797,8 @@ Auto-updaters such as Watchtower work, but take a backup schedule with them.
 | `TZ` | `UTC` | time zone for logs and local dates |
 | `PFA_HOME` | `/pfa/data` | data directory: database, settings, logs (do not change unless you move the mount) |
 | `PFA_DOCUMENTS_DIR` | `/pfa/documents` | your PDFs under readable names; may be a separate mount (also `[storage] documents_dir` in `config.toml`) |
+| `PFA_WATCH_ENABLED` | unset (off) | `1` to import PDFs dropped into the documents folder automatically (also `[watch] enabled`, or Settings); see [Dropping PDFs into the folder](#dropping-pdfs-into-the-folder-folder-imports) |
+| `PFA_WATCH_INTERVAL` | `60` | seconds between looks at the documents folder (10 to 86400; also `[watch] interval_seconds`) |
 | `PFA_HOST` | `0.0.0.0` | address to listen on |
 | `PFA_SERVER__PORT` | `8756` | port to listen on (also what the healthcheck probes) |
 | `PFA_PASSWORD[_FILE]`, `PFA_PASSWORD_HASH[_FILE]` | none | the login; one is required |
@@ -848,6 +893,13 @@ that user, or `chmod 644` it (or use a hash, which is not secret).
 **`cannot write to the documents folder ... as uid ...`.** The folder you mounted at
 `/pfa/documents` (or `PFA_DOCUMENTS_DIR`) is not writable by `PUID:PGID`. On a NAS share give that
 user read/write access (for SMB/NFS mounts the container cannot chown it for you).
+
+**A PDF I dropped into the folder was not imported.** Open the Import page: the "Folder imports"
+panel says whether watching is on and lists what needs attention. Common reasons: watching is off
+(Settings > Folder imports, or "Scan now"), the person folder is not the name of a person in the
+app, the file sits outside `<Person>/Statements/` or `<Person>/Tax/<year>/`, it is still being
+copied, or the container user cannot read it (see the permissions note above). Fix the cause and
+press Retry (or just wait: an unknown person resolves by itself once you create them).
 
 **`PDF not found` where a statement or tax form should show.** The file was moved out of the
 documents folder or deleted. The app finds files that were merely moved or renamed *inside* it;

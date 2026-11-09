@@ -74,6 +74,13 @@ services:
       # PFA_ALLOWED_CLIENTS: "private,100.64.0.0/10"
       # PFA_ALLOWED_CLIENTS: "192.168.1.0/24"
 
+      # Import PDFs you drop into ./pfa/documents/<Person>/Statements/ or <Person>/Tax/<year>/
+      # (from any computer on the LAN) automatically. Off by default; it can also be switched on
+      # in Settings. If an LLM is enabled, new statements' descriptions are sent to it without a
+      # click. See "Dropping PDFs into the folder" in docs/DOCKER.md.
+      # PFA_WATCH_ENABLED: "1"
+      # PFA_WATCH_INTERVAL: "60"
+
       # Optional LLM for classification: put the key in a secret (see "secrets" below).
       # PFA_LLM_API_KEY_FILE: /run/secrets/pfa_llm_api_key
 
