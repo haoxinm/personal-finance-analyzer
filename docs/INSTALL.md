@@ -111,17 +111,40 @@ or do the same from the web UI the browser just opened.
 | Windows | `%LOCALAPPDATA%\PersonalFinanceAnalyzer\` (e.g. `C:\Users\you\AppData\Local\PersonalFinanceAnalyzer`) |
 | Linux / other | `$XDG_DATA_HOME/personal-finance-analyzer/`, i.e. `~/.local/share/personal-finance-analyzer/` by default |
 
-Inside: `finance.db` (SQLite, WAL mode), `statements/<sha256>.pdf` (a copy of each imported PDF,
-unless you set `[privacy] store_pdf_copies = false` in `config.toml`), `config.toml`, and
-`logs/app.log`. Nothing here is ever uploaded anywhere by Personal Finance Analyzer itself — there is no
+Inside: `finance.db` (SQLite, WAL mode), `config.toml`, `logs/app.log`, and `documents/`: a copy
+of each imported PDF under a readable name such as
+`documents/Alex/Statements/Chase/2024-03 Chase credit 1234.pdf` (unless you set
+`[privacy] store_pdf_copies = false` in `config.toml`; see [Documents folder](#documents-folder)). Nothing here is ever uploaded anywhere by Personal Finance Analyzer itself — there is no
 telemetry, no analytics, and (unless you opt in to the yearly tax-parameter check, see
 [Privacy settings](#privacy-settings)) no update check. `tax_params/` holds the optional
 downloaded or imported tax-parameter files and the date of the last check.
 
 To move this data to another computer, use `pfa backup create` and `backup restore`
 (see [Moving to another machine](../README.md#moving-to-another-machine)) rather than copying the
-directory by hand: a backup is consistent while the app runs, and restore fixes up the stored PDF
-paths for the new location.
+directory by hand: a backup is consistent while the app runs, and it carries the documents folder
+along.
+
+### Documents folder
+
+Your imported PDFs are plain files you can open without the app, in `documents/` inside the data
+directory by default (`~/Library/Application Support/PersonalFinanceAnalyzer/documents` on macOS,
+and so on). To keep them somewhere easier to reach, or on a NAS share, set either of
+
+```toml
+# config.toml
+[storage]
+documents_dir = "D:\\Finance\\Documents"     # absolute, or relative to the data directory
+```
+
+```console
+$ PFA_DOCUMENTS_DIR=/Volumes/nas/finance pfa serve     # the environment variable wins
+```
+
+Changing the setting does not move anything by itself. To relocate an existing folder, move or
+copy it to the new place yourself (the database records each path relative to the folder, so
+nothing else changes), set the new location, then run `pfa documents check`. On macOS and Linux
+the folders are created `0700` and the files `0600`. Network shares are fine for PDFs (not for
+`finance.db`). `pfa documents where` prints the folder in use.
 
 Override the location for a second profile, a test, or a portable install (the former name of the
 variable, `SPEND_ANALYZER_HOME`, is still read when `PFA_HOME` is not set):
@@ -283,10 +306,12 @@ rename anything; until then they keep reading the old directory.
   untouched. A directory you chose with `SPEND_ANALYZER_HOME` or `PFA_HOME` is never moved.
 - **Database.** `spend.db` is renamed to `finance.db` in whichever data directory you use. A database
   another process still has open is left under its old name until it is closed.
-- **Kept PDF copies.** The database records each kept statement and tax PDF by absolute path.
-  After the directory is moved those paths are rewritten to the new location, and a copy whose
-  recorded path no longer exists is looked up at `statements/<sha256>.pdf` under the current data
-  directory, so re-parsing, viewing and deleting keep working.
+- **Kept PDF copies.** Versions before the documents folder recorded each kept statement and tax
+  PDF by absolute path, under `statements/<sha256>.pdf`. After the directory is moved those paths
+  are rewritten to the new location, and a copy whose recorded path no longer exists is looked up
+  at `statements/<sha256>.pdf` under the current data directory, so re-parsing, viewing and
+  deleting keep working. The first command that opens the database then moves each of those files
+  to a readable name in the [documents folder](#documents-folder).
 - **LLM API key.** A key saved in the OS credential store under the old service name is copied to
   the new one the first time it is read, then the old entry is deleted.
 - **Environment variables.** Every `SPEND_ANALYZER_*` variable (`SPEND_ANALYZER_HOME`,

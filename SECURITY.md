@@ -70,8 +70,19 @@ Given that, the threats this project actually defends against are:
    database, logs or extract cache, and the uploaded PDF is deleted unless
    `[privacy] store_tax_pdf_copies` is turned on; balances are never exported or sent anywhere.
 
-6. **A backup file leaking.** `pfa backup create` and Settings -> Backup & restore bundle
-   the database, kept PDFs and settings into one file to carry to another machine, so the file holds
+6. **The documents folder leaking.** Every statement (and, if you opted in with
+   `[privacy] store_tax_pdf_copies`, every tax form) you import is kept as an ordinary PDF in the
+   documents folder under a readable name, on purpose: so you can open it without the app. That
+   makes the folder as sensitive as the originals (account numbers, income, for tax forms full
+   SSNs). On a normal install it is created `0700`/`0600`; in Docker the `UMASK` decides (default
+   `077`), and a folder you mount from a NAS share is as protected as that share is, so **protect
+   the share** (user permissions, no guest access, no public sharing links, encrypted volume or
+   disk, and keep it in your backup plan). File names never contain an SSN, an EIN or a full
+   account number, but they do contain your name, the bank and the month. The app only ever deletes
+   a file it put there, and only when you delete the statement or document it belongs to.
+
+7. **A backup file leaking.** `pfa backup create` and Settings -> Backup & restore bundle
+   the database, the documents folder's PDFs and settings into one file to carry to another machine, so the file holds
    everything the app knows. It is encrypted with a passphrase by default (scrypt + AES-256-GCM,
    authenticated, so tampering is detected), never contains the keychain API key or
    `[llm] extra_headers`, and restore verifies the whole archive in a staging directory before it
