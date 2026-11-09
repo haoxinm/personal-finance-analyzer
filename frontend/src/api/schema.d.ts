@@ -3606,11 +3606,11 @@ export interface components {
          * TaxProfileIn
          * @description `PUT /api/tax/profiles/{user_id}/{tax_year}` body: the manual inputs of the estimate.
          *     Amounts are non-negative cents. `joint_with_user_id` (the spouse, another existing user) is
-         *     only valid with `filing_status` `mfj`. `age65_or_blind_count` counts the boxes checked for the
-         *     additional standard deduction (age 65 or older, blind): at most 2 for one person (every status
-         *     but `mfj`), at most 4 for `mfj` (the household's, when spouses share one profile; each
-         *     spouse's profile is summed). `age65_count` is how many of the people are 65 or older, for the
-         *     2025-2028 senior deduction (at most 1, or 2 for `mfj`; not more than the boxes).
+         *     only valid with `filing_status` `mfj`. A profile describes only its own user: with a linked
+         *     spouse the two profiles are added together, so each spouse enters their own boxes.
+         *     `age65_or_blind_count` counts the boxes checked for the additional standard deduction (age 65
+         *     or older, blind): at most 2 per person. `age65_count` is 1 when this user is 65 or older (for
+         *     the 2025-2028 senior deduction) and not more than the boxes.
          */
         TaxProfileIn: {
             /**

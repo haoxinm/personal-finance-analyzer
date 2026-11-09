@@ -468,9 +468,12 @@ def test_senior_deduction_phases_out_at_six_percent_over_75k() -> None:
     # MAGI 95,000: 6% x 20,000 = 1,200 -> 4,800
     r = _calc(2025, wages=95_000, senior_count=1)
     assert r.senior_deduction_minor == 4_800 * D
-    # MFJ, both 65+, MAGI 170,000: 12,000 - 6% x 20,000 = 10,800
+    # MFJ, both 65+, MAGI 170,000: each person's 6,000 - 6% x 20,000 = 4,800 (IRC 151(d)(5)(C)(ii))
     j = _calc(2025, "mfj", wages=170_000, senior_count=2)
-    assert j.senior_deduction_minor == 10_800 * D
+    assert j.senior_deduction_minor == 9_600 * D
+    # MAGI 200,000: each 6,000 - 3,000, so 6,000 in all; fully gone at 250,000
+    assert _calc(2025, "mfj", wages=200_000, senior_count=2).senior_deduction_minor == 6_000 * D
+    assert _calc(2025, "mfj", wages=250_000, senior_count=2).senior_deduction_minor == 0
     assert (
         _calc(2025, wages=175_000, senior_count=1).senior_deduction_minor == 0
     )  # fully phased out
