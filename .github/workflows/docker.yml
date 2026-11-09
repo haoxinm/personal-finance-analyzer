@@ -1,0 +1,136 @@
+name: Docker
+
+# Builds the container image for linux/amd64 and linux/arm64 (many NAS are ARM).
+#   pull request   build only, nothing is pushed
+#   push to main   push ghcr.io/haoxinm/personal-finance-analyzer:edge
+#   tag v*         push :<version>, :<major>.<minor>, :<major> and (not for pre-releases) :latest
+# Docker Hub gets the same tags when the repository secrets DOCKERHUB_USERNAME and
+# DOCKERHUB_TOKEN are set; without them that login and that destination are skipped. See
+# docs/DOCKER.md ("Publishing").
+#
+# One-time, by hand: GitHub creates a new container package as private. After the first push open
+# the package (repo page > Packages > personal-finance-analyzer > Package settings) and set its
+# visibility to Public, or nobody can pull it without logging in.
+on:
+  push:
+    branches: ["main"]
+    tags: ["v*"]
+  pull_request:
+    paths:
+      - "Dockerfile"
+      - ".dockerignore"
+      - "docker/**"
+      - "docker-compose.yml"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "hatch_build.py"
+      - "src/**"
+      - "frontend/**"
+      - ".github/workflows/docker.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  GHCR_IMAGE: ghcr.io/haoxinm/personal-finance-analyzer
+  DOCKERHUB_IMAGE_NAME: personal-finance-analyzer
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      # Optional Docker Hub publishing: set the secrets DOCKERHUB_USERNAME and DOCKERHUB_TOKEN
+      # (an access token, not your password). Unset secrets expand to empty strings.
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up QEMU (to build the arm64 image on an amd64 runner)
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build the amd64 image and smoke-test it
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          tags: personal-finance-analyzer:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test (login, migrations, bind mounts, ownership, restart)
+        run: PFA_SMOKE_CHECK_OWNER=1 docker/smoke-test.sh personal-finance-analyzer:ci
+
+      - name: Log in to GitHub Container Registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log in to Docker Hub (only when configured)
+        if: github.event_name != 'pull_request' && env.DOCKERHUB_USERNAME != '' && env.DOCKERHUB_TOKEN != ''
+        uses: docker/login-action@v3
+        with:
+          username: ${{ env.DOCKERHUB_USERNAME }}
+          password: ${{ env.DOCKERHUB_TOKEN }}
+
+      - name: Image names, tags and OCI labels
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ${{ env.GHCR_IMAGE }}
+            ${{ (env.DOCKERHUB_USERNAME != '' && env.DOCKERHUB_TOKEN != '') && format('docker.io/{0}/{1}', env.DOCKERHUB_USERNAME, env.DOCKERHUB_IMAGE_NAME) || '' }}
+          flavor: |
+            latest=false
+          tags: |
+            type=edge,branch=main
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}},enable=${{ !startsWith(github.ref, 'refs/tags/v0.') }}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '-') }}
+            type=ref,event=pr
+          # org.opencontainers.image.source (and revision, version, created, ...) are added
+          # automatically from the repository; it is what links the GHCR package to this repo.
+          labels: |
+            org.opencontainers.image.title=Personal Finance Analyzer
+            org.opencontainers.image.description=Local-first spending, income and tax, and net-worth analysis from your own statements and tax forms. Self-hosted; no telemetry.
+            org.opencontainers.image.licenses=MIT
+
+      - name: Build for amd64 and arm64 (pushed, except on pull requests)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            SOURCE_URL=https://github.com/${{ github.repository }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Summary
+        if: github.event_name != 'pull_request'
+        run: |
+          {
+            echo "### Published"
+            echo '```'
+            echo "${{ steps.meta.outputs.tags }}"
+            echo '```'
+            echo "New package? Set its visibility to **Public** once: Packages > personal-finance-analyzer > Package settings."
+          } >> "$GITHUB_STEP_SUMMARY"
