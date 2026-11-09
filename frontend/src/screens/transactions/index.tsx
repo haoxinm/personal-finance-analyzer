@@ -1,7 +1,11 @@
 import * as React from "react";
 
 import { usePatchTransaction, useTaxonomy } from "@/api/hooks";
-import { useApplySuggestion, useTransactionCandidates } from "@/api/suggestions";
+import {
+  useApplySuggestion,
+  useRevertToAutomatic,
+  useTransactionCandidates,
+} from "@/api/suggestions";
 import { categoryLabel, type SuggestionCandidate } from "@/components/primitives/suggestion-labels";
 import { Page, PageHeader } from "@/components/primitives/page";
 import { EmptyState, ErrorState, LoadingState } from "@/components/primitives/states";
@@ -72,6 +76,7 @@ export default function TransactionsScreen() {
   const restoreFocus = React.useRef(false);
   const wasEditing = React.useRef(false);
   const applySuggestion = useApplySuggestion();
+  const revertToAutomatic = useRevertToAutomatic();
   const candidates = useTransactionCandidates(editing?.id);
   const [exporting, setExporting] = React.useState(false);
 
@@ -229,6 +234,22 @@ export default function TransactionsScreen() {
     setEditing(null);
   }
 
+  function handleRevertEditing() {
+    if (!editing) return;
+    revertToAutomatic.mutate({ transactionIds: [editing.id] });
+    setEditing(null);
+  }
+
+  async function handleBulkRevert() {
+    try {
+      await revertToAutomatic.mutateAsync({ transactionIds: Array.from(selectedIds) });
+      setSelectedIds(new Set());
+      setAllMatchingSelected(false);
+    } catch {
+      // The hook already told the user; keep the selection so they can retry.
+    }
+  }
+
   async function handleExport(format: "csv" | "json") {
     setExporting(true);
     try {
@@ -298,6 +319,8 @@ export default function TransactionsScreen() {
         }}
         onApply={(patch) => void handleBulkApply(patch)}
         applying={bulkUpdate.isPending}
+        onRevert={() => void handleBulkRevert()}
+        reverting={revertToAutomatic.isPending}
         selectingAll={allMatchingIds.isPending}
         allMatchingSelected={allMatchingSelected}
       />
@@ -347,10 +370,13 @@ export default function TransactionsScreen() {
           categories={categories}
           onSave={(patch) => void handleSaveEdit(patch)}
           onClose={() => setEditing(null)}
-          saving={patchTransaction.isPending || applySuggestion.isPending}
+          saving={
+            patchTransaction.isPending || applySuggestion.isPending || revertToAutomatic.isPending
+          }
           candidates={candidates.data?.candidates}
           conflict={candidates.data?.conflict}
           onApplySuggestion={handleApplySuggestion}
+          onRevert={handleRevertEditing}
         />
       ) : null}
     </Page>

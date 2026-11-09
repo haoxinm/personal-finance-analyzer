@@ -244,10 +244,13 @@ describe("RulesTab precedence and retroactive apply", () => {
       "one-time edits to a transaction > your own rules (lower priority number wins; ties go to the older rule) > built-in rules > issuer category and merchant cache > LLM",
     );
     expect(screen.getByTestId("precedence-note")).toHaveTextContent(
-      "A transaction you edited by hand is never changed by a rule.",
+      "A transaction you edited by hand is never changed by a rule until you choose",
     );
     expect(screen.getByTestId("precedence-note")).toHaveTextContent(
       "one click uses a lower one for that transaction only",
+    );
+    expect(screen.getByTestId("precedence-note")).toHaveTextContent(
+      "until you choose “Revert to automatic”",
     );
   });
 

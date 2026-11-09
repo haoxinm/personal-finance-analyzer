@@ -27,6 +27,9 @@ export interface EditPopoverProps {
   conflict?: boolean;
   /** One click on a chip: apply that candidate as a one-time edit (the caller closes the dialog). */
   onApplySuggestion?: (candidate: SuggestionCandidate) => void;
+  /** Hand an edited row back to automatic classification (the caller closes the dialog). Offered
+   * only when the row carries a one-time edit, which the candidates say. */
+  onRevert?: () => void;
 }
 
 /**
@@ -41,7 +44,8 @@ export interface EditPopoverProps {
  *
  * Above the form, when the transaction has them, one-click suggestion chips show what each
  * classification layer would say (`SuggestionChips`): the higher-priority answer is already
- * applied, and a chip applies a lower-priority one as a one-time edit.
+ * applied, and a chip applies a lower-priority one as a one-time edit. A row that was edited by
+ * hand also offers "Revert to automatic" (`onRevert`), the one way to let rules reach it again.
  */
 export function EditPopover({
   transaction,
@@ -52,6 +56,7 @@ export function EditPopover({
   candidates,
   conflict = false,
   onApplySuggestion,
+  onRevert,
 }: EditPopoverProps) {
   const [categoryKey, setCategoryKey] = React.useState(transaction.category_key ?? "");
   const [subcategoryKey, setSubcategoryKey] = React.useState(transaction.subcategory_key ?? "");
@@ -141,6 +146,7 @@ export function EditPopover({
           conflict={conflict}
           categories={categories}
           onApply={onApplySuggestion}
+          onRevert={onRevert}
           disabled={saving}
         />
       ) : null}

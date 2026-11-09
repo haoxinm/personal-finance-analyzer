@@ -427,6 +427,7 @@ describe("ReviewScreen suggestion chips", () => {
       label: "costco",
       rule_id: 4,
       is_current: false,
+      is_automatic: true,
     },
     {
       source: "builtin_rule",
@@ -436,6 +437,7 @@ describe("ReviewScreen suggestion chips", () => {
       label: "COSTCO",
       rule_id: 9,
       is_current: false,
+      is_automatic: false,
     },
   ];
 

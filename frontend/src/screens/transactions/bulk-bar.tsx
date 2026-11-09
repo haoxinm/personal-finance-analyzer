@@ -13,6 +13,9 @@ export interface BulkBarProps {
   onClear: () => void;
   onApply: (patch: { categoryKey: string; subcategoryKey: string; kind?: Kind }) => void;
   applying?: boolean;
+  /** Hand every selected row that was edited by hand back to automatic classification. */
+  onRevert?: () => void;
+  reverting?: boolean;
   selectingAll?: boolean;
   /** The selection is "everything the filters match" (not rows the user ticked): applying a label
    *  then asks for confirmation, with the count, first. */
@@ -34,6 +37,8 @@ export function BulkBar({
   onClear,
   onApply,
   applying,
+  onRevert,
+  reverting,
   selectingAll,
   allMatchingSelected,
 }: BulkBarProps) {
@@ -133,6 +138,18 @@ export function BulkBar({
       >
         {applying ? "Applying…" : `Apply to ${selectedCount}`}
       </Button>
+      {onRevert ? (
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          disabled={reverting || applying}
+          onClick={onRevert}
+          title="Remove your one-time edits from the selected transactions and let the rules decide again. Rows you never edited are left as they are."
+        >
+          {reverting ? "Reverting…" : "Revert to automatic"}
+        </Button>
+      ) : null}
       <Button type="button" variant="ghost" size="sm" onClick={onClear}>
         Clear selection
       </Button>

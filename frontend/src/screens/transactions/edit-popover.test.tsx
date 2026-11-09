@@ -166,6 +166,7 @@ describe("EditPopover suggestions", () => {
       label: "acme",
       rule_id: 1,
       is_current: true,
+      is_automatic: true,
     },
     {
       source: "builtin_rule" as const,
@@ -175,6 +176,7 @@ describe("EditPopover suggestions", () => {
       label: "ACME",
       rule_id: 2,
       is_current: false,
+      is_automatic: false,
     },
   ];
 
@@ -195,9 +197,11 @@ describe("EditPopover suggestions", () => {
 
     const dialog = screen.getByRole("dialog");
     expect(within(dialog).getByRole("note")).toHaveTextContent("Sources disagree");
-    expect(
-      within(dialog).getByRole("button", { name: "Groceries › Supermarket, your rule 'acme', current" }),
-    ).toHaveAttribute("aria-pressed", "true");
+    // The applied answer is shown but is not a control: a click would only freeze it.
+    expect(within(dialog).getByTestId("current-chip")).toHaveTextContent(
+      "Groceries › Supermarket · your rule 'acme'",
+    );
+    expect(within(dialog).queryByRole("button", { name: /Supermarket/ })).not.toBeInTheDocument();
 
     await userEvent.click(within(dialog).getByRole("button", { name: "Fuel › Gasoline, built-in" }));
 
@@ -216,5 +220,55 @@ describe("EditPopover suggestions", () => {
       />,
     );
     expect(screen.queryByRole("group", { name: "Suggested categories" })).not.toBeInTheDocument();
+  });
+
+  it("offers Revert to automatic on an edited row, and none on an automatic one", async () => {
+    const onRevert = vi.fn();
+    const edited = [
+      {
+        source: "one_time_edit" as const,
+        category_key: "fuel",
+        subcategory_key: "gasoline",
+        kind: null,
+        label: "your one-time edit",
+        rule_id: null,
+        is_current: true,
+        is_automatic: false,
+      },
+      { ...CANDIDATES[0]!, is_current: false, is_automatic: true },
+    ];
+    const { rerender } = render(
+      <EditPopover
+        transaction={makeTransaction()}
+        categories={CATS}
+        onSave={vi.fn()}
+        onClose={vi.fn()}
+        candidates={edited}
+        conflict={false}
+        onApplySuggestion={vi.fn()}
+        onRevert={onRevert}
+      />,
+    );
+
+    const dialog = screen.getByRole("dialog");
+    expect(
+      within(dialog).getByRole("button", { name: /^Automatic: Groceries › Supermarket/ }),
+    ).toBeInTheDocument();
+    await userEvent.click(within(dialog).getByRole("button", { name: "Revert to automatic" }));
+    expect(onRevert).toHaveBeenCalledTimes(1);
+
+    rerender(
+      <EditPopover
+        transaction={makeTransaction()}
+        categories={CATS}
+        onSave={vi.fn()}
+        onClose={vi.fn()}
+        candidates={CANDIDATES}
+        conflict
+        onApplySuggestion={vi.fn()}
+        onRevert={onRevert}
+      />,
+    );
+    expect(screen.queryByRole("button", { name: "Revert to automatic" })).not.toBeInTheDocument();
   });
 });

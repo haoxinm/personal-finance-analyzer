@@ -1,3 +1,4 @@
+import { Button } from "@/components/ui/button";
 import { cn } from "@/utils";
 
 import {
@@ -14,6 +15,12 @@ export interface SuggestionChipsProps {
   categories: CategoryLike[];
   /** One click: apply this candidate as a one-time edit of the transaction. */
   onApply: (candidate: SuggestionCandidate) => void;
+  /**
+   * Hand an edited row back to automatic classification (clear its one-time edit and re-run the
+   * rules). Only meaningful on a row that carries a one-time edit; when given, such a row shows a
+   * "Revert to automatic" button, and its "Automatic" chip reverts instead of making a second edit.
+   */
+  onRevert?: () => void;
   disabled?: boolean;
   className?: string;
 }
@@ -32,10 +39,14 @@ export function SuggestionChips({
   conflict,
   categories,
   onApply,
+  onRevert,
   disabled = false,
   className,
 }: SuggestionChipsProps) {
-  if (!candidates.some((candidate) => !candidate.is_current)) return null;
+  const edited = candidates.some((candidate) => candidate.source === "one_time_edit");
+  const canRevert = edited && onRevert !== undefined;
+  if (!candidates.some((candidate) => !candidate.is_current) && !canRevert) return null;
+  const automatic = candidates.find((candidate) => candidate.is_automatic);
 
   return (
     <div
@@ -51,7 +62,12 @@ export function SuggestionChips({
         className,
       )}
     >
-      {conflict ? (
+      {edited ? (
+        <p className="text-xs text-muted-foreground" data-testid="suggestion-edited-note">
+          You edited this transaction, so rules and re-classifying leave it alone. Click another
+          answer to use it for this transaction only, or revert to automatic.
+        </p>
+      ) : conflict ? (
         <p role="note" className="text-xs text-foreground">
           Sources disagree — the highest-priority one is applied; click another to use it for this
           transaction only.
@@ -69,42 +85,90 @@ export function SuggestionChips({
             candidate.subcategory_key,
           );
           const source = sourceLabel(candidate);
-          // A one-time edit that is already in place has nothing left to apply.
-          const inert = candidate.source === "one_time_edit";
+          // The answer the row is filed under now has nothing left to apply: a click would only
+          // freeze it as a one-time edit. It is shown, but it is not a control.
+          if (candidate.is_current) {
+            const why =
+              candidate.source === "one_time_edit"
+                ? "Your one-time edit. It stays until you revert to automatic."
+                : "Already applied: this is the automatic answer for this transaction.";
+            return (
+              <li key={`${candidate.source}:${candidate.rule_id ?? ""}:${candidate.label}`}>
+                <span
+                  data-testid="current-chip"
+                  title={`${category} · ${source}. ${why}`}
+                  className="inline-flex max-w-full cursor-default items-center gap-1.5 rounded-full border border-primary bg-primary/10 px-2.5 py-1 text-xs font-medium text-foreground"
+                >
+                  <span className="truncate">
+                    {category} · {source}
+                  </span>
+                  <span className="shrink-0 rounded-full bg-primary px-1.5 text-[10px] font-semibold uppercase tracking-wide text-primary-foreground">
+                    Current
+                  </span>
+                  <span className="sr-only">. {why}</span>
+                </span>
+              </li>
+            );
+          }
+          // On an edited row the winning layer is the "Automatic" answer, and clicking it hands
+          // the row back (a second one-time edit would only re-freeze it).
+          const revertsRow = canRevert && candidate.is_automatic;
           return (
             <li key={`${candidate.source}:${candidate.rule_id ?? ""}:${candidate.label}`}>
               <button
                 type="button"
-                aria-pressed={candidate.is_current}
-                aria-disabled={inert || disabled ? true : undefined}
-                aria-label={`${category}, ${source}${candidate.is_current ? ", current" : ""}`}
-                title={`${category} · ${source}${candidate.kind ? ` · sets kind to ${candidate.kind}` : ""}`}
+                aria-pressed={false}
+                aria-label={`${revertsRow ? "Automatic: " : ""}${category}, ${source}${revertsRow ? ", reverts to automatic" : ""}`}
+                title={
+                  revertsRow
+                    ? `Revert to automatic: ${category} · ${source}`
+                    : `${category} · ${source}${candidate.kind ? ` · sets kind to ${candidate.kind}` : ""}`
+                }
                 disabled={disabled}
                 onClick={() => {
-                  if (!inert) onApply(candidate);
+                  if (revertsRow) onRevert?.();
+                  else onApply(candidate);
                 }}
                 className={cn(
                   "inline-flex max-w-full items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs",
                   "focus:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                  candidate.is_current
-                    ? "border-primary bg-primary/10 font-medium text-foreground"
-                    : "border-border bg-transparent text-foreground hover:bg-muted",
+                  "border-border bg-transparent text-foreground hover:bg-muted",
                   disabled ? "opacity-60" : undefined,
                 )}
               >
+                {edited && candidate.is_automatic ? (
+                  <span className="shrink-0 rounded-full bg-muted px-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                    Automatic
+                  </span>
+                ) : null}
                 <span className="truncate">
                   {category} · {source}
                 </span>
-                {candidate.is_current ? (
-                  <span className="shrink-0 rounded-full bg-primary px-1.5 text-[10px] font-semibold uppercase tracking-wide text-primary-foreground">
-                    Current
-                  </span>
-                ) : null}
               </button>
             </li>
           );
         })}
       </ul>
+      {canRevert ? (
+        <div className="flex flex-col items-start gap-1">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={disabled}
+            onClick={onRevert}
+            title="Remove your one-time edit and let the rules decide again"
+          >
+            Revert to automatic
+          </Button>
+          {automatic === undefined ? (
+            <p className="text-xs text-muted-foreground" data-testid="revert-fallback-note">
+              No rule or saved answer matches this transaction, so it would become Uncategorized
+              and be flagged for review.
+            </p>
+          ) : null}
+        </div>
+      ) : null}
     </div>
   );
 }

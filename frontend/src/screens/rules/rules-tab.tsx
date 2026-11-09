@@ -409,7 +409,9 @@ export function RulesTab() {
             Order of precedence: one-time edits to a transaction &gt; your own rules (lower priority
             number wins; ties go to the older rule) &gt; built-in rules &gt; issuer category and merchant
             cache &gt; LLM. A rule applies to future imports; use &ldquo;Apply to existing&rdquo; to change
-            transactions you already have. A transaction you edited by hand is never changed by a rule.
+            transactions you already have. A transaction you edited by hand is never changed by a rule
+            until you choose &ldquo;Revert to automatic&rdquo; for it (in its editor, or in bulk on
+            Transactions); then the rules decide again.
             When these sources disagree about a transaction, Review and the transaction editor show
             each one as a suggestion chip: the higher one still wins by default, and one click uses
             a lower one for that transaction only.

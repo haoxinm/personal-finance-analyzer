@@ -28,12 +28,13 @@ function candidate(overrides: Partial<SuggestionCandidate>): SuggestionCandidate
     label: "costco",
     rule_id: 3,
     is_current: false,
+    is_automatic: false,
     ...overrides,
   };
 }
 
 const CONFLICT: SuggestionCandidate[] = [
-  candidate({ is_current: true }),
+  candidate({ is_current: true, is_automatic: true }),
   candidate({
     source: "builtin_rule",
     category_key: "grocery",
@@ -50,32 +51,64 @@ const CONFLICT: SuggestionCandidate[] = [
   }),
 ];
 
+const EDITED: SuggestionCandidate[] = [
+  candidate({
+    source: "one_time_edit",
+    category_key: "fuel",
+    subcategory_key: "gasoline",
+    label: "your one-time edit",
+    rule_id: null,
+    is_current: true,
+  }),
+  candidate({ is_automatic: true }),
+  candidate({
+    source: "builtin_rule",
+    category_key: "grocery",
+    subcategory_key: "wholesale_clubs",
+    label: "COSTCO",
+    rule_id: 9,
+  }),
+];
+
 describe("SuggestionChips", () => {
   it("renders one chip per candidate, worded 'Category › Subcategory · source'", () => {
     render(
       <SuggestionChips candidates={CONFLICT} conflict categories={CATEGORIES} onApply={vi.fn()} />,
     );
 
+    // The applied answer is a plain chip, the other two are buttons.
+    expect(screen.getByTestId("current-chip")).toHaveTextContent(
+      "Restaurant › Dine in · your rule 'costco'",
+    );
     const chips = screen.getAllByRole("button");
-    expect(chips).toHaveLength(3);
-    expect(chips[0]).toHaveTextContent("Restaurant › Dine in · your rule 'costco'");
-    expect(chips[1]).toHaveTextContent("Grocery › Wholesale clubs · built-in");
-    expect(chips[2]).toHaveTextContent("Fuel › Gasoline · LLM (saved)");
+    expect(chips).toHaveLength(2);
+    expect(chips[0]).toHaveTextContent("Grocery › Wholesale clubs · built-in");
+    expect(chips[1]).toHaveTextContent("Fuel › Gasoline · LLM (saved)");
   });
 
-  it("marks the current candidate with aria-pressed and a visible Current badge", () => {
+  it("shows the automatic winner on a non-edited row as an inert chip, not a button", async () => {
+    const onApply = vi.fn();
+    const user = userEvent.setup();
     render(
-      <SuggestionChips candidates={CONFLICT} conflict categories={CATEGORIES} onApply={vi.fn()} />,
+      <SuggestionChips
+        candidates={CONFLICT}
+        conflict
+        categories={CATEGORIES}
+        onApply={onApply}
+      />,
     );
 
-    const current = screen.getByRole("button", {
-      name: "Restaurant › Dine in, your rule 'costco', current",
-    });
-    expect(current).toHaveAttribute("aria-pressed", "true");
+    const current = screen.getByTestId("current-chip");
     expect(current).toHaveTextContent("Current");
-    const other = screen.getByRole("button", { name: "Grocery › Wholesale clubs, built-in" });
-    expect(other).toHaveAttribute("aria-pressed", "false");
-    expect(other).not.toHaveTextContent("Current");
+    expect(current.tagName).not.toBe("BUTTON");
+    expect(current).toHaveAttribute("title", expect.stringContaining("automatic answer"));
+    expect(
+      screen.queryByRole("button", { name: /Restaurant › Dine in/ }),
+    ).not.toBeInTheDocument();
+    // Clicking it does nothing: it would only freeze the row as a one-time edit.
+    await user.click(current);
+    expect(onApply).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: "Revert to automatic" })).not.toBeInTheDocument();
   });
 
   it("explains a conflict and highlights the group; says something milder without one", () => {
@@ -126,27 +159,91 @@ describe("SuggestionChips", () => {
     const user = userEvent.setup();
     render(
       <SuggestionChips
-        candidates={[
-          candidate({
-            source: "one_time_edit",
-            category_key: "fuel",
-            subcategory_key: "gasoline",
-            label: "your one-time edit",
-            rule_id: null,
-            is_current: true,
-          }),
-          ...CONFLICT.slice(1, 2),
-        ]}
+        candidates={EDITED}
         conflict={false}
         categories={CATEGORIES}
         onApply={onApply}
       />,
     );
 
-    const edit = screen.getByRole("button", { name: "Fuel › Gasoline, your edit, current" });
-    expect(edit).toHaveAttribute("aria-disabled", "true");
+    const edit = screen.getByTestId("current-chip");
+    expect(edit).toHaveTextContent("Fuel › Gasoline · your edit");
+    expect(edit.tagName).not.toBe("BUTTON");
     await user.click(edit);
     expect(onApply).not.toHaveBeenCalled();
+  });
+
+  it("labels the automatic answer on an edited row and offers Revert to automatic", async () => {
+    const onApply = vi.fn();
+    const onRevert = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <SuggestionChips
+        candidates={EDITED}
+        conflict={false}
+        categories={CATEGORIES}
+        onApply={onApply}
+        onRevert={onRevert}
+      />,
+    );
+
+    expect(screen.getByTestId("suggestion-edited-note")).toHaveTextContent("revert to automatic");
+    const automatic = screen.getByRole("button", {
+      name: "Automatic: Restaurant › Dine in, your rule 'costco', reverts to automatic",
+    });
+    expect(automatic).toHaveTextContent("Automatic");
+
+    // The explicit button and the Automatic chip both hand the row back; neither is an edit.
+    await user.click(screen.getByRole("button", { name: "Revert to automatic" }));
+    await user.click(automatic);
+    expect(onRevert).toHaveBeenCalledTimes(2);
+    expect(onApply).not.toHaveBeenCalled();
+
+    // A lower layer is still an ordinary one-time edit.
+    await user.click(screen.getByRole("button", { name: "Grocery › Wholesale clubs, built-in" }));
+    expect(onApply).toHaveBeenCalledWith(EDITED[2]);
+  });
+
+  it("offers no revert without a handler or on a row that was not edited", () => {
+    const { rerender } = render(
+      <SuggestionChips
+        candidates={EDITED}
+        conflict={false}
+        categories={CATEGORIES}
+        onApply={vi.fn()}
+      />,
+    );
+    expect(screen.queryByRole("button", { name: "Revert to automatic" })).not.toBeInTheDocument();
+
+    rerender(
+      <SuggestionChips
+        candidates={CONFLICT}
+        conflict
+        categories={CATEGORIES}
+        onApply={vi.fn()}
+        onRevert={vi.fn()}
+      />,
+    );
+    expect(screen.queryByRole("button", { name: "Revert to automatic" })).not.toBeInTheDocument();
+  });
+
+  it("still offers Revert on an edited row whose rules have no answer, and says what happens", async () => {
+    const onRevert = vi.fn();
+    render(
+      <SuggestionChips
+        candidates={EDITED.slice(0, 1)}
+        conflict={false}
+        categories={CATEGORIES}
+        onApply={vi.fn()}
+        onRevert={onRevert}
+      />,
+    );
+
+    expect(screen.getByTestId("revert-fallback-note")).toHaveTextContent(
+      "Uncategorized and be flagged for review",
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Revert to automatic" }));
+    expect(onRevert).toHaveBeenCalledTimes(1);
   });
 
   it("disables every chip while busy", () => {
