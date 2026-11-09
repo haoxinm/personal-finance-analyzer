@@ -4,7 +4,8 @@
  *   POST /api/backup/export    body {passphrase, encrypt} -> the .pfabackup file
  *   POST /api/backup/restore   the raw file as an application/octet-stream body, the passphrase in the
  *                              X-Backup-Passphrase header (base64 of its UTF-8 bytes)
- *                              -> {created_at, counts, migrated, previous_dir}
+ *                              -> {created_at, counts, migrated, previous_dir,
+ *                              documents_restored, documents_unrelated, ...}
  *
  * The endpoints are in `src/api/schema.d.ts`, but the calls stay on `fetch` with hand-written
  * response types: the export is a binary download and the restore a raw-body upload, neither of
@@ -25,6 +26,13 @@ export interface RestoreResult {
   counts: Record<string, number>;
   migrated: boolean;
   previous_dir: string | null;
+  /** PDFs written into the documents folder, and ones already there with the same content. */
+  documents_restored?: number;
+  documents_already_present?: number;
+  /** Other files in the documents folder that are not part of the backup (left untouched). */
+  documents_unrelated?: number;
+  /** Set when some PDFs could not be moved into place and are still in this hidden folder. */
+  documents_pending?: string | null;
 }
 
 function readPfaToken(): string | undefined {

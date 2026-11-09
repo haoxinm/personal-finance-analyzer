@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { apiClient, throwIfError, type components } from "@/api/client";
+import { ApiError, apiClient, throwIfError, type components } from "@/api/client";
 
 /**
  * Import-screen-local API hooks (P3_BRIEF: "Put screen-specific query hooks inside your screen
@@ -170,6 +170,16 @@ export function useImportSettings() {
       return data;
     },
   });
+}
+
+/** True when `error` is the server's "PDF not found" answer: a copy was kept but is gone from
+ * the documents folder (moved out or deleted by hand). */
+export function isPdfNotFound(error: unknown): boolean {
+  if (!(error instanceof ApiError)) return false;
+  const detail = error.detail;
+  return (
+    typeof detail === "object" && detail !== null && "code" in detail && detail.code === "pdf_not_found"
+  );
 }
 
 export function useStatementPages(statementId: number | undefined, enabled: boolean) {

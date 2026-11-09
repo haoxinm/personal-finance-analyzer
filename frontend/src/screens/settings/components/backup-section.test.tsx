@@ -146,6 +146,53 @@ describe("BackupSection", () => {
     expect(status).toHaveTextContent(/enter it again/i);
   });
 
+  it("reports the PDFs restored into the documents folder and the files left untouched", async () => {
+    const user = userEvent.setup();
+    renderSection();
+    await user.upload(screen.getByLabelText("Backup file"), new File(["bytes"], "mine.pfabackup"));
+    await user.click(screen.getByRole("button", { name: "Restore from backup" }));
+
+    const [, options] = restoreMutate.mock.calls[0] ?? [];
+    options?.onSuccess?.({
+      created_at: "2026-10-30T10:00:00+00:00",
+      counts: { users: 1 },
+      migrated: false,
+      previous_dir: null,
+      documents_restored: 12,
+      documents_already_present: 0,
+      documents_unrelated: 3,
+      documents_pending: null,
+    });
+
+    const status = await screen.findByRole("status");
+    expect(status).toHaveTextContent("12 PDFs restored into your documents folder");
+    expect(status).toHaveTextContent(/3 other files are in your documents folder that are not part of this backup/);
+    expect(status).toHaveTextContent(/left exactly as they are/);
+    expect(screen.queryByText(/could not be moved/)).not.toBeInTheDocument();
+  });
+
+  it("warns when some PDFs could not be moved into the documents folder", async () => {
+    const user = userEvent.setup();
+    renderSection();
+    await user.upload(screen.getByLabelText("Backup file"), new File(["bytes"], "mine.pfabackup"));
+    await user.click(screen.getByRole("button", { name: "Restore from backup" }));
+
+    const [, options] = restoreMutate.mock.calls[0] ?? [];
+    options?.onSuccess?.({
+      created_at: "2026-10-30T10:00:00+00:00",
+      counts: {},
+      migrated: false,
+      previous_dir: null,
+      documents_restored: 1,
+      documents_unrelated: 0,
+      documents_pending: "/nas/docs/.pfa-restore-abc",
+    });
+
+    expect(await screen.findByText(/could not be moved into your documents folder/)).toHaveTextContent(
+      "/nas/docs/.pfa-restore-abc",
+    );
+  });
+
   it("shows the server's error message when restore fails", async () => {
     const user = userEvent.setup();
     renderSection();

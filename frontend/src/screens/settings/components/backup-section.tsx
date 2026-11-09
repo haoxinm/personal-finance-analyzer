@@ -187,6 +187,26 @@ export function BackupSection() {
               {restored.previous_dir ? (
                 <span className="text-xs text-muted-foreground">Your previous data was kept at {restored.previous_dir}</span>
               ) : null}
+              {restored.documents_restored ? (
+                <span>
+                  {restored.documents_restored} PDF{restored.documents_restored === 1 ? "" : "s"} restored into your
+                  documents folder.
+                </span>
+              ) : null}
+              {restored.documents_unrelated ? (
+                <span className="text-xs text-muted-foreground">
+                  {restored.documents_unrelated} other file{restored.documents_unrelated === 1 ? " is" : "s are"} in
+                  your documents folder that {restored.documents_unrelated === 1 ? "is" : "are"} not part of this
+                  backup. {restored.documents_unrelated === 1 ? "It was" : "They were"} left exactly as{" "}
+                  {restored.documents_unrelated === 1 ? "it is" : "they are"}.
+                </span>
+              ) : null}
+              {restored.documents_pending ? (
+                <span role="alert" className="text-sm text-destructive">
+                  Some PDFs could not be moved into your documents folder and are still in{" "}
+                  {restored.documents_pending}. Move them into the documents folder by hand.
+                </span>
+              ) : null}
               <span className="text-xs text-muted-foreground">
                 If you use an LLM that needs an API key, enter it again under LLM provider.
               </span>

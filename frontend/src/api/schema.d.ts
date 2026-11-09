@@ -1769,6 +1769,23 @@ export interface components {
             migrated: boolean;
             /** Previous Dir */
             previous_dir: string | null;
+            /**
+             * Documents Restored
+             * @default 0
+             */
+            documents_restored: number;
+            /**
+             * Documents Already Present
+             * @default 0
+             */
+            documents_already_present: number;
+            /**
+             * Documents Unrelated
+             * @default 0
+             */
+            documents_unrelated: number;
+            /** Documents Pending */
+            documents_pending?: string | null;
         };
         /** BalanceEntry */
         BalanceEntry: {
@@ -3136,6 +3153,11 @@ export interface components {
             created_at: string;
             /** Has Pdf */
             has_pdf: boolean;
+            /**
+             * Pdf Missing
+             * @default false
+             */
+            pdf_missing: boolean;
             /** Staged Until */
             staged_until?: string | null;
         };
@@ -3166,6 +3188,11 @@ export interface components {
             created_at: string;
             /** Has Pdf */
             has_pdf: boolean;
+            /**
+             * Pdf Missing
+             * @default false
+             */
+            pdf_missing: boolean;
             /** Staged Until */
             staged_until?: string | null;
             /** Forms */

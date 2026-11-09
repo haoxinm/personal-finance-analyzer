@@ -7235,6 +7235,32 @@
               }
             ],
             "title": "Previous Dir"
+          },
+          "documents_restored": {
+            "type": "integer",
+            "title": "Documents Restored",
+            "default": 0
+          },
+          "documents_already_present": {
+            "type": "integer",
+            "title": "Documents Already Present",
+            "default": 0
+          },
+          "documents_unrelated": {
+            "type": "integer",
+            "title": "Documents Unrelated",
+            "default": 0
+          },
+          "documents_pending": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Documents Pending"
           }
         },
         "type": "object",
@@ -11186,6 +11212,11 @@
             "type": "boolean",
             "title": "Has Pdf"
           },
+          "pdf_missing": {
+            "type": "boolean",
+            "title": "Pdf Missing",
+            "default": false
+          },
           "staged_until": {
             "anyOf": [
               {
@@ -11291,6 +11322,11 @@
           "has_pdf": {
             "type": "boolean",
             "title": "Has Pdf"
+          },
+          "pdf_missing": {
+            "type": "boolean",
+            "title": "Pdf Missing",
+            "default": false
           },
           "staged_until": {
             "anyOf": [

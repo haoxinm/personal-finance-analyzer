@@ -2,7 +2,7 @@ import * as React from "react";
 
 import { LlmEgressNotice, LlmRequestPreview, PagePicker, type PagePickerPage } from "@/components/llm-preview";
 
-import { fetchStatementLlmPreview, useImportSettings, useStatementPages } from "./api";
+import { fetchStatementLlmPreview, isPdfNotFound, useImportSettings, useStatementPages } from "./api";
 import { pageImageUrl } from "./pfa-token";
 import type { ImportItem } from "./types";
 import type { Action } from "./use-import-queue";
@@ -60,6 +60,15 @@ export function PageSelector({ item, dispatch }: PageSelectorProps) {
 
   if (!visible || item.statementId === undefined) return null;
   const statementId = item.statementId;
+
+  if (isPdfNotFound(pagesQuery.error)) {
+    return (
+      <p role="alert" className="text-sm text-destructive" data-testid="pdf-not-found">
+        PDF not found. The copy of this statement is no longer in your documents folder (it was moved out or
+        deleted). Put it back, or import the file again.
+      </p>
+    );
+  }
 
   return (
     <div className="flex flex-col gap-2">
