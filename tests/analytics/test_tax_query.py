@@ -149,7 +149,10 @@ def test_source_documents_only(session: Session) -> None:
     assert s.liability == {}
     assert s.federal_effective_rate is None  # no return
     assert s.withholding_rate == round(1_500_000 / 10_550_000, 4)
-    assert s.all_in_rate == round((1_500_000 + 400_000 + 620_000 + 145_000) / 10_550_000, 4)
+    # Same basis as the headline "Total tax": estimated federal (no return) + FICA + state.
+    assert s.headline is not None and s.headline.federal_basis == "estimate"
+    assert s.headline.total_minor == s.headline.federal_minor + 620_000 + 145_000 + 400_000
+    assert s.all_in_rate == round(s.headline.total_minor / 10_550_000, 4)
     assert (s.form_count, s.document_count) == (4, 4)
     assert s.warnings == []
 
@@ -289,7 +292,9 @@ def test_large_capital_loss_without_return_is_limited_to_3000(session: Session) 
     assert cats["short_term_capital_gain"] + cats["long_term_capital_gain"] == -300_000
     assert any("$3,000 annual limit" in w and "$46,000.00 is a carryover" in w for w in s.warnings)
     assert s.withholding_rate is None
-    assert s.all_in_rate is None
+    # No withholding at all, but the estimate is the headline basis, so the rate follows it.
+    assert s.headline is not None and s.headline.federal_basis == "estimate"
+    assert s.all_in_rate == round(s.headline.total_minor / s.total_income_minor, 4)
 
 
 def test_capital_loss_limit_spreads_over_both_categories(session: Session) -> None:

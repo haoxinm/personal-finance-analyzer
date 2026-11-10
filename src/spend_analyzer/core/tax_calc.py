@@ -175,6 +175,24 @@ def _worksheet(table: Table, taxable: int, qualified: int, net_ltcg: int) -> tup
     return min(line23, line24), line22
 
 
+#: Employee Medicare rate and the rounding slack when reading the Additional Medicare Tax
+#: withheld out of W-2 box 6.
+_EMPLOYEE_MEDICARE_RATE_BP = 145
+_WITHHELD_TOLERANCE_MINOR = 100
+
+
+def additional_medicare_withheld(medicare_tax_minor: int, medicare_wages_minor: int) -> int:
+    """The Additional Medicare Tax inside W-2 box 6 totals: the box 6 tax beyond 1.45% of Medicare
+    wages (employers withhold the extra 0.9% on wages over $200,000, whatever the filing status).
+    Medicare wages (box 5) are not stored, so callers pass an approximation (box 1 wages plus box
+    12 deferrals). A difference under $1 is rounding noise and reads as 0.
+    """
+    extra = medicare_tax_minor - (
+        (max(medicare_wages_minor, 0) * _EMPLOYEE_MEDICARE_RATE_BP + 5_000) // 10_000
+    )
+    return extra if extra > _WITHHELD_TOLERANCE_MINOR else 0
+
+
 def worksheet_tax(
     *,
     tax_year: int,

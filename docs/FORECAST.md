@@ -20,7 +20,7 @@ button).
 |---|---|---|
 | Year-end net worth | **Net worth** balance entries, else a value you typed in | The last month with data in the year, with each account's last balance carried forward, exactly as on the Overview tab. |
 | Income | Imported tax forms (**Income & Tax**) | The table shows gross income on the forms for that year, with the **earned** part (wages + self-employment) underneath when it differs. The forecast's default income is the earned part only; see below. |
-| Tax | Imported tax forms | The all-in figure: federal + state + local + Social Security + Medicare, from the same rules as the **Income & Tax** overview's all-in rate (rebuilt from that rate, which is rounded to four decimals, so it can be off by a few dollars). |
+| Tax | Imported tax forms | The year's **Total tax** exactly as the **Income & Tax** overview shows it (its headline: federal tax from the return, else the estimate, else withholding, plus Social Security and Medicare and state tax). |
 | Spending | Imported statements | Purchases, fees and interest with refunds netted, summed per year; the table shows how many months of the year have transactions. |
 | Savings | Income - tax - spending | Shown only for a year with all three and twelve months of spending. |
 

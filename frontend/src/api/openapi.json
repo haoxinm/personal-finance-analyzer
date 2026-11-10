@@ -6252,6 +6252,255 @@
         }
       }
     },
+    "/tax/profiles/{user_id}/{tax_year}": {
+      "get": {
+        "tags": [
+          "tax"
+        ],
+        "summary": "Get Profile",
+        "operationId": "get_profile_api_tax_profiles__user_id___tax_year__get",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "User Id"
+            }
+          },
+          {
+            "name": "tax_year",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Tax Year"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaxProfile"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "tax"
+        ],
+        "summary": "Put Profile",
+        "description": "Create or replace the profile (201 when created). `joint_with_user_id` needs filing status\n`mfj` and an existing other user (404 / 422); 409 when that spouse already has a profile for\nthe year that disagrees (not `mfj`, or naming someone else).",
+        "operationId": "put_profile_api_tax_profiles__user_id___tax_year__put",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "User Id"
+            }
+          },
+          {
+            "name": "tax_year",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Tax Year"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaxProfileIn"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaxProfile"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "tax"
+        ],
+        "summary": "Delete Profile",
+        "operationId": "delete_profile_api_tax_profiles__user_id___tax_year__delete",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "User Id"
+            }
+          },
+          {
+            "name": "tax_year",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Tax Year"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/tax/estimate": {
+      "get": {
+        "tags": [
+          "tax"
+        ],
+        "summary": "Tax Estimate Route",
+        "description": "The federal tax estimate of one user for one year (see `analytics/tax_estimate.py`). 404 for\nan unknown user, 422 when there are no tax parameters for the year, 409 when the spouses'\nprofiles disagree.",
+        "operationId": "tax_estimate_route_api_tax_estimate_get",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "User Id"
+            }
+          },
+          {
+            "name": "tax_year",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Tax Year"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaxEstimate"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/tax/parameters": {
+      "get": {
+        "tags": [
+          "tax"
+        ],
+        "summary": "Tax Parameters",
+        "description": "The tax years the estimate supports with their IRS sources, which parameter file is in\neffect (bundled, downloaded or imported) and the state of the opt-in yearly update check.",
+        "operationId": "tax_parameters_api_tax_parameters_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaxParameters"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/tax/parameters/refresh": {
+      "post": {
+        "tags": [
+          "tax"
+        ],
+        "summary": "Refresh Tax Parameters",
+        "description": "Check for updated parameters now (one plain GET of the project's public file, no user\ndata; blocks up to 10 seconds). An explicit action, so it works with the opt-in off; the date\nis recorded like an automatic check.",
+        "operationId": "refresh_tax_parameters_api_tax_parameters_refresh_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaxParametersRefreshResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/backup/export": {
       "post": {
         "tags": [
@@ -10558,6 +10807,604 @@
         "title": "TaxDocumentPatch",
         "description": "Reassign a document (with its forms and items) to another user."
       },
+      "TaxEstimate": {
+        "properties": {
+          "user_id": {
+            "type": "integer",
+            "title": "User Id"
+          },
+          "tax_year": {
+            "type": "integer",
+            "title": "Tax Year"
+          },
+          "scope": {
+            "type": "string",
+            "enum": [
+              "individual",
+              "household_allocation"
+            ],
+            "title": "Scope"
+          },
+          "household_user_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Household User Ids"
+          },
+          "filing_status": {
+            "type": "string",
+            "enum": [
+              "single",
+              "mfj",
+              "mfs",
+              "hoh",
+              "qss"
+            ],
+            "title": "Filing Status"
+          },
+          "filing_status_source": {
+            "type": "string",
+            "enum": [
+              "profile",
+              "return",
+              "default"
+            ],
+            "title": "Filing Status Source"
+          },
+          "calc": {
+            "$ref": "#/components/schemas/TaxEstimateCalc"
+          },
+          "user": {
+            "$ref": "#/components/schemas/TaxEstimateUser"
+          },
+          "cross_check": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TaxEstimateCrossCheck"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TaxProfile"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "parameters": {
+            "$ref": "#/components/schemas/TaxEstimateParameters"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Warnings"
+          },
+          "not_modeled": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Not Modeled"
+          }
+        },
+        "type": "object",
+        "required": [
+          "user_id",
+          "tax_year",
+          "scope",
+          "household_user_ids",
+          "filing_status",
+          "filing_status_source",
+          "calc",
+          "user",
+          "cross_check",
+          "profile",
+          "parameters",
+          "warnings",
+          "not_modeled"
+        ],
+        "title": "TaxEstimate",
+        "description": "`GET /api/tax/estimate`."
+      },
+      "TaxEstimateCalc": {
+        "properties": {
+          "filing_status": {
+            "type": "string",
+            "enum": [
+              "single",
+              "mfj",
+              "mfs",
+              "hoh",
+              "qss"
+            ],
+            "title": "Filing Status"
+          },
+          "wages_minor": {
+            "type": "integer",
+            "title": "Wages Minor"
+          },
+          "interest_minor": {
+            "type": "integer",
+            "title": "Interest Minor"
+          },
+          "ordinary_dividends_minor": {
+            "type": "integer",
+            "title": "Ordinary Dividends Minor"
+          },
+          "qualified_dividends_minor": {
+            "type": "integer",
+            "title": "Qualified Dividends Minor"
+          },
+          "short_term_gain_minor": {
+            "type": "integer",
+            "title": "Short Term Gain Minor"
+          },
+          "long_term_gain_minor": {
+            "type": "integer",
+            "title": "Long Term Gain Minor"
+          },
+          "capital_loss_carryover_in_minor": {
+            "type": "integer",
+            "title": "Capital Loss Carryover In Minor"
+          },
+          "capital_result_counted_minor": {
+            "type": "integer",
+            "title": "Capital Result Counted Minor"
+          },
+          "capital_loss_carryover_out_minor": {
+            "type": "integer",
+            "title": "Capital Loss Carryover Out Minor"
+          },
+          "self_employment_minor": {
+            "type": "integer",
+            "title": "Self Employment Minor"
+          },
+          "other_income_minor": {
+            "type": "integer",
+            "title": "Other Income Minor"
+          },
+          "profile_other_income_minor": {
+            "type": "integer",
+            "title": "Profile Other Income Minor"
+          },
+          "gross_income_minor": {
+            "type": "integer",
+            "title": "Gross Income Minor"
+          },
+          "adjustments_minor": {
+            "type": "integer",
+            "title": "Adjustments Minor"
+          },
+          "se_tax_deduction_minor": {
+            "type": "integer",
+            "title": "Se Tax Deduction Minor"
+          },
+          "agi_minor": {
+            "type": "integer",
+            "title": "Agi Minor"
+          },
+          "deduction_mode": {
+            "type": "string",
+            "enum": [
+              "standard",
+              "itemized"
+            ],
+            "title": "Deduction Mode"
+          },
+          "deduction_minor": {
+            "type": "integer",
+            "title": "Deduction Minor"
+          },
+          "senior_deduction_minor": {
+            "type": "integer",
+            "title": "Senior Deduction Minor"
+          },
+          "taxable_income_minor": {
+            "type": "integer",
+            "title": "Taxable Income Minor"
+          },
+          "preferential_income_minor": {
+            "type": "integer",
+            "title": "Preferential Income Minor"
+          },
+          "income_tax_minor": {
+            "type": "integer",
+            "title": "Income Tax Minor"
+          },
+          "ordinary_tax_minor": {
+            "type": "integer",
+            "title": "Ordinary Tax Minor"
+          },
+          "preferential_tax_minor": {
+            "type": "integer",
+            "title": "Preferential Tax Minor"
+          },
+          "nonrefundable_credits_minor": {
+            "type": "integer",
+            "title": "Nonrefundable Credits Minor"
+          },
+          "nonrefundable_credits_entered_minor": {
+            "type": "integer",
+            "title": "Nonrefundable Credits Entered Minor"
+          },
+          "se_tax_minor": {
+            "type": "integer",
+            "title": "Se Tax Minor"
+          },
+          "net_investment_income_tax_minor": {
+            "type": "integer",
+            "title": "Net Investment Income Tax Minor"
+          },
+          "additional_medicare_tax_minor": {
+            "type": "integer",
+            "title": "Additional Medicare Tax Minor"
+          },
+          "other_taxes_minor": {
+            "type": "integer",
+            "title": "Other Taxes Minor"
+          },
+          "total_tax_minor": {
+            "type": "integer",
+            "title": "Total Tax Minor"
+          },
+          "federal_withheld_minor": {
+            "type": "integer",
+            "title": "Federal Withheld Minor"
+          },
+          "estimated_payments_minor": {
+            "type": "integer",
+            "title": "Estimated Payments Minor"
+          },
+          "other_payments_minor": {
+            "type": "integer",
+            "title": "Other Payments Minor"
+          },
+          "refundable_credits_minor": {
+            "type": "integer",
+            "title": "Refundable Credits Minor"
+          },
+          "additional_medicare_withheld_minor": {
+            "type": "integer",
+            "title": "Additional Medicare Withheld Minor"
+          },
+          "excess_social_security_credit_minor": {
+            "type": "integer",
+            "title": "Excess Social Security Credit Minor"
+          },
+          "total_payments_minor": {
+            "type": "integer",
+            "title": "Total Payments Minor"
+          },
+          "result_minor": {
+            "type": "integer",
+            "title": "Result Minor"
+          },
+          "refund_minor": {
+            "type": "integer",
+            "title": "Refund Minor"
+          },
+          "owed_minor": {
+            "type": "integer",
+            "title": "Owed Minor"
+          },
+          "effective_rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective Rate"
+          },
+          "marginal_rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Marginal Rate"
+          },
+          "preferential_rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Preferential Rate"
+          },
+          "retirement_deferral_minor": {
+            "type": "integer",
+            "title": "Retirement Deferral Minor"
+          },
+          "hsa_employer_minor": {
+            "type": "integer",
+            "title": "Hsa Employer Minor"
+          }
+        },
+        "type": "object",
+        "required": [
+          "filing_status",
+          "wages_minor",
+          "interest_minor",
+          "ordinary_dividends_minor",
+          "qualified_dividends_minor",
+          "short_term_gain_minor",
+          "long_term_gain_minor",
+          "capital_loss_carryover_in_minor",
+          "capital_result_counted_minor",
+          "capital_loss_carryover_out_minor",
+          "self_employment_minor",
+          "other_income_minor",
+          "profile_other_income_minor",
+          "gross_income_minor",
+          "adjustments_minor",
+          "se_tax_deduction_minor",
+          "agi_minor",
+          "deduction_mode",
+          "deduction_minor",
+          "senior_deduction_minor",
+          "taxable_income_minor",
+          "preferential_income_minor",
+          "income_tax_minor",
+          "ordinary_tax_minor",
+          "preferential_tax_minor",
+          "nonrefundable_credits_minor",
+          "nonrefundable_credits_entered_minor",
+          "se_tax_minor",
+          "net_investment_income_tax_minor",
+          "additional_medicare_tax_minor",
+          "other_taxes_minor",
+          "total_tax_minor",
+          "federal_withheld_minor",
+          "estimated_payments_minor",
+          "other_payments_minor",
+          "refundable_credits_minor",
+          "additional_medicare_withheld_minor",
+          "excess_social_security_credit_minor",
+          "total_payments_minor",
+          "result_minor",
+          "refund_minor",
+          "owed_minor",
+          "effective_rate",
+          "marginal_rate",
+          "preferential_rate",
+          "retirement_deferral_minor",
+          "hsa_employer_minor"
+        ],
+        "title": "TaxEstimateCalc",
+        "description": "The computation (the whole household's for a joint return), all `_minor` fields in cents and\nthe rates as fractions (0.22 = 22%)."
+      },
+      "TaxEstimateCrossCheck": {
+        "properties": {
+          "return_filing_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Return Filing Status"
+          },
+          "return_total_tax_minor": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Return Total Tax Minor"
+          },
+          "return_withheld_minor": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Return Withheld Minor"
+          },
+          "return_refund_minor": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Return Refund Minor"
+          },
+          "return_owed_minor": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Return Owed Minor"
+          },
+          "return_result_minor": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Return Result Minor"
+          },
+          "delta_total_tax_minor": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delta Total Tax Minor"
+          },
+          "delta_withheld_minor": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delta Withheld Minor"
+          },
+          "delta_result_minor": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delta Result Minor"
+          },
+          "household": {
+            "type": "boolean",
+            "title": "Household"
+          }
+        },
+        "type": "object",
+        "required": [
+          "return_filing_status",
+          "return_total_tax_minor",
+          "return_withheld_minor",
+          "return_refund_minor",
+          "return_owed_minor",
+          "return_result_minor",
+          "delta_total_tax_minor",
+          "delta_withheld_minor",
+          "delta_result_minor",
+          "household"
+        ],
+        "title": "TaxEstimateCrossCheck",
+        "description": "The latest Form 1040 for the year beside the estimate (never an input). Deltas are\nestimate minus return; `null` when the return did not print the figure."
+      },
+      "TaxEstimateParameters": {
+        "properties": {
+          "tax_year": {
+            "type": "integer",
+            "title": "Tax Year"
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "bundled",
+              "cached",
+              "override"
+            ],
+            "title": "Source"
+          },
+          "params_version": {
+            "type": "integer",
+            "title": "Params Version"
+          },
+          "sources": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Sources"
+          }
+        },
+        "type": "object",
+        "required": [
+          "tax_year",
+          "source",
+          "params_version",
+          "sources"
+        ],
+        "title": "TaxEstimateParameters"
+      },
+      "TaxEstimateUser": {
+        "properties": {
+          "gross_income_minor": {
+            "type": "integer",
+            "title": "Gross Income Minor"
+          },
+          "share": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Share"
+          },
+          "total_tax_minor": {
+            "type": "integer",
+            "title": "Total Tax Minor"
+          },
+          "payments_minor": {
+            "type": "integer",
+            "title": "Payments Minor"
+          },
+          "result_minor": {
+            "type": "integer",
+            "title": "Result Minor"
+          },
+          "refund_minor": {
+            "type": "integer",
+            "title": "Refund Minor"
+          },
+          "owed_minor": {
+            "type": "integer",
+            "title": "Owed Minor"
+          },
+          "additional_medicare_withheld_minor": {
+            "type": "integer",
+            "title": "Additional Medicare Withheld Minor",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "required": [
+          "gross_income_minor",
+          "share",
+          "total_tax_minor",
+          "payments_minor",
+          "result_minor",
+          "refund_minor",
+          "owed_minor"
+        ],
+        "title": "TaxEstimateUser",
+        "description": "This user's part. For `scope` `individual` it equals the computation; for\n`household_allocation` `total_tax_minor` is an allocation of the household tax by `share` of\ngross income (an allocation, not a separate liability) and the payments are the user's own."
+      },
       "TaxFormCreate": {
         "properties": {
           "form_type": {
@@ -10965,6 +11812,46 @@
         ],
         "title": "TaxFormType",
         "description": "Mirror of `core.tax_types.FormType` (kept in sync by a test), as a named OpenAPI enum."
+      },
+      "TaxHeadline": {
+        "properties": {
+          "federal_minor": {
+            "type": "integer",
+            "title": "Federal Minor"
+          },
+          "federal_basis": {
+            "type": "string",
+            "enum": [
+              "return",
+              "estimate",
+              "withholding",
+              "mixed"
+            ],
+            "title": "Federal Basis"
+          },
+          "fica_minor": {
+            "type": "integer",
+            "title": "Fica Minor"
+          },
+          "state_minor": {
+            "type": "integer",
+            "title": "State Minor"
+          },
+          "total_minor": {
+            "type": "integer",
+            "title": "Total Minor"
+          }
+        },
+        "type": "object",
+        "required": [
+          "federal_minor",
+          "federal_basis",
+          "fica_minor",
+          "state_minor",
+          "total_minor"
+        ],
+        "title": "TaxHeadline",
+        "description": "What to show as the tax paid for the year (minor units). `federal_basis` says where the\nfederal figure comes from: `return` (the 1040's total tax with the Additional Medicare Tax\ncounted once, in `fica_minor`), `estimate` (the per-user estimate, no return), `withholding`\n(federal tax withheld), or `mixed` (an all-users view whose users differ)."
       },
       "TaxImportResponse": {
         "properties": {
@@ -11511,6 +12398,467 @@
         "title": "TaxPageInfo",
         "description": "`GET /api/tax/documents/{id}/pages` row. A thumbnail is at\n`GET /api/tax/documents/{id}/pages/{page_number}/image`."
       },
+      "TaxParameterYear": {
+        "properties": {
+          "tax_year": {
+            "type": "integer",
+            "title": "Tax Year"
+          },
+          "sources": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Sources"
+          },
+          "standard_deduction_minor": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Standard Deduction Minor"
+          },
+          "additional_standard_deduction_unmarried_minor": {
+            "type": "integer",
+            "title": "Additional Standard Deduction Unmarried Minor"
+          },
+          "additional_standard_deduction_married_minor": {
+            "type": "integer",
+            "title": "Additional Standard Deduction Married Minor"
+          },
+          "capital_loss_limit_minor": {
+            "type": "integer",
+            "title": "Capital Loss Limit Minor"
+          },
+          "capital_loss_limit_mfs_minor": {
+            "type": "integer",
+            "title": "Capital Loss Limit Mfs Minor"
+          },
+          "ss_wage_base_minor": {
+            "type": "integer",
+            "title": "Ss Wage Base Minor"
+          },
+          "elective_deferral_limit_minor": {
+            "type": "integer",
+            "title": "Elective Deferral Limit Minor"
+          },
+          "niit_threshold_minor": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Niit Threshold Minor"
+          },
+          "additional_medicare_threshold_minor": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Additional Medicare Threshold Minor"
+          },
+          "senior_deduction_minor": {
+            "type": "integer",
+            "title": "Senior Deduction Minor",
+            "default": 0
+          },
+          "senior_phaseout_rate_bp": {
+            "type": "integer",
+            "title": "Senior Phaseout Rate Bp",
+            "default": 0
+          },
+          "senior_phaseout_threshold_minor": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Senior Phaseout Threshold Minor"
+          }
+        },
+        "type": "object",
+        "required": [
+          "tax_year",
+          "sources",
+          "standard_deduction_minor",
+          "additional_standard_deduction_unmarried_minor",
+          "additional_standard_deduction_married_minor",
+          "capital_loss_limit_minor",
+          "capital_loss_limit_mfs_minor",
+          "ss_wage_base_minor",
+          "elective_deferral_limit_minor",
+          "niit_threshold_minor",
+          "additional_medicare_threshold_minor"
+        ],
+        "title": "TaxParameterYear",
+        "description": "One year of `GET /api/tax/parameters` (cents)."
+      },
+      "TaxParameters": {
+        "properties": {
+          "source": {
+            "type": "string",
+            "enum": [
+              "bundled",
+              "cached",
+              "override"
+            ],
+            "title": "Source"
+          },
+          "params_version": {
+            "type": "integer",
+            "title": "Params Version"
+          },
+          "bundled_version": {
+            "type": "integer",
+            "title": "Bundled Version"
+          },
+          "cached_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cached Version"
+          },
+          "override_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Override Version"
+          },
+          "last_checked": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Checked"
+          },
+          "last_check_outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Check Outcome"
+          },
+          "auto_update": {
+            "type": "boolean",
+            "title": "Auto Update"
+          },
+          "years": {
+            "items": {
+              "$ref": "#/components/schemas/TaxParameterYear"
+            },
+            "type": "array",
+            "title": "Years"
+          }
+        },
+        "type": "object",
+        "required": [
+          "source",
+          "params_version",
+          "bundled_version",
+          "cached_version",
+          "override_version",
+          "last_checked",
+          "last_check_outcome",
+          "auto_update",
+          "years"
+        ],
+        "title": "TaxParameters"
+      },
+      "TaxParametersRefreshResponse": {
+        "properties": {
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "updated",
+              "current",
+              "rejected",
+              "unreachable"
+            ],
+            "title": "Outcome"
+          },
+          "detail": {
+            "type": "string",
+            "title": "Detail"
+          },
+          "parameters": {
+            "$ref": "#/components/schemas/TaxParameters"
+          }
+        },
+        "type": "object",
+        "required": [
+          "outcome",
+          "detail",
+          "parameters"
+        ],
+        "title": "TaxParametersRefreshResponse",
+        "description": "`POST /api/tax/parameters/refresh`: one update check, run now (an explicit action, so it\ndoes not need the opt-in)."
+      },
+      "TaxProfile": {
+        "properties": {
+          "filing_status": {
+            "type": "string",
+            "enum": [
+              "single",
+              "mfj",
+              "mfs",
+              "hoh",
+              "qss"
+            ],
+            "title": "Filing Status"
+          },
+          "joint_with_user_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Joint With User Id"
+          },
+          "deduction_mode": {
+            "type": "string",
+            "enum": [
+              "standard",
+              "itemized"
+            ],
+            "title": "Deduction Mode",
+            "default": "standard"
+          },
+          "itemized_deductions_minor": {
+            "type": "integer",
+            "maximum": 1000000000000.0,
+            "minimum": 0.0,
+            "title": "Itemized Deductions Minor",
+            "default": 0
+          },
+          "age65_or_blind_count": {
+            "type": "integer",
+            "maximum": 4.0,
+            "minimum": 0.0,
+            "title": "Age65 Or Blind Count",
+            "default": 0
+          },
+          "age65_count": {
+            "type": "integer",
+            "maximum": 2.0,
+            "minimum": 0.0,
+            "title": "Age65 Count",
+            "default": 0
+          },
+          "adjustments_minor": {
+            "type": "integer",
+            "maximum": 1000000000000.0,
+            "minimum": 0.0,
+            "title": "Adjustments Minor",
+            "default": 0
+          },
+          "other_income_minor": {
+            "type": "integer",
+            "maximum": 1000000000000.0,
+            "minimum": 0.0,
+            "title": "Other Income Minor",
+            "default": 0
+          },
+          "capital_loss_carryover_minor": {
+            "type": "integer",
+            "maximum": 1000000000000.0,
+            "minimum": 0.0,
+            "title": "Capital Loss Carryover Minor",
+            "default": 0
+          },
+          "nonrefundable_credits_minor": {
+            "type": "integer",
+            "maximum": 1000000000000.0,
+            "minimum": 0.0,
+            "title": "Nonrefundable Credits Minor",
+            "default": 0
+          },
+          "refundable_credits_minor": {
+            "type": "integer",
+            "maximum": 1000000000000.0,
+            "minimum": 0.0,
+            "title": "Refundable Credits Minor",
+            "default": 0
+          },
+          "other_taxes_minor": {
+            "type": "integer",
+            "maximum": 1000000000000.0,
+            "minimum": 0.0,
+            "title": "Other Taxes Minor",
+            "default": 0
+          },
+          "estimated_payments_minor": {
+            "type": "integer",
+            "maximum": 1000000000000.0,
+            "minimum": 0.0,
+            "title": "Estimated Payments Minor",
+            "default": 0
+          },
+          "other_payments_minor": {
+            "type": "integer",
+            "maximum": 1000000000000.0,
+            "minimum": 0.0,
+            "title": "Other Payments Minor",
+            "default": 0
+          },
+          "user_id": {
+            "type": "integer",
+            "title": "User Id"
+          },
+          "tax_year": {
+            "type": "integer",
+            "title": "Tax Year"
+          },
+          "updated_at": {
+            "type": "string",
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "filing_status",
+          "user_id",
+          "tax_year",
+          "updated_at"
+        ],
+        "title": "TaxProfile"
+      },
+      "TaxProfileIn": {
+        "properties": {
+          "filing_status": {
+            "type": "string",
+            "enum": [
+              "single",
+              "mfj",
+              "mfs",
+              "hoh",
+              "qss"
+            ],
+            "title": "Filing Status"
+          },
+          "joint_with_user_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Joint With User Id"
+          },
+          "deduction_mode": {
+            "type": "string",
+            "enum": [
+              "standard",
+              "itemized"
+            ],
+            "title": "Deduction Mode",
+            "default": "standard"
+          },
+          "itemized_deductions_minor": {
+            "type": "integer",
+            "maximum": 1000000000000.0,
+            "minimum": 0.0,
+            "title": "Itemized Deductions Minor",
+            "default": 0
+          },
+          "age65_or_blind_count": {
+            "type": "integer",
+            "maximum": 4.0,
+            "minimum": 0.0,
+            "title": "Age65 Or Blind Count",
+            "default": 0
+          },
+          "age65_count": {
+            "type": "integer",
+            "maximum": 2.0,
+            "minimum": 0.0,
+            "title": "Age65 Count",
+            "default": 0
+          },
+          "adjustments_minor": {
+            "type": "integer",
+            "maximum": 1000000000000.0,
+            "minimum": 0.0,
+            "title": "Adjustments Minor",
+            "default": 0
+          },
+          "other_income_minor": {
+            "type": "integer",
+            "maximum": 1000000000000.0,
+            "minimum": 0.0,
+            "title": "Other Income Minor",
+            "default": 0
+          },
+          "capital_loss_carryover_minor": {
+            "type": "integer",
+            "maximum": 1000000000000.0,
+            "minimum": 0.0,
+            "title": "Capital Loss Carryover Minor",
+            "default": 0
+          },
+          "nonrefundable_credits_minor": {
+            "type": "integer",
+            "maximum": 1000000000000.0,
+            "minimum": 0.0,
+            "title": "Nonrefundable Credits Minor",
+            "default": 0
+          },
+          "refundable_credits_minor": {
+            "type": "integer",
+            "maximum": 1000000000000.0,
+            "minimum": 0.0,
+            "title": "Refundable Credits Minor",
+            "default": 0
+          },
+          "other_taxes_minor": {
+            "type": "integer",
+            "maximum": 1000000000000.0,
+            "minimum": 0.0,
+            "title": "Other Taxes Minor",
+            "default": 0
+          },
+          "estimated_payments_minor": {
+            "type": "integer",
+            "maximum": 1000000000000.0,
+            "minimum": 0.0,
+            "title": "Estimated Payments Minor",
+            "default": 0
+          },
+          "other_payments_minor": {
+            "type": "integer",
+            "maximum": 1000000000000.0,
+            "minimum": 0.0,
+            "title": "Other Payments Minor",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "required": [
+          "filing_status"
+        ],
+        "title": "TaxProfileIn",
+        "description": "`PUT /api/tax/profiles/{user_id}/{tax_year}` body: the manual inputs of the estimate.\nAmounts are non-negative cents. `joint_with_user_id` (the spouse, another existing user) is\nonly valid with `filing_status` `mfj`. A profile describes its own user: with a linked spouse\nwho has a profile too, the two profiles are added together, so each spouse enters their own\nboxes (the estimate limits each to 2 boxes and 1 person aged 65+). A joint profile whose\nspouse has no profile of their own carries the household total.\n`age65_or_blind_count` counts the boxes checked for the additional standard deduction (age 65\nor older, blind): at most 2 per person, 4 for `mfj` (both spouses). `age65_count` is the\nnumber of people aged 65 or older (for the 2025-2028 senior deduction): at most 1, 2 for\n`mfj`, and not more than the boxes."
+      },
       "TaxSettings": {
         "properties": {
           "auto_update_params": {
@@ -11568,6 +12916,39 @@
         ],
         "title": "TaxSourceResponse",
         "description": "`POST /api/tax/documents/{id}/source`: the re-selected file is the document's original;\nit is held temporarily (never kept) so its pages can be shown and read."
+      },
+      "TaxSupersededForm": {
+        "properties": {
+          "form_id": {
+            "type": "integer",
+            "title": "Form Id"
+          },
+          "document_id": {
+            "type": "integer",
+            "title": "Document Id"
+          },
+          "user_id": {
+            "type": "integer",
+            "title": "User Id"
+          },
+          "form_type": {
+            "$ref": "#/components/schemas/TaxFormType"
+          },
+          "superseded_by_form_id": {
+            "type": "integer",
+            "title": "Superseded By Form Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "form_id",
+          "document_id",
+          "user_id",
+          "form_type",
+          "superseded_by_form_id"
+        ],
+        "title": "TaxSupersededForm",
+        "description": "A source form replaced by a corrected form with the same payer and account (not counted)."
       },
       "TaxYearSummary": {
         "properties": {
@@ -11719,6 +13100,23 @@
             },
             "type": "array",
             "title": "Warnings"
+          },
+          "headline": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TaxHeadline"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "superseded_forms": {
+            "items": {
+              "$ref": "#/components/schemas/TaxSupersededForm"
+            },
+            "type": "array",
+            "title": "Superseded Forms"
           }
         },
         "type": "object",

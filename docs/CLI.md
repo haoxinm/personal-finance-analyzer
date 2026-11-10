@@ -3,7 +3,8 @@
 Every command reads/writes the local database in the data directory (see
 [INSTALL.md](INSTALL.md#data-location); override with `SPEND_ANALYZER_HOME`). None of them make a
 network call unless you've enabled an LLM and run `classify`, `import` with the LLM extractor,
-`doctor`, or `llm test`. Commands work the same on Windows, macOS and Linux.
+`doctor`, or `llm test`, or you run `tax params update` (one plain `GET` of the public tax
+parameter file, no user data). Commands work the same on Windows, macOS and Linux.
 
 Run `spend-analyzer --help` or `spend-analyzer <command> --help` at any time for the exact,
 current option list — this page shows the common case for each command.
@@ -347,6 +348,77 @@ tax_year,section,category,amount_minor
 
 The CSV carries amounts only: no rates, warnings, income basis or document ids. Use the text
 report for those.
+
+### `tax estimate`
+
+```console
+$ spend-analyzer tax estimate --year 2024
+Federal tax estimate 2024, user #1  (filing status single, from default; parameters v1, bundled)
+  Income
+    Wages and salary                                    85432.10
+    ...
+    Gross income                                        85432.10
+  Deduction and taxable income
+    Adjusted gross income                               85432.10
+    Deduction (standard)                                14600.00
+    Taxable income                                      70832.10
+  Tax
+    Income tax                                          10635.00
+    Total tax                                           10635.00
+  Payments and result
+    Federal tax withheld                                11876.40
+    Total payments                                      11876.40
+    Refund                                               1241.40
+  Rates
+    Effective rate            12.45%
+    Marginal (ordinary)       22.00%
+    Dividends and gains          n/a
+  W-2 box 12 (memo, already excluded from wages)
+    Retirement plan deferrals                            3200.00
+  warning: No tax profile: filing status single and the standard deduction are assumed.
+  Not modeled:
+    - Alternative minimum tax.
+    ...
+```
+
+(Abridged: the real output lists every line.) Computes one user's federal tax for one year from
+the W-2 / 1099 forms and the tax profile (filing status, deduction, credits, payments: set it in
+the web UI or with `PUT /api/tax/profiles/{user_id}/{tax_year}`), by the method in
+[TAX.md](TAX.md#per-user-estimate). A Form 1040, when imported, appears as a cross-check with the
+difference to the estimate and is never an input. For married filing jointly the household is
+computed once and an "allocation" block shows this user's share. Options: `--year` (required; a
+year with no bundled parameters is an error, see `tax params show`) and `--user-id` (default: the
+default user). Local only: no network.
+
+The total tax includes the net investment income tax and the Additional Medicare Tax and is never
+negative. Refundable credits, the Additional Medicare Tax an employer already withheld and the
+excess Social Security tax credit are listed under **payments**, not subtracted from the tax; for
+2025-2028 a "Senior deduction" line appears when the profile has people aged 65 or over.
+
+### `tax params`
+
+```console
+$ spend-analyzer tax params show
+Tax parameters in use: version 1 (bundled); bundled v1, downloaded none, imported none
+Years: 2022, 2023, 2024, 2025, 2026
+Last update check: never; automatic yearly check: off ([tax] auto_update_params)
+$ spend-analyzer tax params update
+current: Parameters are up to date (version 1).
+...
+$ spend-analyzer tax params import my-params.yaml
+$ spend-analyzer tax params clear
+```
+
+The brackets, deductions and limits behind `tax estimate` and the 1040 split. `show` reports the
+file in effect and the state of the update check. `update` is the **only command that touches
+the network for tax data**: one plain `GET` of the project's public parameter file (no user data),
+whatever `[tax] auto_update_params` says (that setting only controls the automatic once-a-year
+check); the downloaded file may only add tax years the app lacks, each checked against the year before
+it (ranges, structure, year-over-year change), and the date of the check is recorded. It exits 1
+when the download fails or is rejected. `import FILE` validates your own file and lets the years it
+lists replace the bundled ones (the other years stay); `clear` removes it. Precedence and the opt-in
+are described in
+[TAX.md](TAX.md#where-the-parameters-come-from-and-the-opt-in-update).
 
 ### `tax delete`
 

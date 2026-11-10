@@ -19,8 +19,9 @@ $ spend-analyzer serve       # opens the local web UI
 This is the reason to run this instead of a hosted budgeting app, so it comes first.
 
 - **Everything runs locally.** PDF extraction, parsing, deduplication, the rules engine, the
-  database, and the web UI all run as one program on your machine. There is no telemetry, no
-  analytics, and no update check.
+  database, and the web UI all run as one program on your machine. There is no telemetry and no
+  analytics. By default there is no update check either: the one exception is the opt-in tax
+  parameter check below.
 - **The LLM is off by default** (`[llm] enabled = false`). The local rules cascade classifies most
   transactions on its own; anything it can't classify lands in a Review queue for you, not an API
   call. With the LLM off, nothing is ever sent anywhere.
@@ -53,7 +54,23 @@ This is the reason to run this instead of a hosted budgeting app, so it comes fi
   call uses, built by the same code path.
 - **One HTTP client, two callers.** Only `llm/client.py` imports an HTTP client, and only the two
   seams above may import it — checked by `tests/test_architecture_guards.py` on every change.
-  Statement ingestion (`ingest/`) can never make a network call.
+  Statement ingestion (`ingest/`) can never make a network call. The single other module that may
+  import an HTTP client is the opt-in tax parameter check described next, and the same test pins
+  that too.
+- **Opt-in, once-a-year tax parameter check (off by default).** The federal tax estimate needs the
+  IRS's yearly figures (brackets, standard deduction, limits), which ship inside the app for 2022 -
+  2026. If you set `[tax] auto_update_params = true` (Settings, or the file), the first tax
+  estimate or summary you open in a calendar year makes **one plain HTTPS `GET`** of a single
+  public file, `federal_params.yaml`, from this project's GitHub repository
+  (`raw.githubusercontent.com/haoxinm/spending-analysis-from-bills/main/src/spend_analyzer/core/tax_data/federal_params.yaml`)
+  and keeps a validated copy in your data directory, but only to ADD a tax year the app does not
+  ship yet (each checked against the previous year); the figures of years the app ships are never
+  replaced. The date is stored so it is not asked again that year, whatever the outcome. The request has no query string, cookies, credentials or proxy
+  settings and carries none of your data (not your tax figures, not the installed version); GitHub
+  sees your IP address like for any download. It never blocks the page and a network error is
+  ignored. `spend-analyzer tax params update` (or the Check for updates button) does the same on
+  request, and you can instead supply your own file with `tax params import`. With the setting off,
+  nothing is ever requested. See [docs/TAX.md](docs/TAX.md#where-the-parameters-come-from-and-the-opt-in-update).
 - **Tax forms stay local unless you opt in.** W-2, 1099 and 1040 PDFs are read by deterministic
   local parsers, and the tax code imports neither an LLM nor an HTTP client
   (`tests/test_architecture_guards.py`). The only exception is a separate, off-by-default switch,
