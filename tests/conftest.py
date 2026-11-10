@@ -5,6 +5,11 @@
 - `engine` / `session`: a migrated temporary SQLite database with the taxonomy synced.
 - An autouse guard that fails any test opening a network socket to anything other than
   `127.0.0.1`/`::1`/`localhost` (§6.5: zero network calls in CI).
+- A session-level guard against the real world: at start it checks that `HOME` and `PFA_HOME` point
+  into a scratch directory and that no real keyring backend is active; at the end it re-stats the
+  developer's real data directories (read-only) and fails the run if anything in them changed.
+- `@pytest.mark.linux_keyring` tests (the only ones allowed to use a real keyring backend, a
+  Secret Service on a throwaway D-Bus session) are skipped unless `PFA_TEST_LINUX_KEYRING=1`.
 """
 
 from __future__ import annotations
@@ -13,6 +18,7 @@ import atexit
 import os
 import shutil
 import socket
+import sys
 import tempfile
 from collections.abc import Generator, Iterator
 from pathlib import Path
@@ -26,11 +32,72 @@ from sqlalchemy.orm import Session
 
 from personal_finance_analyzer.backup import crypto
 from personal_finance_analyzer.classify.taxonomy import sync_taxonomy
-from personal_finance_analyzer.core.paths import PFA_HOME_ENV
+from personal_finance_analyzer.core.paths import PFA_HOME_ENV, default_home, legacy_default_home
 from personal_finance_analyzer.db.migrate import upgrade_head
 from personal_finance_analyzer.db.session import make_engine_for_path, make_session_factory
 
 _LOCAL_HOSTS = {"127.0.0.1", "::1", "localhost", ""}
+
+#: Set (only in CI or a container, inside `dbus-run-session` with a throwaway gnome-keyring) to run
+#: the `linux_keyring` tests against a real Secret Service.
+LINUX_KEYRING_ENV = "PFA_TEST_LINUX_KEYRING"
+
+
+def _real_user_home() -> Path:
+    """The account's real home directory, read from the OS rather than from `$HOME`."""
+    try:
+        import pwd
+
+        return Path(pwd.getpwuid(os.getuid()).pw_dir)
+    except (ImportError, KeyError):  # Windows
+        return Path.home()
+
+
+def _real_data_dirs() -> tuple[Path, ...]:
+    """The data directories of the machine's real user (current and pre-rename), resolved *before*
+    the process is pointed at a scratch home. Resolving is pure (no filesystem access). Besides
+    what `$HOME` says, the account's home from the OS is covered too, so a developer who runs the
+    suite with a stray `HOME` is still watched."""
+    os_home = _REAL_HOME
+    dirs = [default_home(), legacy_default_home()]
+    if sys.platform == "darwin":
+        support = os_home / "Library" / "Application Support"
+        dirs += [support / "PersonalFinanceAnalyzer", support / "SpendAnalyzer"]
+    elif sys.platform.startswith("linux"):
+        share = os_home / ".local" / "share"
+        dirs += [share / "personal-finance-analyzer", share / "spend-analyzer"]
+    return tuple(dict.fromkeys(dirs))
+
+
+_REAL_HOME = _real_user_home()
+_REAL_DATA_DIRS = _real_data_dirs()
+
+
+def _snapshot(root: Path) -> dict[str, tuple[int, int]] | None:
+    """Every path under ``root`` as ``{relative path: (size, mtime_ns)}``; None if it is absent.
+    Read-only (``lstat``), so taking it can never change what it measures."""
+    if not root.exists():
+        return None
+    result: dict[str, tuple[int, int]] = {}
+    stack = [root]
+    while stack:
+        current = stack.pop()
+        try:
+            st = current.lstat()
+        except OSError:
+            continue
+        result[str(current.relative_to(root))] = (st.st_size, st.st_mtime_ns)
+        if current.is_dir() and not current.is_symlink():
+            try:
+                stack.extend(current.iterdir())
+            except OSError:
+                continue
+    return result
+
+
+_REAL_DIR_SNAPSHOTS: dict[Path, dict[str, tuple[int, int]] | None] = {
+    path: _snapshot(path) for path in _REAL_DATA_DIRS
+}
 
 
 def _isolate_process_from_the_real_user_profile() -> None:
@@ -59,6 +126,81 @@ def _isolate_process_from_the_real_user_profile() -> None:
 
 
 _isolate_process_from_the_real_user_profile()
+
+
+def _under(path: Path, parent: Path) -> bool:
+    try:
+        path.resolve().relative_to(parent.resolve())
+    except ValueError:
+        return False
+    return True
+
+
+def _assert_isolated() -> None:
+    """Fail loudly if the process could reach the real home data directory or a real keychain."""
+    scratch_roots = (Path(tempfile.gettempdir()), Path(tempfile.gettempdir()).resolve())
+    for name in ("HOME", PFA_HOME_ENV):
+        value = os.environ.get(name)
+        assert value, f"{name} is not set: the tests could resolve the real data directory"
+        path = Path(value)
+        assert any(_under(path, root) for root in scratch_roots), (
+            f"{name}={value} is outside the temp directory"
+        )
+    for real in _REAL_DATA_DIRS:
+        assert not _under(Path(os.environ[PFA_HOME_ENV]), real), "PFA_HOME is a real data dir"
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _session_isolation_guard() -> None:
+    """The same check as `pytest_sessionstart`, for runs where this conftest was not an initial
+    one: nothing in the session may start with a path or keyring that reaches the real world."""
+    _assert_isolated()
+    assert not _is_real_keyring(keyring.get_keyring()) or os.environ.get(LINUX_KEYRING_ENV) == "1"
+
+
+def _is_real_keyring(backend: object) -> bool:
+    module = type(backend).__module__
+    return module.startswith("keyring.backends.") and not module.endswith((".fail", ".null"))
+
+
+def pytest_sessionstart(session: pytest.Session) -> None:
+    _assert_isolated()
+    # Collection and module-level fixtures run before any per-test fixture: make sure the keyring
+    # is already the in-memory fake (unless this run is the opt-in real-Secret-Service one).
+    if os.environ.get(LINUX_KEYRING_ENV) != "1":
+        keyring.set_keyring(_MemoryKeyring())
+        assert isinstance(keyring.get_keyring(), _MemoryKeyring)
+
+
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    """The run must not have changed, created or moved anything in the real data directories
+    (read-only comparison with the snapshot taken at import)."""
+    changed = [
+        str(path) for path, before in _REAL_DIR_SNAPSHOTS.items() if _snapshot(path) != before
+    ]
+    if changed:
+        reporter = session.config.pluginmanager.get_plugin("terminalreporter")
+        message = (
+            "TEST ISOLATION VIOLATION: the test run changed the real data directory: "
+            + ", ".join(changed)
+        )
+        if reporter is not None:
+            reporter.write_line(message, red=True)
+        else:  # pragma: no cover
+            print(message, file=sys.stderr)
+        session.exitstatus = 1
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    enabled = os.environ.get(LINUX_KEYRING_ENV) == "1" and sys.platform == "linux"
+    if enabled:
+        return
+    skip = pytest.mark.skip(
+        reason=f"needs a Linux Secret Service: set {LINUX_KEYRING_ENV}=1 under dbus-run-session"
+    )
+    for item in items:
+        if "linux_keyring" in item.keywords:
+            item.add_marker(skip)
 
 
 @pytest.fixture
@@ -131,13 +273,20 @@ class _MemoryKeyring(keyring.backend.KeyringBackend):
 
 
 @pytest.fixture(autouse=True)
-def _in_memory_keyring() -> Iterator[None]:
+def _in_memory_keyring(request: pytest.FixtureRequest) -> Iterator[None]:
     """Every test runs against an in-memory keyring backend, so a test that reaches the keychain
-    without its own fake (for instance `doctor`, which round-trips a probe entry) can never touch,
-    or pop a dialog from, the real OS keychain. Tests with their own fakes patch the `keyring`
-    functions on top of this."""
+    without its own fake (for instance `pfa doctor`, which round-trips a probe entry) can never
+    touch, or pop a dialog from, the real OS keychain. Tests with their own fakes patch the
+    `keyring` functions on top of this."""
+    if request.node.get_closest_marker("linux_keyring") is not None:
+        # The one opt-in exception: these tests bring their own real Secret Service backend (and
+        # are skipped unless the environment provides a throwaway one).
+        yield
+        return
     previous = keyring.get_keyring()
-    keyring.set_keyring(_MemoryKeyring())
+    fake = _MemoryKeyring()
+    keyring.set_keyring(fake)
+    assert keyring.get_keyring() is fake  # nothing after this line can reach a real keychain
     try:
         yield
     finally:

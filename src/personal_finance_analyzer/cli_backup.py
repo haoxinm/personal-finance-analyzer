@@ -184,6 +184,11 @@ def backup_restore(
         typer.echo(f"Database upgraded from schema {manifest.schema_revision} to this version.")
     if result.previous_dir is not None:
         typer.echo(f"Your previous data directory was kept at {result.previous_dir}")
+    if result.kept_secrets:
+        typer.echo(
+            "Your plaintext API key file (secrets/api_keys.toml) was carried over from the "
+            "previous data directory; it is not part of a backup."
+        )
     typer.echo(
         "If you use an LLM that needs an API key, set it again with `pfa llm "
         "set-key` (keys are never part of a backup). Then run `pfa serve`."

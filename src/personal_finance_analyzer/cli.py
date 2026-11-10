@@ -16,18 +16,19 @@ from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import date
 from pathlib import Path
+from urllib.parse import quote
 
 import typer
-from sqlalchemy import Engine, select
+from sqlalchemy import Engine, create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from personal_finance_analyzer.analytics.query import SpendQuery, run_query
 from personal_finance_analyzer.analytics.tax_query import TaxYearSummary
 from personal_finance_analyzer.api.services import crud, gateway
-from personal_finance_analyzer.config import load_settings
+from personal_finance_analyzer.config import load_settings, no_key_adoption
 from personal_finance_analyzer.core.errors import PfaError
 from personal_finance_analyzer.core.logging import configure_logging, get_logger
-from personal_finance_analyzer.core.paths import ensure_home, prepare_home
+from personal_finance_analyzer.core.paths import db_path, get_home, prepare_home
 from personal_finance_analyzer.core.shellquote import join_command
 from personal_finance_analyzer.core.tax_types import TaxFallbackExtractor
 from personal_finance_analyzer.core.webui import web_ui_warning
@@ -580,21 +581,26 @@ def export(
 
 
 @app.command()
-def doctor() -> None:
+def doctor(
+    write_test: bool = typer.Option(
+        False,
+        "--write-test",
+        help="Also write, read back and delete a probe entry in the OS keychain. Off by default "
+        "because a keychain write can raise an OS dialog; the default check only reads.",
+    ),
+) -> None:
     """Diagnose the local install and configuration: Python version, data directory permissions,
-    DB migration state, keychain access, and LLM connectivity, one pass/fail line each."""
+    DB migration state, which secret backend holds the API key (read-only), and LLM connectivity,
+    one pass/fail line each."""
     ok = True
     ok &= _check("Python version >= 3.12", sys.version_info >= (3, 12))
 
-    try:
-        home = ensure_home()
-        ok &= _check(f"Data directory ({home}) writable", os.access(home, os.W_OK))
-    except OSError as exc:
-        ok &= _check(f"Data directory writable: {exc}", False)
+    ok &= _doctor_home()
 
     ok &= _doctor_migrations()
-    ok &= _doctor_keychain()
-    ok &= _doctor_llm()
+    ok &= _doctor_keychain(write_test=write_test)
+    with no_key_adoption():  # the connectivity check uses the key, but must not write
+        ok &= _doctor_llm()
 
     if not ok:
         raise typer.Exit(code=1)
@@ -687,14 +693,34 @@ def issuers_add(
         typer.echo(f"Created issuer #{issuer.id}: {issuer.name}")
 
 
+def _doctor_home() -> bool:
+    """Is the data directory usable? Read-only: a machine that has not run the app yet gets no
+    data directory (or database) from a diagnosis; it is created on first real use."""
+    try:
+        home = get_home()
+        if home.is_dir():
+            return _check(f"Data directory ({home}) writable", os.access(home, os.W_OK))
+        parent = next((p for p in home.parents if p.exists()), home)
+        return _check(
+            f"Data directory ({home}) not created yet; it will be on first use ({parent} writable)",
+            os.access(parent, os.W_OK),
+        )
+    except OSError as exc:
+        return _check(f"Data directory writable: {exc}", False)
+
+
 def _doctor_migrations() -> bool:
     from alembic.runtime.migration import MigrationContext
 
     from personal_finance_analyzer.db.migrate import build_alembic_config
-    from personal_finance_analyzer.db.session import make_engine
 
+    db_file = db_path()
+    if not db_file.exists():
+        typer.echo("INFO  No database yet (it is created by the first import or `pfa migrate`)")
+        return True
     try:
-        engine = make_engine()
+        # Read-only (`mode=ro`): the check must never create, or write to, the database.
+        engine = create_engine(f"sqlite:///file:{quote(db_file.as_posix())}?mode=ro&uri=true")
         try:
             with engine.connect() as conn:
                 context = MigrationContext.configure(conn)
@@ -710,17 +736,69 @@ def _doctor_migrations() -> bool:
         return _check(f"Database migration check failed: {exc}", False)
 
 
-def _doctor_keychain() -> bool:
-    from personal_finance_analyzer.config import delete_api_key, get_api_key, set_api_key
+def _doctor_keychain(*, write_test: bool = False) -> bool:
+    """Report the secret backend in use. Read-only unless ``write_test``: the default pass never
+    writes to the keychain (a write can pop an OS dialog, or fail on a machine whose login keychain
+    is missing); ``--write-test`` adds an explicit set/get/delete round trip of a probe entry."""
+    from personal_finance_analyzer.cli_llm import describe_secret_storage
+    from personal_finance_analyzer.config import (
+        get_llm_api_key,
+        keychain_write_test,
+        secret_storage_status,
+    )
+    from personal_finance_analyzer.secret_store import SecretStorageError
 
-    provider = "pfa-doctor-check"
-    try:
-        set_api_key(provider, "doctor-check-value")
-        round_tripped = get_api_key(provider) == "doctor-check-value"
-        delete_api_key(provider)
-        return _check("Keychain read/write", round_tripped)
-    except Exception as exc:
-        return _check(f"Keychain access failed: {exc}", False)
+    cfg = load_settings().llm
+    status = secret_storage_status(cfg)
+    ok = True
+    if status.keychain_usable:
+        _check(f"Keychain backend: {status.keychain_name}", True)
+    elif status.env_var is not None or status.file_store_enabled:
+        typer.echo(
+            f"INFO  No usable OS keychain ({status.keychain_detail}); using the fallback below"
+        )
+    else:
+        typer.echo(f"WARN  No usable OS keychain ({status.keychain_detail}).")
+        typer.echo(f"      {status.guidance}")
+        typer.echo(
+            "      Saving an API key will fail until one works, unless you set PFA_LLM_API_KEY "
+            "or enable `[secrets] allow_file_store = true`."
+        )
+    typer.echo(f"INFO  Key source / save target: {describe_secret_storage(status)}")
+    if status.file_store_enabled:
+        typer.echo(f"WARN  {status.warning}")
+    elif status.file_store_has_keys:
+        typer.echo(
+            f"WARN  {status.file_store_path} holds saved keys but the file store is not enabled "
+            "(`[secrets] allow_file_store`); they are ignored. Delete the file or enable it."
+        )
+
+    if cfg.mode != "none":
+        try:
+            found = get_llm_api_key(cfg, adopt=False) is not None  # read-only
+        except Exception as exc:  # a read must never crash the diagnosis
+            ok &= _check(f"API key lookup failed: {exc}", False)
+        else:
+            if found:
+                _check(f"API key for {cfg.key_account.removeprefix('llm:')} readable", True)
+            else:
+                typer.echo(
+                    f"INFO  No API key found for {cfg.key_account.removeprefix('llm:')} "
+                    "(fine for a local server; `pfa llm set-key` stores one)"
+                )
+
+    if write_test:
+        try:
+            keychain_write_test()
+        except SecretStorageError as exc:
+            ok &= _check(f"Keychain write test failed: {exc}", False)
+        else:
+            ok &= _check("Keychain write test (probe entry written, read back, deleted)", True)
+    else:
+        typer.echo(
+            "SKIP  Keychain write test (read-only by default; run `pfa doctor --write-test`)"
+        )
+    return ok
 
 
 def _doctor_llm() -> bool:

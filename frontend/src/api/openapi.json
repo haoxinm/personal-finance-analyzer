@@ -3378,6 +3378,7 @@
           "settings"
         ],
         "summary": "Put Settings",
+        "description": "Save the draft to `config.toml`. Settings an environment variable (`PFA_<SECTION>__<FIELD>`)\ncontrols are not written: the file keeps its own value for them (so a one-off override never\nbecomes permanent), and the response lists them in `env_overrides` with the effective values.",
         "operationId": "put_settings_api_settings_put",
         "requestBody": {
           "content": {
@@ -3419,7 +3420,7 @@
           "settings"
         ],
         "summary": "Put Api Key",
-        "description": "Store `body.api_key` for the endpoint's host in the OS keychain (I7). Never returned,\nlogged, or written to `config.toml`/the database.",
+        "description": "Store `body.api_key` for the endpoint's host in the OS keychain (I7), or, only when there is\nno keychain and the user enabled `[secrets] allow_file_store`, in the 0600 file store. Never\nreturned, logged, or written to `config.toml`/the database. `503` (with an actionable message)\nwhen no backend can take it.",
         "operationId": "put_api_key_api_settings_api_key_put",
         "requestBody": {
           "required": true,
@@ -3469,6 +3470,100 @@
         "responses": {
           "204": {
             "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/settings/secret-storage": {
+      "get": {
+        "tags": [
+          "settings"
+        ],
+        "summary": "Get Secret Storage",
+        "description": "Which backend holds the LLM API key (environment variable / keychain name / plaintext file\n/ none), with platform-specific setup advice when no keychain works. Read-only; never returns\na key. `base_url` (default: the saved one) picks the endpoint whose key is looked up.\n\nThe key saved under the pre-rename keychain service is only looked for with\n`check_legacy=true` (the Settings screen's explicit \"check\" button): reading an entry another\nbuild of the app saved can make macOS ask the user to allow it, which a page load must not\ntrigger.",
+        "operationId": "get_secret_storage_api_settings_secret_storage_get",
+        "parameters": [
+          {
+            "name": "base_url",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Base Url"
+            }
+          },
+          {
+            "name": "check_legacy",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Check Legacy"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SecretStorageStatus"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "settings"
+        ],
+        "summary": "Put Secret Storage",
+        "description": "Switch the plaintext file store on or off (`[secrets] allow_file_store`; only used when the\nOS keychain is unavailable). `409` while an environment variable controls the opt-in: it wins\non every load, so the toggle could not change anything.\n\nSwitching it off does not leave a plaintext key behind unnoticed: a key still in the file is\nmoved into the OS keychain when one works, otherwise the caller must choose\n(`file_key_action`) to delete the file (overwritten, then removed) or to keep it. The response\nsays which happened (`file_key_outcome`), so the UI can state where the key now lives.",
+        "operationId": "put_secret_storage_api_settings_secret_storage_put",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SecretStoragePut"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SecretStorageStatus"
+                }
+              }
+            }
           },
           "422": {
             "description": "Validation Error",
@@ -10125,6 +10220,160 @@
         "type": "object",
         "title": "RuleUpdate"
       },
+      "SecretStoragePut": {
+        "properties": {
+          "allow_file_store": {
+            "type": "boolean",
+            "title": "Allow File Store"
+          },
+          "file_key_action": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "move",
+                  "delete",
+                  "keep"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "File Key Action"
+          }
+        },
+        "type": "object",
+        "required": [
+          "allow_file_store"
+        ],
+        "title": "SecretStoragePut",
+        "description": "`PUT /api/settings/secret-storage`: switch the plaintext file store on or off\n(`[secrets] allow_file_store`).\n\nTurning it off (or calling again with it already off) while the key file still holds keys\nneeds a decision about them, `file_key_action`: `move` them into the OS keychain (the default\nwhen one works), `delete` the file (overwritten, then removed) or `keep` it on disk, unused.\nWithout a working keychain there is no default: the call is refused with `409` until the\ncaller chooses `delete` or `keep`, so a key never stays on disk by accident."
+      },
+      "SecretStorageStatus": {
+        "properties": {
+          "key_source": {
+            "type": "string",
+            "enum": [
+              "env",
+              "keychain",
+              "file",
+              "none"
+            ],
+            "title": "Key Source"
+          },
+          "storage": {
+            "type": "string",
+            "enum": [
+              "keychain",
+              "file",
+              "none"
+            ],
+            "title": "Storage"
+          },
+          "keychain_name": {
+            "type": "string",
+            "title": "Keychain Name"
+          },
+          "keychain_usable": {
+            "type": "boolean",
+            "title": "Keychain Usable"
+          },
+          "keychain_detail": {
+            "type": "string",
+            "title": "Keychain Detail"
+          },
+          "env_var": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Env Var"
+          },
+          "key_legacy": {
+            "type": "boolean",
+            "title": "Key Legacy",
+            "default": false
+          },
+          "file_store_enabled": {
+            "type": "boolean",
+            "title": "File Store Enabled"
+          },
+          "file_store_path": {
+            "type": "string",
+            "title": "File Store Path"
+          },
+          "file_store_has_keys": {
+            "type": "boolean",
+            "title": "File Store Has Keys"
+          },
+          "legacy_checked": {
+            "type": "boolean",
+            "title": "Legacy Checked",
+            "default": false
+          },
+          "file_key_outcome": {
+            "type": "string",
+            "enum": [
+              "none",
+              "moved",
+              "deleted",
+              "kept"
+            ],
+            "title": "File Key Outcome",
+            "default": "none"
+          },
+          "moved_keys": {
+            "type": "integer",
+            "title": "Moved Keys",
+            "default": 0
+          },
+          "kept_keys": {
+            "type": "integer",
+            "title": "Kept Keys",
+            "default": 0
+          },
+          "guidance": {
+            "type": "string",
+            "title": "Guidance"
+          },
+          "warning": {
+            "type": "string",
+            "title": "Warning"
+          },
+          "file_store_env_var": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "File Store Env Var"
+          }
+        },
+        "type": "object",
+        "required": [
+          "key_source",
+          "storage",
+          "keychain_name",
+          "keychain_usable",
+          "keychain_detail",
+          "env_var",
+          "file_store_enabled",
+          "file_store_path",
+          "file_store_has_keys",
+          "guidance",
+          "warning"
+        ],
+        "title": "SecretStorageStatus",
+        "description": "`GET /api/settings/secret-storage`: which secret backend holds (or would hold) the LLM API\nkey on this machine. Never contains key material."
+      },
       "ServerSettings": {
         "properties": {
           "port": {
@@ -10154,6 +10403,13 @@
           },
           "tax": {
             "$ref": "#/components/schemas/TaxSettings"
+          },
+          "env_overrides": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Env Overrides"
           }
         },
         "type": "object",

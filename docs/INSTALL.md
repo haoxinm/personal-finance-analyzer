@@ -12,9 +12,10 @@ no account to create, and no data leaves your machine unless you turn on an LLM 
   [Data location](#data-location)).
 - A credential store for the LLM API key, used automatically through
   [`keyring`](https://pypi.org/project/keyring/): macOS Keychain, Windows Credential Manager, or on
-  Linux a Secret Service provider (GNOME Keyring, KWallet) — or the `keyrings.alt` package for a
-  plain-file fallback. On a headless machine with none of these, set the
-  `PFA_LLM_API_KEY` environment variable instead. Only needed for a remote LLM that
+  Linux a Secret Service provider (GNOME Keyring, KWallet) — see
+  [Linux keychain setup](#linux-keychain-setup). On a machine with none of these, set the
+  `PFA_LLM_API_KEY` environment variable instead, or opt in to the plaintext key file
+  ([Headless Linux, WSL and SSH](#headless-linux-wsl-and-ssh)). Only needed for a remote LLM that
   requires a key; the default (LLM off) and local servers like Ollama need no secret at all.
 - No Node.js/npm needed to *install* — the published wheel already contains the built web UI.
   Node is only needed to build the package from source (see
@@ -69,7 +70,9 @@ $ pfa doctor
 PASS  Python version >= 3.12
 PASS  Data directory (/Users/you/Library/Application Support/PersonalFinanceAnalyzer) writable
 PASS  Database migrated to head (0001_initial)
-PASS  Keychain read/write
+PASS  Keychain backend: macOS Keychain
+INFO  Key source / save target: none saved (a saved key would go to the OS keychain: macOS Keychain)
+SKIP  Keychain write test (read-only by default; run `pfa doctor --write-test`)
 SKIP  LLM connectivity (disabled — run `pfa llm set ...` to configure)
 
 $ pfa serve
@@ -85,8 +88,10 @@ calls) or whose `Host` header isn't `127.0.0.1`/`localhost`. It never binds to a
 than `127.0.0.1`, so nothing on your network — let alone the internet — can reach it.
 
 If `doctor` reports a `FAIL`, fix that before continuing — it means a real problem: an
-unwritable data directory, a database that failed to migrate, a broken Keychain/keyring backend,
-or (only if you've enabled an LLM) an endpoint your machine can't reach.
+unwritable data directory, a database that failed to migrate, a failed `--write-test`,
+or (only if you've enabled an LLM) an endpoint your machine can't reach. A `WARN` about the keychain
+is not a failure: it means no keychain is available here, which only matters once you want to save
+an API key (see [Headless Linux, WSL and SSH](#headless-linux-wsl-and-ssh)).
 
 From there:
 
@@ -128,6 +133,69 @@ $ PFA_HOME=/path/to/a/directory pfa serve         # macOS / Linux
 ```powershell
 > $env:PFA_HOME = "D:\finance-data"; pfa serve      # Windows PowerShell
 ```
+
+## Linux keychain setup
+
+On Linux the API key is kept by a **Secret Service** provider over D-Bus (GNOME Keyring or KWallet).
+`keyring` reaches it through the `secretstorage` and `jeepney` packages, which this package
+installs on Linux automatically. You need a provider running in a D-Bus session, unlocked:
+
+| Distribution | Install |
+| --- | --- |
+| Debian / Ubuntu | `sudo apt install gnome-keyring libsecret-1-0` (KDE: `kwalletmanager`) |
+| Fedora / RHEL | `sudo dnf install gnome-keyring libsecret` (KDE: `kwalletmanager`) |
+| Arch | `sudo pacman -S gnome-keyring libsecret` (KDE: `kwallet`) |
+
+A normal desktop login (GNOME, KDE, most others) starts and unlocks it for you; check with
+`pfa doctor` (it should print `Keychain backend: Secret Service (...)`). `pfa doctor --write-test`
+additionally stores, reads and deletes a probe entry.
+
+## Headless Linux, WSL and SSH
+
+With no desktop session there is usually no D-Bus session bus and no Secret Service, so the
+keychain is unavailable (`pfa doctor` says so, and `pfa llm set-key` fails with these options).
+Pick one, in order of preference:
+
+1. **An environment variable** — nothing is stored anywhere:
+
+   ```console
+   $ export PFA_LLM_API_KEY=sk-...        # SPEND_ANALYZER_LLM_API_KEY is still accepted
+   ```
+
+2. **A throwaway Secret Service** for the shell session (needs `dbus` and `gnome-keyring`):
+
+   ```console
+   $ dbus-run-session -- bash
+   $ echo -n 'a-password' | gnome-keyring-daemon --unlock --components=secrets
+   $ pfa llm set-key
+   ```
+
+   Keys go to the keyring inside that session.
+3. **The plaintext key file** (last resort). Add to `config.toml` (or set
+   `PFA_SECRETS__ALLOW_FILE_STORE=true`, or tick the box in Settings -> LLM provider):
+
+   ```toml
+   [secrets]
+   allow_file_store = false   # set to true to opt in
+   ```
+
+   Then `pfa llm set-key` writes `<data dir>/secrets/api_keys.toml` (directory `0700`, file `0600`,
+   written atomically). **It is plaintext at rest**, protected only by those permissions: anyone
+   who can read your account's files can read it. It is used for *saving* only while no keychain is
+   available (it is still read when it holds a key), it is never included in a backup, and the
+   app never turns it on by itself.
+
+   **Turning it off does not leave the key on disk unnoticed.** Untick the box (or `PUT
+   /api/settings/secret-storage`) while a key is still in the file and Settings asks what to do with
+   it: *move* it into the OS keychain (offered, and the default, when a keychain works), *delete* the
+   file (overwritten with zeros, then removed; the default when there is no keychain, behind an
+   explicit button; you enter the key again to use an LLM) or *keep* it (it stays as plaintext on
+   disk, unused, and Settings keeps saying so until you delete it). Overwriting is best effort: a
+   copy-on-write filesystem, an SSD or a snapshot may keep older blocks, which is one more reason to
+   prefer a keychain.
+
+A key is looked up in this order: `PFA_LLM_API_KEY`, the OS keychain, then the key file (only if
+enabled). On Windows the Credential Manager backend needs no setup.
 
 ## Privacy
 
@@ -245,14 +313,19 @@ place; delete it yourself if you want to remove your statements and database too
 ## Troubleshooting
 
 Run `pfa doctor` first — it checks the Python version, data directory permissions,
-database migration state, credential-store access, and (if an LLM is enabled) LLM connectivity, and
-prints one `PASS`/`FAIL` line per check.
+database migration state, which secret backend is in use (read-only), and (if an LLM is enabled) LLM
+connectivity, and prints one `PASS`/`FAIL` line per check.
 
-- **`FAIL  Keychain access failed: ...`** — most often a headless Linux box (SSH session, container,
-  WSL) with no Secret Service. Install and unlock one (`gnome-keyring`, KWallet), or
-  `pip install keyrings.alt` for a plain-file, less-secure fallback — or skip the credential store
-  and export `PFA_LLM_API_KEY`. It only matters for a remote LLM that needs a key;
-  with the LLM off, or a local server, the app never touches the credential store.
+- **`WARN  No usable OS keychain ...`** or **`could not store the key: ...`** — most often a headless
+  Linux box (SSH session, container, WSL) with no Secret Service, or a macOS login keychain that is
+  missing or locked. The message names the cause and the fix; see
+  [Linux keychain setup](#linux-keychain-setup) and
+  [Headless Linux, WSL and SSH](#headless-linux-wsl-and-ssh). It only matters for a remote LLM that
+  needs a key; with the LLM off, or a local server, the app never touches the credential store.
+- **macOS: "A keychain cannot be found to store ..."** — the login keychain is missing. Open
+  Keychain Access and create/reset it (File > New Keychain, or Settings > Reset My Default
+  Keychain), or `security unlock-keychain ~/Library/Keychains/login.keychain-db`. `pfa doctor` never
+  writes to the keychain unless you pass `--write-test`, so it cannot trigger this dialog by itself.
 - **`FAIL  LLM connectivity failed: ...`** — run `pfa llm show` and
   `pfa llm test`. Usual causes: wrong base URL, the wrong `api_format` or `path` for the
   server, a missing/incorrect key (`llm set-key`), or a model name the server doesn't know.

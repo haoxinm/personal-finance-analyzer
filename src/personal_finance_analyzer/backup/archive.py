@@ -9,7 +9,10 @@ Format (version 1): a zip file, optionally wrapped in `crypto.py`'s passphrase e
 - ``statements/<sha256>.pdf``: the kept PDF copies (and PDFs awaiting confirmation);
 - ``specs/...``: layout-spec mirrors, and ``config.toml``.
 
-Deliberately **not** in it: the LLM API key (it lives in the OS keychain and never leaves it), the
+Deliberately **not** in it: the LLM API key (it lives in the OS keychain and never leaves it; the
+opt-in plaintext key file ``secrets/api_keys.toml`` is not on the allow-list either, and the
+``[secrets]`` opt-in table is dropped from ``config.toml``: whether plaintext keys are allowed is a
+decision about one machine, so a restore on another machine can never switch it on), the
 extract cache and logs (rebuildable / per-machine), `tax_staging/` (never backed up by design), the
 ``jobs`` table of the snapshot (in-process queue state that means nothing on another machine) and
 the ``extra_headers`` / URL credentials of ``[llm]`` in ``config.toml`` (they can carry secrets).
@@ -20,6 +23,15 @@ Restore validates everything (decryption, manifest, member names, sizes, hashes,
 database integrity) in a staging directory that is a sibling of the data directory, migrates it if
 the archive is older, and only then swaps it in with two renames. An existing data directory is
 moved aside to ``<name>.<timestamp>.before-restore``, never deleted.
+
+The machine-local secret state of the directory being replaced is carried over into the restored
+one: its ``secrets/`` directory (the plaintext key file the user chose to keep here) and its
+``[secrets]`` table of ``config.toml``. It is moved, not left behind: the file is copied into the
+restored directory before the swap (so a restore that fails loses nothing) and, once the swap has
+succeeded and the copy is verified, the original in the ``*.before-restore`` directory is
+overwritten and removed, so no plaintext key lingers there unnoticed. A restore also never changes
+whether the file store is enabled on this machine (a restored archive's own ``[secrets]``, if an
+older version wrote one, is discarded).
 
 The archive is treated as hostile input. Extraction counts the bytes it actually writes against
 per-member and total limits (never trusting the sizes a crafted zip or manifest declares), and
@@ -53,7 +65,7 @@ from datetime import UTC, datetime, timedelta
 from importlib import metadata
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import IO, Any
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import quote, urlsplit, urlunsplit
 
 import tomli_w
 from alembic.script import ScriptDirectory
@@ -68,6 +80,7 @@ from personal_finance_analyzer.backup.errors import (
     SchemaTooNewError,
 )
 from personal_finance_analyzer.core.paths import create_home_layout, existing_db_file, get_home
+from personal_finance_analyzer.core.secure_delete import shred_file
 from personal_finance_analyzer.db.migrate import build_alembic_config, upgrade_head
 
 FORMAT_NAME = "personal-finance-analyzer-backup"
@@ -152,6 +165,8 @@ class RestoreResult:
     migrated: bool
     #: Where the data directory that was in the way was moved to, if there was one.
     previous_dir: Path | None
+    #: The replaced directory's plaintext key file was carried over into the restored one.
+    kept_secrets: bool = False
 
 
 def app_version() -> str:
@@ -308,12 +323,14 @@ def _strip_url_credentials(url: str) -> str:
 
 def _portable_config(raw: bytes) -> bytes:
     """``config.toml`` without anything that can carry a secret: ``[llm] extra_headers`` (e.g. an
-    ``Authorization`` header) and credentials embedded in ``[llm] base_url``. The API key itself
-    is never in this file (it is in the OS keychain)."""
+    ``Authorization`` header), credentials embedded in ``[llm] base_url``, and the whole
+    ``[secrets]`` table (the plaintext-key-file opt-in belongs to this machine and must not travel
+    to another one). The API key itself is never in this file (it is in the OS keychain)."""
     try:
         data = tomllib.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
         raise BackupError(f"config.toml is not valid TOML ({exc}); fix or remove it first") from exc
+    data.pop("secrets", None)
     llm = data.get("llm")
     if isinstance(llm, dict):
         llm.pop("extra_headers", None)
@@ -630,11 +647,61 @@ def inspect_backup(path: Path, *, passphrase: str | None = None) -> BackupInfo:
 def _home_has_data(home: Path) -> bool:
     """Whether ``home`` holds anything a restore would replace: a database, a config, a kept
     statement PDF or a layout spec. Empty directories and logs do not count."""
-    if existing_db_file(home).exists() or (home / "config.toml").exists():
+    db_file = existing_db_file(home)
+    if (db_file.exists() and not _db_is_pristine(db_file)) or (home / "config.toml").exists():
         return True
     return any(
         child.is_file() for sub in ("statements", "specs") for child in (home / sub).rglob("*")
     )
+
+
+#: Tables whose rows are the user's own data. The rest (taxonomy, built-in rules, the job
+#: queue, the default user) is what a freshly created database already holds.
+_USER_DATA_TABLES = (
+    "issuers",
+    "accounts",
+    "layout_specs",
+    "statements",
+    "transactions",
+    "merchant_map",
+    "llm_runs",
+    "classifications",
+    "tax_documents",
+    "tax_forms",
+    "income_items",
+    "tax_items",
+    "balance_entries",
+    "net_worth_history",
+    "forecast_presets",
+    "tax_profiles",
+)
+
+
+def _db_is_pristine(db_file: Path) -> bool:
+    """Whether ``db_file`` holds no user data: a database a diagnosis or a bare ``pfa migrate``
+    created (schema and seeds, at most the default user), so a restore into such a machine does
+    not demand ``--replace``. Opened read-only and ``immutable`` (no locks, and no ``-shm``/``-wal``
+    files created next to the user's database); a database with a write-ahead log, which an
+    immutable open would not see, and anything unreadable count as having data."""
+    if db_file.with_name(db_file.name + "-wal").exists():
+        return False
+    try:
+        con = sqlite3.connect(
+            f"file:{quote(db_file.as_posix())}?mode=ro&immutable=1", uri=True, timeout=1
+        )
+        try:
+            tables = {row[0] for row in con.execute("SELECT name FROM sqlite_master")}
+            if "users" in tables and con.execute("SELECT COUNT(*) FROM users").fetchone()[0] > 1:
+                return False
+            return not any(
+                con.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone() is not None
+                for table in _USER_DATA_TABLES
+                if table in tables
+            )
+        finally:
+            con.close()
+    except sqlite3.Error:
+        return False
 
 
 def _contains_files(home: Path) -> bool:
@@ -790,6 +857,63 @@ def _migrate_staged(db_file: Path) -> None:
         engine.dispose()
 
 
+def _carry_over_secrets(old_home: Path, new_home: Path) -> bool:
+    """Bring this machine's own secret state into ``new_home`` (the restored directory, not yet in
+    place): the ``secrets/`` directory of ``old_home`` (the plaintext key file the user opted into
+    here) and its ``[secrets]`` table of ``config.toml``, overwriting whatever ``[secrets]`` the
+    archive carried. Whether this machine allows a plaintext key file is this machine's decision,
+    not the archive's. Returns whether a key file was carried over."""
+    secrets_table: dict[str, Any] = {}
+    try:
+        old_config = tomllib.loads((old_home / "config.toml").read_text(encoding="utf-8"))
+        candidate = old_config.get("secrets")
+        if isinstance(candidate, dict):
+            secrets_table = candidate
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+        pass  # no (readable) config: nothing to carry
+    new_config_path = new_home / CONFIG_MEMBER
+    try:
+        data = tomllib.loads(new_config_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+        data = {}
+    data.pop("secrets", None)
+    if secrets_table:
+        data["secrets"] = secrets_table
+    if data:
+        new_config_path.write_text(tomli_w.dumps(data), encoding="utf-8")
+    old_secrets = old_home / "secrets"
+    if not old_secrets.is_dir() or not any(old_secrets.iterdir()):
+        return False
+    shutil.copytree(old_secrets, new_home / "secrets", dirs_exist_ok=True)
+    with contextlib.suppress(OSError):
+        (new_home / "secrets").chmod(0o700)
+    return True
+
+
+def _discard_old_secrets(previous: Path, target: Path) -> None:
+    """After a successful swap, remove the plaintext key file from the ``*.before-restore``
+    directory it was copied out of, so the restore *moves* it: the copy in ``target`` (made before
+    the swap, so that a failed restore loses nothing) is verified file by file against the old one
+    before the old one is overwritten and deleted. A file whose copy is missing or different is
+    left alone. Best effort: the restore has already succeeded, so a failure here is not an error."""
+    old_secrets = previous / "secrets"
+    new_secrets = target / "secrets"
+    if not old_secrets.is_dir() or old_secrets.is_symlink():
+        return
+    try:
+        for old in sorted(p for p in old_secrets.rglob("*") if p.is_file()):
+            new = new_secrets / old.relative_to(old_secrets)
+            if new.is_file() and new.read_bytes() == old.read_bytes():
+                shred_file(old)
+        for directory in sorted((p for p in old_secrets.rglob("*") if p.is_dir()), reverse=True):
+            with contextlib.suppress(OSError):
+                directory.rmdir()
+        with contextlib.suppress(OSError):
+            old_secrets.rmdir()
+    except OSError:
+        return
+
+
 def _remove_empty_tree(root: Path) -> None:
     for directory in sorted((p for p in root.rglob("*") if p.is_dir()), reverse=True):
         directory.rmdir()
@@ -864,6 +988,7 @@ def restore_backup(
         if before_swap is not None:
             before_swap()
         _check_target(target, replace=replace)
+        kept_secrets = _carry_over_secrets(target, new_home) if target.is_dir() else False
         if _db_in_use(existing_db_file(target)):
             raise RestoreTargetError(
                 "the current database is open in another process (is `pfa serve` "
@@ -882,6 +1007,10 @@ def restore_backup(
             if previous is not None:
                 previous.rename(target)
             raise BackupError(f"could not move the restored data into place: {exc}") from exc
-        return RestoreResult(manifest=manifest, migrated=migrated, previous_dir=previous)
+        if kept_secrets and previous is not None:
+            _discard_old_secrets(previous, target)
+        return RestoreResult(
+            manifest=manifest, migrated=migrated, previous_dir=previous, kept_secrets=kept_secrets
+        )
     finally:
         shutil.rmtree(stage, ignore_errors=True)

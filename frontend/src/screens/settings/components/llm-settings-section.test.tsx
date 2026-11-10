@@ -6,15 +6,42 @@ import { ToastContextProvider } from "@/components/ui/toast-provider";
 
 import { isLocalAddress, resolveUrl } from "../lib/llm-address";
 import { LlmSettingsSection } from "./llm-settings-section";
-import type { Settings } from "../lib/hooks";
+import type { SecretStorageStatus, Settings } from "../lib/hooks";
 
 const setApiKeyMutate = vi.fn();
 const clearApiKeyMutate = vi.fn();
 const testLlmMutate = vi.fn();
+const setFileStoreMutate = vi.fn();
+const checkLegacyArgs: boolean[] = [];
+
+const keychainStatus: SecretStorageStatus = {
+  key_source: "keychain",
+  storage: "keychain",
+  keychain_name: "macOS Keychain",
+  keychain_usable: true,
+  keychain_detail: "",
+  env_var: null,
+  key_legacy: false,
+  file_store_enabled: false,
+  file_store_path: "/data/secrets/api_keys.toml",
+  file_store_has_keys: false,
+  legacy_checked: true,
+  file_key_outcome: "none",
+  moved_keys: 0,
+  kept_keys: 0,
+  guidance: "",
+  warning: "",
+};
+let secretStatus: SecretStorageStatus | undefined = keychainStatus;
 
 vi.mock("../lib/hooks", () => ({
   useSetApiKey: () => ({ mutate: setApiKeyMutate, isPending: false }),
   useClearApiKey: () => ({ mutate: clearApiKeyMutate, isPending: false }),
+  useSecretStorageQuery: (_baseUrl: string, checkLegacy = false) => {
+    checkLegacyArgs.push(checkLegacy);
+    return { data: secretStatus };
+  },
+  useSetFileStore: () => ({ mutate: setFileStoreMutate, isPending: false }),
   useTestLlm: () => ({ mutate: testLlmMutate, isPending: false, isError: false, error: null }),
 }));
 
@@ -201,5 +228,199 @@ describe("LlmSettingsSection", () => {
     renderSection({ ...offSettings, llm: { ...offSettings.llm, enabled: true } });
     await user.type(screen.getByLabelText("New API key"), "k");
     expect(screen.getByRole("button", { name: /save key/i })).toBeDisabled();
+  });
+});
+
+describe("LlmSettingsSection secret storage", () => {
+  afterEach(() => {
+    secretStatus = keychainStatus;
+    setFileStoreMutate.mockReset();
+    setApiKeyMutate.mockReset();
+  });
+
+  it("names the keychain in use and where the key came from", () => {
+    renderSection(remoteSettings);
+    expect(screen.getByTestId("secret-storage-source")).toHaveTextContent("macOS Keychain");
+    expect(screen.getByTestId("secret-storage-source")).toHaveTextContent("Key stored in macOS Keychain");
+    expect(screen.queryByTestId("no-keychain-guidance")).not.toBeInTheDocument();
+  });
+
+  it("says when an environment variable supplies the key", () => {
+    secretStatus = { ...keychainStatus, key_source: "env", env_var: "PFA_LLM_API_KEY" };
+    renderSection(remoteSettings);
+    expect(screen.getByTestId("secret-storage-source")).toHaveTextContent("PFA_LLM_API_KEY");
+  });
+
+  it("with no keychain: shows setup guidance, the file-store toggle off, and blocks saving", async () => {
+    const user = userEvent.setup();
+    secretStatus = {
+      ...keychainStatus,
+      key_source: "none",
+      storage: "none",
+      keychain_name: "none",
+      keychain_usable: false,
+      keychain_detail: "no usable keyring backend is installed or running",
+      guidance: "Linux: install and start a Secret Service provider (gnome-keyring).",
+    };
+    renderSection(remoteSettings);
+
+    const guidance = screen.getByTestId("no-keychain-guidance");
+    expect(guidance).toHaveTextContent("No usable system keychain");
+    expect(guidance).toHaveTextContent("gnome-keyring");
+    expect(guidance).toHaveTextContent("plaintext");
+    const toggle = screen.getByRole("checkbox", { name: "Keep API keys in a plaintext file" });
+    expect(toggle).not.toBeChecked();
+    expect(screen.queryByTestId("file-store-warning")).not.toBeInTheDocument();
+
+    await user.type(screen.getByLabelText("New API key"), "sk-secret");
+    expect(screen.getByRole("button", { name: "Save key" })).toBeDisabled();
+
+    await user.click(toggle);
+    expect(setFileStoreMutate).toHaveBeenCalledWith({ allow: true }, expect.anything());
+  });
+
+  const noKeychainWithKey: SecretStorageStatus = {
+    ...keychainStatus,
+    key_source: "none",
+    storage: "file",
+    keychain_name: "none",
+    keychain_usable: false,
+    keychain_detail: "no usable keyring backend is installed or running",
+    file_store_enabled: true,
+    file_store_has_keys: true,
+    guidance: "Linux: install gnome-keyring",
+    warning: "File store: API keys are saved as plaintext in /data/secrets/api_keys.toml.",
+  };
+
+  it("turning the plaintext file off with a key in it asks what to do, defaulting to delete", async () => {
+    const user = userEvent.setup();
+    secretStatus = noKeychainWithKey;
+    renderSection(remoteSettings);
+
+    await user.click(screen.getByRole("checkbox", { name: "Keep API keys in a plaintext file" }));
+    expect(setFileStoreMutate).not.toHaveBeenCalled(); // nothing happens until the user chooses
+
+    const choice = screen.getByTestId("plaintext-key-choice");
+    expect(choice).toHaveTextContent("/data/secrets/api_keys.toml");
+    expect(screen.getByRole("radio", { name: /Delete the key file/ })).toBeChecked();
+    expect(screen.queryByRole("radio", { name: /Move it into/ })).not.toBeInTheDocument(); // no keychain
+    expect(screen.getByRole("radio", { name: /Keep the file on disk/ })).not.toBeChecked();
+
+    await user.click(screen.getByRole("button", { name: "Delete the key file" }));
+    expect(setFileStoreMutate).toHaveBeenCalledWith({ allow: false, action: "delete" }, expect.anything());
+  });
+
+  it("lets the user keep the file instead, explicitly", async () => {
+    const user = userEvent.setup();
+    secretStatus = noKeychainWithKey;
+    renderSection(remoteSettings);
+    await user.click(screen.getByRole("checkbox", { name: "Keep API keys in a plaintext file" }));
+    await user.click(screen.getByRole("radio", { name: /Keep the file on disk/ }));
+    await user.click(screen.getByRole("button", { name: "Keep the file" }));
+    expect(setFileStoreMutate).toHaveBeenCalledWith({ allow: false, action: "keep" }, expect.anything());
+  });
+
+  it("cancelling the choice changes nothing", async () => {
+    const user = userEvent.setup();
+    secretStatus = noKeychainWithKey;
+    renderSection(remoteSettings);
+    await user.click(screen.getByRole("checkbox", { name: "Keep API keys in a plaintext file" }));
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByTestId("plaintext-key-choice")).not.toBeInTheDocument();
+    expect(setFileStoreMutate).not.toHaveBeenCalled();
+  });
+
+  it("turning the file off with no key in it needs no question", async () => {
+    const user = userEvent.setup();
+    secretStatus = { ...noKeychainWithKey, file_store_has_keys: false };
+    renderSection(remoteSettings);
+    await user.click(screen.getByRole("checkbox", { name: "Keep API keys in a plaintext file" }));
+    expect(setFileStoreMutate).toHaveBeenCalledWith({ allow: false }, expect.anything());
+  });
+
+  it("says a key is still on disk after the file was turned off, and offers to delete it", async () => {
+    const user = userEvent.setup();
+    secretStatus = { ...noKeychainWithKey, file_store_enabled: false, storage: "none", warning: "" };
+    renderSection(remoteSettings);
+
+    const leftover = screen.getByTestId("file-store-leftover");
+    expect(leftover).toHaveTextContent("still saved as plaintext in /data/secrets/api_keys.toml");
+    expect(leftover).toHaveTextContent("not used");
+    await user.click(screen.getByRole("button", { name: /Delete or keep it/ }));
+    expect(screen.getByTestId("plaintext-key-choice")).toBeInTheDocument();
+  });
+
+  it("with a working keychain it offers to move the plaintext key there (the default choice)", async () => {
+    const user = userEvent.setup();
+    secretStatus = { ...keychainStatus, file_store_has_keys: true };
+    renderSection(remoteSettings);
+
+    expect(screen.getByTestId("file-store-leftover")).toHaveTextContent("plaintext key file");
+    await user.click(screen.getByRole("button", { name: /Move or delete it/ }));
+    expect(screen.getByRole("radio", { name: /Move it into macOS Keychain/ })).toBeChecked();
+    await user.click(screen.getByRole("button", { name: "Move into macOS Keychain" }));
+    expect(setFileStoreMutate).toHaveBeenCalledWith({ allow: false, action: "move" }, expect.anything());
+  });
+
+  it("does not look for a key under the old keychain name until asked", async () => {
+    const user = userEvent.setup();
+    secretStatus = { ...keychainStatus, key_source: "none", legacy_checked: false };
+    renderSection(remoteSettings);
+    const note = screen.getByTestId("legacy-check");
+    expect(note).toHaveTextContent("not looked for automatically");
+    await user.click(screen.getByRole("button", { name: "Look for it" }));
+    expect(checkLegacyArgs).toContain(true); // the status query was re-run with check_legacy
+  });
+
+  it("shows no legacy prompt once the old name was checked, or when a key is already found", () => {
+    secretStatus = { ...keychainStatus, key_source: "none", legacy_checked: true };
+    const { unmount } = renderSection(remoteSettings);
+    expect(screen.queryByTestId("legacy-check")).not.toBeInTheDocument();
+    unmount();
+    secretStatus = { ...keychainStatus, legacy_checked: false };
+    renderSection(remoteSettings);
+    expect(screen.queryByTestId("legacy-check")).not.toBeInTheDocument();
+  });
+
+  it("disables the plaintext-file toggle and explains when an environment variable controls it", () => {
+    secretStatus = {
+      ...keychainStatus,
+      key_source: "none",
+      storage: "file",
+      keychain_usable: false,
+      keychain_name: "none",
+      keychain_detail: "no usable keyring backend is installed or running",
+      file_store_enabled: true,
+      file_store_env_var: "PFA_SECRETS__ALLOW_FILE_STORE",
+      guidance: "Linux: install gnome-keyring",
+      warning: "File store: API keys are saved as plaintext in /data/secrets/api_keys.toml.",
+    };
+    renderSection(remoteSettings);
+
+    expect(screen.getByRole("checkbox", { name: "Keep API keys in a plaintext file" })).toBeDisabled();
+    expect(screen.getByTestId("file-store-env-note")).toHaveTextContent("PFA_SECRETS__ALLOW_FILE_STORE");
+  });
+
+  it("with the file store on: warns it is plaintext and allows saving", async () => {
+    const user = userEvent.setup();
+    secretStatus = {
+      ...keychainStatus,
+      key_source: "none",
+      storage: "file",
+      keychain_usable: false,
+      keychain_name: "none",
+      keychain_detail: "no usable keyring backend is installed or running",
+      file_store_enabled: true,
+      guidance: "Linux: install gnome-keyring",
+      warning: "File store: API keys are saved as plaintext in /data/secrets/api_keys.toml.",
+    };
+    renderSection(remoteSettings);
+
+    expect(screen.getByTestId("file-store-warning")).toHaveTextContent("plaintext");
+    expect(screen.getByRole("checkbox", { name: "Keep API keys in a plaintext file" })).toBeChecked();
+    await user.type(screen.getByLabelText("New API key"), "sk-secret");
+    expect(screen.getByRole("button", { name: "Save key" })).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: "Save key" }));
+    expect(setApiKeyMutate).toHaveBeenCalled();
   });
 });

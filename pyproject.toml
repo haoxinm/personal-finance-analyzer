@@ -21,6 +21,12 @@ dependencies = [
   "pdfplumber>=0.11",
   "httpx>=0.27",
   "keyring>=25.2",
+  # keyring pulls these in by environment marker already; they are named here so a future keyring
+  # that drops them cannot silently leave Linux without a Secret Service client (or Windows
+  # without Credential Manager access) and push every user onto the plaintext file store.
+  "secretstorage>=3.3; sys_platform == 'linux'",
+  "jeepney>=0.8; sys_platform == 'linux'",
+  "pywin32-ctypes>=0.2.2; sys_platform == 'win32'",
   "pyyaml>=6.0",
   "typer>=0.12",
   "python-multipart>=0.0.9",
@@ -103,6 +109,7 @@ testpaths = ["tests"]
 addopts = "-ra -m \"not benchmark\""
 markers = [
   "benchmark: performance-budget tests (§6.6); opt-in only, run with `-m benchmark`.",
+  "linux_keyring: needs a real Linux Secret Service (gnome-keyring under dbus-run-session); skipped unless PFA_TEST_LINUX_KEYRING=1.",
 ]
 
 [tool.coverage.run]

@@ -681,6 +681,10 @@ class Settings(_Model):
     server: ServerSettings
     #: Optional on `PUT` (an older client that does not send it keeps the saved value).
     tax: TaxSettings = Field(default_factory=TaxSettings)
+    #: Read-only (ignored on `PUT`): the settings an environment variable currently controls, as
+    #: ``section.field`` (e.g. ``llm.enabled``). Their values here are the effective ones; saving
+    #: never writes them to `config.toml`.
+    env_overrides: list[str] = Field(default_factory=list)
 
 
 class TestLlmRequest(_Model):
@@ -706,6 +710,61 @@ class ApiKeyPut(_Model):
 
     api_key: str
     base_url: str = ""
+
+
+class SecretStorageStatus(_Model):
+    """`GET /api/settings/secret-storage`: which secret backend holds (or would hold) the LLM API
+    key on this machine. Never contains key material."""
+
+    #: Where the current endpoint's key comes from: an environment variable, the OS keychain, the
+    #: opt-in plaintext file, or nowhere.
+    key_source: Literal["env", "keychain", "file", "none"]
+    #: Where a newly saved key would go; `none` means a save will fail (no keychain, file store off).
+    storage: Literal["keychain", "file", "none"]
+    keychain_name: str
+    keychain_usable: bool
+    keychain_detail: str
+    env_var: str | None
+    #: The key was found only under the pre-rename keychain service ("spend-analyzer"); it is moved
+    #: to the current one the next time it is used.
+    key_legacy: bool = False
+    file_store_enabled: bool
+    file_store_path: str
+    file_store_has_keys: bool
+    #: Whether the pre-rename keychain service was looked at. The Settings screen does not on load
+    #: (reading another build's entry can make macOS prompt), so `key_legacy` then only means "not
+    #: checked"; `?check_legacy=true` does it on request.
+    legacy_checked: bool = False
+    #: What the `PUT` that just ran did with the plaintext key file: `moved` (into the keychain),
+    #: `deleted` (overwritten and removed), `kept` (left on disk, unused) or `none`. `moved_keys`
+    #: counts the keys moved; `kept_keys` those whose keychain key already existed and was kept.
+    #: Always `none` / 0 on a `GET`.
+    file_key_outcome: Literal["none", "moved", "deleted", "kept"] = "none"
+    moved_keys: int = 0
+    #: Keys dropped from the file because the keychain already held a key for that account (the
+    #: keychain's value was kept, not overwritten).
+    kept_keys: int = 0
+    #: Platform-specific setup advice, filled in when no usable keychain exists.
+    guidance: str
+    #: The plaintext-at-rest warning, filled in while the file store is enabled.
+    warning: str
+    #: The environment variable that controls `file_store_enabled` right now, if any. While it is
+    #: set the opt-in cannot be changed through the API (`PUT` answers `409`).
+    file_store_env_var: str | None = None
+
+
+class SecretStoragePut(_Model):
+    """`PUT /api/settings/secret-storage`: switch the plaintext file store on or off
+    (`[secrets] allow_file_store`).
+
+    Turning it off (or calling again with it already off) while the key file still holds keys
+    needs a decision about them, `file_key_action`: `move` them into the OS keychain (the default
+    when one works), `delete` the file (overwritten, then removed) or `keep` it on disk, unused.
+    Without a working keychain there is no default: the call is refused with `409` until the
+    caller chooses `delete` or `keep`, so a key never stays on disk by accident."""
+
+    allow_file_store: bool
+    file_key_action: Literal["move", "delete", "keep"] | None = None
 
 
 # --- Net worth ---------------------------------------------------------------------------------

@@ -779,7 +779,12 @@ export interface paths {
         };
         /** Get Settings Route */
         get: operations["get_settings_route_api_settings_get"];
-        /** Put Settings */
+        /**
+         * Put Settings
+         * @description Save the draft to `config.toml`. Settings an environment variable (`PFA_<SECTION>__<FIELD>`)
+         *     controls are not written: the file keeps its own value for them (so a one-off override never
+         *     becomes permanent), and the response lists them in `env_overrides` with the effective values.
+         */
         put: operations["put_settings_api_settings_put"];
         post?: never;
         delete?: never;
@@ -798,8 +803,10 @@ export interface paths {
         get?: never;
         /**
          * Put Api Key
-         * @description Store `body.api_key` for the endpoint's host in the OS keychain (I7). Never returned,
-         *     logged, or written to `config.toml`/the database.
+         * @description Store `body.api_key` for the endpoint's host in the OS keychain (I7), or, only when there is
+         *     no keychain and the user enabled `[secrets] allow_file_store`, in the 0600 file store. Never
+         *     returned, logged, or written to `config.toml`/the database. `503` (with an actionable message)
+         *     when no backend can take it.
          */
         put: operations["put_api_key_api_settings_api_key_put"];
         post?: never;
@@ -808,6 +815,44 @@ export interface paths {
          * @description Remove the key stored for the endpoint's host, if present (I7). Idempotent.
          */
         delete: operations["delete_api_key_route_api_settings_api_key_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/settings/secret-storage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Secret Storage
+         * @description Which backend holds the LLM API key (environment variable / keychain name / plaintext file
+         *     / none), with platform-specific setup advice when no keychain works. Read-only; never returns
+         *     a key. `base_url` (default: the saved one) picks the endpoint whose key is looked up.
+         *
+         *     The key saved under the pre-rename keychain service is only looked for with
+         *     `check_legacy=true` (the Settings screen's explicit "check" button): reading an entry another
+         *     build of the app saved can make macOS ask the user to allow it, which a page load must not
+         *     trigger.
+         */
+        get: operations["get_secret_storage_api_settings_secret_storage_get"];
+        /**
+         * Put Secret Storage
+         * @description Switch the plaintext file store on or off (`[secrets] allow_file_store`; only used when the
+         *     OS keychain is unavailable). `409` while an environment variable controls the opt-in: it wins
+         *     on every load, so the toggle could not change anything.
+         *
+         *     Switching it off does not leave a plaintext key behind unnoticed: a key still in the file is
+         *     moved into the OS keychain when one works, otherwise the caller must choose
+         *     (`file_key_action`) to delete the file (overwritten, then removed) or to keep it. The response
+         *     says which happened (`file_key_outcome`), so the UI can state where the key now lives.
+         */
+        put: operations["put_secret_storage_api_settings_secret_storage_put"];
+        post?: never;
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -2742,6 +2787,86 @@ export interface components {
             subcategory_key?: string | null;
             kind?: components["schemas"]["Kind"] | null;
         };
+        /**
+         * SecretStoragePut
+         * @description `PUT /api/settings/secret-storage`: switch the plaintext file store on or off
+         *     (`[secrets] allow_file_store`).
+         *
+         *     Turning it off (or calling again with it already off) while the key file still holds keys
+         *     needs a decision about them, `file_key_action`: `move` them into the OS keychain (the default
+         *     when one works), `delete` the file (overwritten, then removed) or `keep` it on disk, unused.
+         *     Without a working keychain there is no default: the call is refused with `409` until the
+         *     caller chooses `delete` or `keep`, so a key never stays on disk by accident.
+         */
+        SecretStoragePut: {
+            /** Allow File Store */
+            allow_file_store: boolean;
+            /** File Key Action */
+            file_key_action?: ("move" | "delete" | "keep") | null;
+        };
+        /**
+         * SecretStorageStatus
+         * @description `GET /api/settings/secret-storage`: which secret backend holds (or would hold) the LLM API
+         *     key on this machine. Never contains key material.
+         */
+        SecretStorageStatus: {
+            /**
+             * Key Source
+             * @enum {string}
+             */
+            key_source: "env" | "keychain" | "file" | "none";
+            /**
+             * Storage
+             * @enum {string}
+             */
+            storage: "keychain" | "file" | "none";
+            /** Keychain Name */
+            keychain_name: string;
+            /** Keychain Usable */
+            keychain_usable: boolean;
+            /** Keychain Detail */
+            keychain_detail: string;
+            /** Env Var */
+            env_var: string | null;
+            /**
+             * Key Legacy
+             * @default false
+             */
+            key_legacy: boolean;
+            /** File Store Enabled */
+            file_store_enabled: boolean;
+            /** File Store Path */
+            file_store_path: string;
+            /** File Store Has Keys */
+            file_store_has_keys: boolean;
+            /**
+             * Legacy Checked
+             * @default false
+             */
+            legacy_checked: boolean;
+            /**
+             * File Key Outcome
+             * @default none
+             * @enum {string}
+             */
+            file_key_outcome: "none" | "moved" | "deleted" | "kept";
+            /**
+             * Moved Keys
+             * @default 0
+             */
+            moved_keys: number;
+            /**
+             * Kept Keys
+             * @default 0
+             */
+            kept_keys: number;
+            /** Guidance */
+            guidance: string;
+            /** Warning */
+            warning: string;
+            /** File Store Env Var */
+            file_store_env_var?: string | null;
+        };
         /** ServerSettings */
         ServerSettings: {
             /** Port */
@@ -2754,6 +2879,8 @@ export interface components {
             ingest: components["schemas"]["IngestSettings"];
             server: components["schemas"]["ServerSettings"];
             tax?: components["schemas"]["TaxSettings"];
+            /** Env Overrides */
+            env_overrides?: string[];
         };
         /** Statement */
         Statement: {
@@ -5790,6 +5917,71 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_secret_storage_api_settings_secret_storage_get: {
+        parameters: {
+            query?: {
+                base_url?: string;
+                check_legacy?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SecretStorageStatus"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    put_secret_storage_api_settings_secret_storage_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SecretStoragePut"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SecretStorageStatus"];
+                };
             };
             /** @description Validation Error */
             422: {

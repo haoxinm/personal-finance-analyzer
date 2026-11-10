@@ -127,7 +127,7 @@ reading the old directory:
 | Data directory | `~/Library/Application Support/SpendAnalyzer` (macOS), `%LOCALAPPDATA%\SpendAnalyzer` (Windows), `~/.local/share/spend-analyzer` (Linux) | `.../PersonalFinanceAnalyzer`, `%LOCALAPPDATA%\PersonalFinanceAnalyzer`, `~/.local/share/personal-finance-analyzer`: the old directory is renamed in place (never copied). If that fails, or an old `spend-analyzer serve` still has the database open (stop it and restart), the old one keeps being used; if both exist the new one wins with a warning |
 | Database file | `spend.db` | `finance.db`, renamed inside whichever data directory you use |
 | Kept PDF copies | recorded by absolute path | the recorded paths are rewritten to the new directory, and copies are looked up under the current directory if a recorded path is stale |
-| LLM API key (OS credential store) | service `spend-analyzer` | service `personal-finance-analyzer`, copied on first read and the old entry deleted |
+| LLM API key (OS credential store) | service `spend-analyzer` | service `personal-finance-analyzer`, copied and the old entry deleted the first time the key is really used (an LLM call or a save), never by `pfa doctor`, `pfa llm show` or the Settings screen, which only read it |
 | Environment variables | `SPEND_ANALYZER_HOME`, `SPEND_ANALYZER_LLM_API_KEY`, `SPEND_ANALYZER_<SECTION>__<FIELD>` | `PFA_HOME`, `PFA_LLM_API_KEY`, `PFA_<SECTION>__<FIELD>`; the old names still work, the new ones win |
 | Command | `spend-analyzer ...` | `pfa ...`; `spend-analyzer` remains as a deprecated alias that prints a one-line stderr notice |
 | Backups | `*.spendbackup` | `*.pfabackup`; old files can still be inspected and restored |
@@ -211,9 +211,21 @@ This is the reason to run this instead of a hosted budgeting app.
   investment, credit card) live only in your local database. They are never exported, never part
   of any LLM payload, and the net-worth code (including the forecast, its manual past-year net worth
   and saved presets) imports neither an LLM nor an HTTP client.
-- **Secrets** (an LLM API key) live only in your OS credential store (macOS Keychain, Windows
+- **Secrets** (an LLM API key) live in your OS credential store (macOS Keychain, Windows
   Credential Manager, Linux Secret Service), keyed per host — never in the database, the config
-  file, or a log line. On a headless machine you can supply it as `PFA_LLM_API_KEY`.
+  file, or a log line. The key is looked up in this order: the `PFA_LLM_API_KEY` environment
+  variable, then the OS keychain, then (only if you opt in) a plaintext key file. On a machine with
+  no keychain at all (headless Linux, WSL, an SSH session, a container) saving a key fails with
+  setup instructions rather than falling back silently; either export `PFA_LLM_API_KEY`, set up a
+  Secret Service (see [docs/INSTALL.md](docs/INSTALL.md#linux-keychain-setup)), or switch on
+  `[secrets] allow_file_store = true` (Settings -> LLM provider shows the toggle) to keep keys in
+  `<data dir>/secrets/api_keys.toml`. That file is **plaintext at rest**, protected only by its
+  `0600` permissions, used only while no keychain is available, and never part of a backup.
+  Settings and `pfa doctor` both say which backend is in use. `pfa doctor` only *reads* the
+  keychain (and creates neither the data directory nor the database on a fresh machine);
+  `pfa doctor --write-test` is the explicit write round trip. A setting controlled by a `PFA_*`
+  environment variable is never written to `config.toml` by a save, and the Settings toggle for the
+  plaintext key file is disabled (with the variable's name) while one controls it.
 - **Backups are encrypted by default and never carry secrets.** `backup create` (and Settings ->
   Backup & restore) seals the archive with a passphrase (scrypt + AES-256-GCM); skipping that is an
   explicit `--no-encrypt`. The OS-keychain API key is never read into one. The archive is built
@@ -245,8 +257,8 @@ recover a lost passphrase). It never contains your LLM API key: that stays in th
 store of the machine that made it, so enter it again on the new one. Restore checks the whole file
 before touching anything, migrates a backup made by an older version, and refuses one from a newer
 version (including `.spendbackup` files made before the rename). If the new machine already has data, `restore` needs `--replace`, which moves the existing
-data directory aside to `<name>.<timestamp>.before-restore` instead of deleting it. See
-[docs/CLI.md](docs/CLI.md#backup).
+data directory aside to `<name>.<timestamp>.before-restore` instead of deleting it; the plaintext key file and the `[secrets]` opt-in of the machine being
+restored into are kept (they are not part of a backup). See [docs/CLI.md](docs/CLI.md#backup).
 
 ## Using an LLM (local or remote)
 
@@ -389,7 +401,7 @@ pfa report               print monthly category totals for a date range
 pfa export               export transactions to CSV/JSON (never includes account masks)
 pfa backup               move all data to another machine (create / inspect / restore)
 pfa llm                  configure the LLM (show / set / enable / disable / set-key / clear-key / test)
-pfa doctor               diagnose the local install: Python, data dir, DB, keychain, LLM
+pfa doctor               diagnose the local install: Python, data dir, DB, secret backend (read-only; --write-test), LLM
 pfa eval                 run the classifier evaluation harness against a labelled CSV
 pfa users                manage local users (list / add / set-default)
 pfa issuers              manage issuers (list / add), so later imports auto-confirm

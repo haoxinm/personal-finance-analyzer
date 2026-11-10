@@ -175,8 +175,12 @@ $ pfa llm clear-key
 
 Stores/removes the API key in the OS credential store (macOS Keychain, Windows Credential Manager,
 Linux Secret Service), **one key per host**, so a key saved for one endpoint is never sent to
-another. Local servers usually need none. On a headless machine without a credential store, set
-the `PFA_LLM_API_KEY` environment variable instead.
+another. Local servers usually need none. On a machine without a credential store, `set-key`
+fails with setup instructions (it never saves to a file on its own): set the `PFA_LLM_API_KEY`
+environment variable instead, or opt in to the plaintext key file with
+`[secrets] allow_file_store = true` (see [INSTALL.md](INSTALL.md#headless-linux-wsl-and-ssh)), in
+which case `set-key` says it used the file and prints the plaintext warning. `llm show` prints
+where the key comes from (environment variable, keychain, key file), never the key.
 
 ### `llm test`
 
@@ -484,7 +488,14 @@ the new one. See [Moving to another machine](../README.md#moving-to-another-mach
   `--replace`, which moves the current directory to `<name>.<timestamp>.before-restore` next to it
   (never deleted). A backup from an older version is migrated; one from a newer version is refused
   with a message to upgrade. Stop `pfa serve` first: a database still open in another
-  process stops the restore.
+  process stops the restore. A data directory that holds only an empty, freshly migrated database
+  (what `pfa migrate` leaves behind) does not count as data and needs no `--replace`.
+  Machine-local secret state stays with the machine: the replaced directory's `secrets/` folder
+  (the plaintext key file, if you opted in) and its `[secrets]` setting are carried over into the
+  restored directory, and the archive's own `[secrets]` setting (an older version could write one)
+  is ignored, so a restore never switches the plaintext key file on. The key file is moved, not
+  copied: once the restore has succeeded, the original in the `*.before-restore` directory is
+  overwritten and removed, so no plaintext key lingers there.
 
 All three exit 1 with a message on any problem (wrong passphrase, damaged or modified file, unknown
 format). The web UI has the same two actions under Settings -> Backup & restore.
@@ -496,14 +507,33 @@ $ pfa doctor
 PASS  Python version >= 3.12
 PASS  Data directory (...) writable
 PASS  Database migrated to head (0001_initial)
-PASS  Keychain read/write
+PASS  Keychain backend: macOS Keychain
+INFO  Key source / save target: none saved (a saved key would go to the OS keychain: macOS Keychain)
+SKIP  Keychain write test (read-only by default; run `pfa doctor --write-test`)
 SKIP  LLM connectivity (disabled — run `pfa llm set ...` to configure)
 ```
 
-Diagnoses the local install: Python version, data directory permissions, migration state,
-credential-store access, and (only if an LLM is enabled) connectivity to it
+Diagnoses the local install: Python version, data directory permissions, migration state, which
+secret backend is in use, and (only if an LLM is enabled) connectivity to it
 (`PASS  LLM connectivity (...)` or `FAIL  LLM connectivity failed: ...`). Exits non-zero
 on any `FAIL`.
+
+The secret check is **read-only by default**: it reports the active keyring backend, whether it is
+a usable secure one (not a missing, `null` or plaintext backend), whether the configured endpoint's
+key can be read, and where a saved key would go (environment variable, keychain, or the opt-in
+plaintext file, with its warning). It never writes to the keychain, because a keychain write can
+raise an OS dialog (for example macOS's "A keychain cannot be found to store ...") or fail on a
+machine with a missing login keychain. `WARN` lines (no keychain here, key file holds keys but is
+disabled) do not fail the run.
+
+```console
+$ pfa doctor --write-test
+...
+PASS  Keychain write test (probe entry written, read back, deleted)
+```
+
+`--write-test` adds an explicit set/get/delete round trip of a probe entry in the OS keychain
+(`FAIL  Keychain write test failed: ...` with the cause and fix if it cannot).
 
 ## `eval`
 

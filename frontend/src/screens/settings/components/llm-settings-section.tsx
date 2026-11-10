@@ -11,11 +11,16 @@ import { hostnameOf, isLocalAddress, resolveUrl } from "../lib/llm-address";
 import {
   type LlmSettings,
   type Settings,
+  type FileKeyAction,
   type TestLlmResponse,
   useClearApiKey,
+  useSecretStorageQuery,
   useSetApiKey,
+  useSetFileStore,
   useTestLlm,
 } from "../lib/hooks";
+import { cannotSaveKey, describeFileKeyOutcome, describeKeySource } from "../lib/secret-storage";
+import { PlaintextKeyFileChoice } from "./plaintext-key-file-choice";
 
 type ApiFormat = LlmSettings["api_format"];
 type Extractor = Settings["ingest"]["default_extractor"];
@@ -98,9 +103,12 @@ export function LlmSettingsSection({ settings, onSave, saving }: LlmSettingsSect
   const [headersText, setHeadersText] = React.useState(formatHeaders(settings.llm.extra_headers));
   const [apiKeyInput, setApiKeyInput] = React.useState("");
   const [testResult, setTestResult] = React.useState<TestLlmResponse | null>(null);
+  const [checkLegacy, setCheckLegacy] = React.useState(false);
+  const [choosingFileKey, setChoosingFileKey] = React.useState(false);
   const setApiKey = useSetApiKey();
   const clearApiKey = useClearApiKey();
   const testLlm = useTestLlm();
+  const setFileStore = useSetFileStore();
 
   React.useEffect(() => {
     setDraft(settings.llm);
@@ -140,6 +148,9 @@ export function LlmSettingsSection({ settings, onSave, saving }: LlmSettingsSect
   const previewUrl = resolveUrl(draft.base_url, draft.api_format, draft.path);
   const hasAddress = draft.base_url.trim() !== "";
   const keyBase = draft.base_url.trim();
+  const secretStorage = useSecretStorageQuery(settings.llm.base_url.trim(), checkLegacy);
+  const secretStatus = secretStorage.data;
+  const noSecureStorage = cannotSaveKey(secretStatus);
 
   const handleSaveKey = () => {
     if (!keyBase || !apiKeyInput) return;
@@ -148,7 +159,12 @@ export function LlmSettingsSection({ settings, onSave, saving }: LlmSettingsSect
       {
         onSuccess: () => {
           setApiKeyInput("");
-          toast({ title: "API key saved to the credential store" });
+          toast({
+            title:
+              secretStatus?.storage === "file"
+                ? "API key saved to the plaintext key file"
+                : "API key saved to the credential store",
+          });
         },
         onError: (err) => toast({ title: "Could not save API key", description: String(err), variant: "destructive" }),
       },
@@ -162,6 +178,35 @@ export function LlmSettingsSection({ settings, onSave, saving }: LlmSettingsSect
       {
         onSuccess: () => toast({ title: "API key removed" }),
         onError: (err) => toast({ title: "Could not remove API key", description: String(err), variant: "destructive" }),
+      },
+    );
+  };
+
+  const handleToggleFileStore = (allow: boolean) => {
+    if (!allow && secretStatus?.file_store_has_keys) {
+      // A key is still in the file: never turn it off without saying what happens to the key.
+      setChoosingFileKey(true);
+      return;
+    }
+    setFileStore.mutate(
+      { allow },
+      {
+        onError: (err) =>
+          toast({ title: "Could not change the key file setting", description: String(err), variant: "destructive" }),
+      },
+    );
+  };
+
+  const handleFileKeyAction = (action: FileKeyAction) => {
+    setFileStore.mutate(
+      { allow: false, action },
+      {
+        onSuccess: (status) => {
+          setChoosingFileKey(false);
+          if (status) toast(describeFileKeyOutcome(status));
+        },
+        onError: (err) =>
+          toast({ title: "Could not change the key file", description: String(err), variant: "destructive" }),
       },
     );
   };
@@ -456,6 +501,98 @@ export function LlmSettingsSection({ settings, onSave, saving }: LlmSettingsSect
                 Linux Secret Service) and only ever sent to {host || "this address"}. Write-only: it is never fetched
                 back or shown here.
               </p>
+              {secretStatus ? (
+                <div className="flex flex-col gap-2" data-testid="secret-storage">
+                  <p className="text-xs" data-testid="secret-storage-source">
+                    <span className="font-medium">Secret storage:</span>{" "}
+                    {secretStatus.keychain_usable ? secretStatus.keychain_name : "no system keychain available"}
+                    {" — "}
+                    {describeKeySource(secretStatus)}.
+                  </p>
+                  {!secretStatus.keychain_usable ? (
+                    <div
+                      role="alert"
+                      data-testid="no-keychain-guidance"
+                      className="rounded-md border border-border bg-muted/40 p-3 text-xs"
+                    >
+                      <p className="font-medium">No usable system keychain on this machine</p>
+                      <p className="text-muted-foreground">{secretStatus.keychain_detail}.</p>
+                      <p className="mt-1">{secretStatus.guidance}</p>
+                      <label className="mt-2 flex items-start gap-2">
+                        <input
+                          type="checkbox"
+                          className="mt-0.5"
+                          checked={secretStatus.file_store_enabled}
+                          disabled={setFileStore.isPending || Boolean(secretStatus.file_store_env_var)}
+                          onChange={(e) => handleToggleFileStore(e.target.checked)}
+                          aria-label="Keep API keys in a plaintext file"
+                        />
+                        <span>
+                          Keep API keys in a plaintext file when there is no keychain
+                          <span className="block text-muted-foreground">
+                            Plaintext at rest, protected only by file permissions (0600) — not encrypted and not
+                            included in backups. Off by default; used only while no keychain is available.
+                          </span>
+                        </span>
+                      </label>
+                      {secretStatus.file_store_env_var ? (
+                        <p data-testid="file-store-env-note" className="mt-1 text-muted-foreground">
+                          This is set by the {secretStatus.file_store_env_var} environment variable, which takes
+                          precedence over this setting. Unset it and restart to change it here.
+                        </p>
+                      ) : null}
+                      {secretStatus.file_store_enabled ? (
+                        <p data-testid="file-store-warning" className="mt-1 text-destructive">
+                          {secretStatus.warning}
+                        </p>
+                      ) : null}
+                      {!secretStatus.file_store_enabled && secretStatus.file_store_has_keys ? (
+                        <p data-testid="file-store-leftover" className="mt-2 text-destructive">
+                          A key is still saved as plaintext in {secretStatus.file_store_path}. It is not used while
+                          the plaintext key file is off, but it is still on disk.
+                          {!choosingFileKey ? (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="ml-2"
+                              onClick={() => setChoosingFileKey(true)}
+                            >
+                              Delete or keep it…
+                            </Button>
+                          ) : null}
+                        </p>
+                      ) : null}
+                    </div>
+                  ) : secretStatus.file_store_has_keys ? (
+                    <p className="text-xs text-muted-foreground" data-testid="file-store-leftover">
+                      A key is also saved in the plaintext key file ({secretStatus.file_store_path}); saving the key
+                      again moves it into {secretStatus.keychain_name}.
+                      {!choosingFileKey ? (
+                        <Button size="sm" variant="outline" className="ml-2" onClick={() => setChoosingFileKey(true)}>
+                          Move or delete it…
+                        </Button>
+                      ) : null}
+                    </p>
+                  ) : null}
+                  {choosingFileKey && secretStatus.file_store_has_keys ? (
+                    <PlaintextKeyFileChoice
+                      status={secretStatus}
+                      pending={setFileStore.isPending}
+                      onApply={handleFileKeyAction}
+                      onCancel={() => setChoosingFileKey(false)}
+                    />
+                  ) : null}
+                  {secretStatus.keychain_usable && secretStatus.key_source === "none" && !secretStatus.legacy_checked ? (
+                    <p className="text-xs text-muted-foreground" data-testid="legacy-check">
+                      No key found in {secretStatus.keychain_name}. A key saved by an older version under the old name
+                      (spend-analyzer) is not looked for automatically: macOS may ask permission to read it.
+                      <Button size="sm" variant="outline" className="ml-2" onClick={() => setCheckLegacy(true)}>
+                        Look for it
+                      </Button>
+                    </p>
+                  ) : null}
+                </div>
+              ) : null}
               <div className="flex items-end gap-2">
                 <label className="flex flex-col gap-1">
                   <span className="text-xs text-muted-foreground">New key for {host || "this address"}</span>
@@ -468,7 +605,11 @@ export function LlmSettingsSection({ settings, onSave, saving }: LlmSettingsSect
                     aria-label="New API key"
                   />
                 </label>
-                <Button size="sm" onClick={handleSaveKey} disabled={!keyBase || !apiKeyInput || setApiKey.isPending}>
+                <Button
+                  size="sm"
+                  onClick={handleSaveKey}
+                  disabled={!keyBase || !apiKeyInput || setApiKey.isPending || noSecureStorage}
+                >
                   Save key
                 </Button>
                 {draft.has_key ? (

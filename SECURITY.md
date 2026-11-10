@@ -36,7 +36,9 @@ Given that, the threats this project actually defends against are:
 4. **A secret (an LLM API key) ending up somewhere it shouldn't.** Mitigated by storing it only in
    the OS credential store (macOS Keychain, Windows Credential Manager, Linux Secret Service; or the
    `PFA_LLM_API_KEY` environment variable on headless machines), never in the database
-   or `config.toml`, and by a defensive log filter that
+   or `config.toml`. The one exception is an explicit opt-in (`[secrets] allow_file_store = true`) to
+   a `0600` plaintext key file for machines with no keychain, used only while none is available and
+   never part of a backup. A defensive log filter additionally
    redacts anything key-shaped even if it reached a log call by some other path.
 
 5. **Tax identifiers and balances leaking.** Tax-form PDFs contain full SSNs and EINs, and net
