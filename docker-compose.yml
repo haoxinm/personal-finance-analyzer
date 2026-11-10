@@ -27,8 +27,8 @@
 
 services:
   pfa:
-    # Pin a version (e.g. :0.2.0) once you are happy; :latest follows the newest release,
-    # :edge follows the main branch.
+    # :latest is rebuilt and smoke-tested on every merge to main; it is the tag to use. To choose
+    # when you upgrade, pin :sha-<commit> or a release such as :0.2.0 instead.
     image: ghcr.io/haoxinm/personal-finance-analyzer:latest
     container_name: personal-finance-analyzer
     init: true

@@ -1,12 +1,18 @@
 name: Docker
 
-# Builds the container image for linux/amd64 and linux/arm64 (many NAS are ARM).
-#   pull request   build only, nothing is pushed
-#   push to main   push ghcr.io/haoxinm/personal-finance-analyzer:edge
-#   tag v*         push :<version>, :<major>.<minor>, :<major> and (not for pre-releases) :latest
-# Docker Hub gets the same tags when the repository secrets DOCKERHUB_USERNAME and
+# Builds the container image for linux/amd64 and linux/arm64 (many NAS are ARM), smoke-tests the
+# amd64 image (login, migrations, bind mounts, ownership, restart), then publishes it.
+#
+#   merge (push) to main       publish :latest  (the one tag users pull)  + :sha-<short commit>
+#   run manually on main       same as a merge to main (Actions > Docker > Run workflow)
+#   run manually elsewhere     build and smoke test only, nothing is pushed
+#   tag vX.Y.Z                 publish :X.Y.Z, :X.Y and :X (not for 0.x) for people who pin
+#   pull request               build and smoke test only, nothing is pushed
+#
+# Publishing happens only after the smoke test passes, so :latest never points at an image that
+# failed it. Docker Hub gets the same tags when the repository secrets DOCKERHUB_USERNAME and
 # DOCKERHUB_TOKEN are set; without them that login and that destination are skipped. See
-# docs/DOCKER.md ("Publishing").
+# docs/DOCKER.md ("Building and publishing").
 #
 # One-time, by hand: GitHub creates a new container package as private. After the first push open
 # the package (repo page > Packages > personal-finance-analyzer > Package settings) and set its
@@ -29,6 +35,8 @@ on:
       - ".github/workflows/docker.yml"
   workflow_dispatch:
 
+# One run per ref at a time; runs on main queue instead of cancelling, so :latest always ends up on
+# the newest merge.
 concurrency:
   group: docker-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -39,6 +47,8 @@ permissions:
 env:
   GHCR_IMAGE: ghcr.io/haoxinm/personal-finance-analyzer
   DOCKERHUB_IMAGE_NAME: personal-finance-analyzer
+  # Push only from main (merge or manual run) and from version tags.
+  PUBLISH: ${{ github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) }}
 
 jobs:
   image:
@@ -76,7 +86,7 @@ jobs:
         run: PFA_SMOKE_CHECK_OWNER=1 docker/smoke-test.sh personal-finance-analyzer:ci
 
       - name: Log in to GitHub Container Registry
-        if: github.event_name != 'pull_request'
+        if: env.PUBLISH == 'true'
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
@@ -84,7 +94,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Log in to Docker Hub (only when configured)
-        if: github.event_name != 'pull_request' && env.DOCKERHUB_USERNAME != '' && env.DOCKERHUB_TOKEN != ''
+        if: env.PUBLISH == 'true' && env.DOCKERHUB_USERNAME != '' && env.DOCKERHUB_TOKEN != ''
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           username: ${{ env.DOCKERHUB_USERNAME }}
@@ -99,12 +109,14 @@ jobs:
             ${{ (env.DOCKERHUB_USERNAME != '' && env.DOCKERHUB_TOKEN != '') && format('docker.io/{0}/{1}', env.DOCKERHUB_USERNAME, env.DOCKERHUB_IMAGE_NAME) || '' }}
           flavor: |
             latest=false
+          # :latest tracks main, so it is what the compose file and the docs pull. Version tags
+          # add fixed tags for pinning but never move :latest backwards.
           tags: |
-            type=edge,branch=main
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=sha,prefix=sha-,format=short,enable=${{ github.ref == 'refs/heads/main' }}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}},enable=${{ !startsWith(github.ref, 'refs/tags/v0.') }}
-            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '-') }}
             type=ref,event=pr
           # org.opencontainers.image.source (and revision, version, created, ...) are added
           # automatically from the repository; it is what links the GHCR package to this repo.
@@ -113,12 +125,12 @@ jobs:
             org.opencontainers.image.description=Local-first spending, income and tax, and net-worth analysis from your own statements and tax forms. Self-hosted; no telemetry.
             org.opencontainers.image.licenses=MIT
 
-      - name: Build for amd64 and arm64 (pushed, except on pull requests)
+      - name: Build for amd64 and arm64 (pushed only from main and version tags)
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           platforms: linux/amd64,linux/arm64
-          push: ${{ github.event_name != 'pull_request' }}
+          push: ${{ env.PUBLISH == 'true' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
@@ -127,10 +139,11 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Summary
-        if: github.event_name != 'pull_request'
+        if: env.PUBLISH == 'true'
         run: |
           {
             echo "### Published"
+            echo "Users pull: \`docker pull ${{ env.GHCR_IMAGE }}:latest\` (main only)"
             echo '```'
             echo "${{ steps.meta.outputs.tags }}"
             echo '```'

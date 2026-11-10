@@ -668,11 +668,12 @@ $ docker compose up -d
 ```
 
 The entrypoint runs `pfa migrate` on every start, so a new version upgrades the database before
-serving. Make a backup first (above), and pin a version tag instead of `latest` if you want to
-choose when to upgrade (`image: ghcr.io/haoxinm/personal-finance-analyzer:0.2.0`). The app refuses
+serving. Make a backup first (above), and pin a fixed tag instead of `latest` if you want to
+choose when to upgrade (`image: ghcr.io/haoxinm/personal-finance-analyzer:sha-1a2b3c4`, or a release such as `:0.2.0`). The app refuses
 a backup made by a newer version than it runs, and migrations are not reversible: to go back to an
-older image, restore the backup you made before upgrading. Tags: `latest` (newest release),
-`<version>`, `<major>.<minor>`, `<major>`, and `edge` (the main branch, for testing).
+older image, restore the backup you made before upgrading. Tags: `latest` (the main branch,
+rebuilt and smoke-tested on every merge: the one to use), `sha-<commit>` (one fixed build of
+main), and for releases `<version>`, `<major>.<minor>`, `<major>`.
 
 Auto-updaters such as Watchtower work, but take a backup schedule with them.
 
@@ -722,15 +723,21 @@ The `Dockerfile` is multi-stage (Node builds the web UI; uv installs the locked,
 dependencies into a virtualenv; the final stage is `python:3.12-slim-bookworm` plus that
 virtualenv, with no compiler, Node or package manager), and the base images are pinned by digest.
 
-**CI** (`.github/workflows/docker.yml`) builds and smoke-tests the image on every pull request that
-touches the app, and publishes multi-arch images with `GITHUB_TOKEN`:
+**CI** (`.github/workflows/docker.yml`) builds the image for `linux/amd64` and `linux/arm64`,
+smoke-tests it (login, migrations, bind mounts, file ownership, restart), and only then publishes it
+with `GITHUB_TOKEN`:
 
 | Event | Tags pushed to `ghcr.io/haoxinm/personal-finance-analyzer` |
 |---|---|
-| push to `main` | `edge` |
-| tag `vX.Y.Z` | `X.Y.Z`, `X.Y`, `X` (not for `0.x`), `latest` |
+| merge (push) to `main` | `latest`, `sha-<short commit>` |
+| manual run on `main` (Actions > Docker > Run workflow) | same as a merge to `main` |
+| manual run on another branch | nothing is pushed (build and smoke test only) |
+| tag `vX.Y.Z` | `X.Y.Z`, `X.Y`, `X` (not for `0.x`); `latest` is left alone |
 | tag `vX.Y.Z-rc1` | `X.Y.Z-rc1` only |
 | pull request | nothing is pushed (build and smoke test only) |
+
+So `docker pull ghcr.io/haoxinm/personal-finance-analyzer:latest` (what the compose file uses) always
+gets the newest build of `main` that passed the smoke test.
 
 The image carries the standard OCI labels, including `org.opencontainers.image.source`, which links
 the package to the repository on GitHub.
