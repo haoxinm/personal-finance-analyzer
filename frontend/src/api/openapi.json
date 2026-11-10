@@ -9343,6 +9343,16 @@
           "carried": {
             "type": "boolean",
             "title": "Carried"
+          },
+          "stale": {
+            "type": "boolean",
+            "title": "Stale",
+            "default": false
+          },
+          "months_old": {
+            "type": "integer",
+            "title": "Months Old",
+            "default": 0
           }
         },
         "type": "object",
@@ -9674,6 +9684,13 @@
                 "type": "null"
               }
             ]
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Warnings"
           }
         },
         "type": "object",

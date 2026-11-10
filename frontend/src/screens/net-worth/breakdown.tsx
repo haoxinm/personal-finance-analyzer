@@ -81,8 +81,10 @@ export function NetWorthHeadline({ snapshot, currency }: { snapshot: Snapshot; c
 export function Breakdown({ snapshot, users, currency }: BreakdownProps) {
   const owners = new Set(snapshot.accounts.map((a) => a.user_id));
   const nameOf = (id: number) => users.find((u) => u.id === id)?.name ?? `User ${id}`;
+  const staleCount = snapshot.accounts.filter((a) => a.stale).length;
 
   return (
+    <>
     <table className="w-full text-sm" data-testid="net-worth-breakdown">
       <caption className="sr-only">Net worth by category and account</caption>
       <thead>
@@ -127,7 +129,14 @@ export function Breakdown({ snapshot, users, currency }: BreakdownProps) {
                   <th scope="row" className="py-1.5 pr-3 pl-6 text-left font-normal">
                     {a.account_name}
                     {owners.size > 1 ? ` (${nameOf(a.user_id)})` : ""}
-                    {a.carried ? (
+                    {a.stale ? (
+                      <span
+                        className="ml-2 rounded border border-amber-500/50 bg-amber-500/10 px-1.5 py-0.5 text-xs font-medium not-italic text-foreground"
+                        data-testid={`stale-${a.account_name}`}
+                      >
+                        Stale: last updated {periodLabel(a.as_of)} ({a.months_old} {a.months_old === 1 ? "month" : "months"} ago)
+                      </span>
+                    ) : a.carried ? (
                       <span className="ml-2 text-xs italic">carried from {periodLabel(a.as_of)}</span>
                     ) : null}
                   </th>
@@ -165,5 +174,13 @@ export function Breakdown({ snapshot, users, currency }: BreakdownProps) {
         </tr>
       </tfoot>
     </table>
+    {staleCount > 0 ? (
+      <p className="mt-3 text-xs text-muted-foreground" data-testid="stale-hint">
+        {staleCount === 1 ? "1 account hasn't" : `${staleCount} accounts haven't`} been updated in over 3 months but still{" "}
+        {staleCount === 1 ? "counts" : "count"} toward net worth. If an account is closed or was renamed, add a balance
+        of 0 for it in the current month (the Add balance form); otherwise enter its latest balance.
+      </p>
+    ) : null}
+    </>
   );
 }

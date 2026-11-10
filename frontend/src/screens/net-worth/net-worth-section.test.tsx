@@ -37,6 +37,23 @@ describe("NetWorthSection", () => {
     expect(screen.getByText("Net worth · Alex")).toBeInTheDocument();
   });
 
+  it("shows the server's data warnings above the snapshot, and none when there are none", async () => {
+    const warning =
+      "2025-03: 'Chase Checking' and 'chase checking' differ only in letter case; only the most recently entered balance is used.";
+    mock({ ...SUMMARY, warnings: [warning] });
+    const { unmount } = render(<NetWorthSection userId={1} users={USERS} currency="USD" />, { wrapper: Wrapper });
+    const alert = await screen.findByTestId("net-worth-warnings");
+    expect(alert).toHaveTextContent("Check these balances");
+    expect(alert).toHaveTextContent(warning);
+    expect(await screen.findByTestId("net-worth-total")).toHaveTextContent("$8,200.00");
+    unmount();
+
+    mock({ ...SUMMARY, warnings: [] });
+    render(<NetWorthSection userId={1} users={USERS} currency="USD" />, { wrapper: Wrapper });
+    await screen.findByTestId("net-worth-total");
+    expect(screen.queryByTestId("net-worth-warnings")).not.toBeInTheDocument();
+  });
+
   it("re-requests the summary with the chosen period", async () => {
     mock(SUMMARY);
     render(<NetWorthSection userId={1} users={USERS} currency="USD" />, { wrapper: Wrapper });

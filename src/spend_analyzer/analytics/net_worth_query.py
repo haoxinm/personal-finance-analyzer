@@ -2,8 +2,18 @@
 
 Data volume is tiny (a handful of accounts x months), so rows are loaded and aggregated in
 Python. With `carry_forward` an account's value for month M is its latest entry at or before M,
-flagged `carried` when that entry is from an earlier month; an account has no value (not zero)
-before its first entry. Totals sum magnitudes per category; net worth = assets - liabilities.
+flagged `carried` when that entry is from an earlier month and `stale` when it is more than
+`STALE_AFTER_MONTHS` months old (`months_old` says how many; the balance is still counted: the flag
+only tells the UI the figure may be out of date). Age is measured to the requested ``period``, or,
+for the default latest snapshot, to the current calendar month (`NetWorthQuery.today`, injectable
+for tests), so an account that has not been updated for months is flagged even when it is the
+newest entry in the data; a closed account stops counting once a zero balance is entered. An account has no value (not zero) before its
+first entry. Account names that differ only in case (compared with Python's ``str.casefold``, never
+SQLite's ASCII-only ``lower()``) are one account and the newest spelling is shown. If such
+names both have an entry in the *same* month (older data, from before the entry form matched
+names), only the most recently entered balance is used and a warning says so: summing would
+double count a re-typed balance, and the entry form now updates the existing row instead.
+Totals sum magnitudes per category; net worth = assets - liabilities.
 
 The series covers the months of the data: ``period_from`` / ``period_to`` can only narrow the range
 between the first and last entry (never widen it), and at most `MAX_SERIES_MONTHS` months, the most
@@ -14,7 +24,8 @@ from __future__ import annotations
 
 import re
 from bisect import bisect_right
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import date
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -30,6 +41,12 @@ from spend_analyzer.db.models import BalanceEntry
 _PERIOD_RE = re.compile(r"^(\d{4})-(\d{2})$")
 #: Upper bound on the number of monthly points in a series.
 MAX_SERIES_MONTHS = 1200
+#: A carried-forward balance older than this many months is flagged `stale`.
+STALE_AFTER_MONTHS = 3
+
+
+def _today() -> date:
+    return date.today()
 
 
 @dataclass(frozen=True)
@@ -40,6 +57,8 @@ class NetWorthQuery:
     period_from: str | None = None
     period_to: str | None = None
     carry_forward: bool = True
+    #: "Now" for staleness of the default (latest) snapshot; None = the real current date.
+    today: date | None = None
 
 
 @dataclass(frozen=True)
@@ -58,6 +77,8 @@ class AccountBalance:
     signed_minor: int
     as_of: str
     carried: bool
+    stale: bool
+    months_old: int
 
 
 @dataclass(frozen=True)
@@ -104,6 +125,7 @@ class NetWorthResult:
     series: list[Point]
     account_series: list[AccountSeries]
     snapshot: Snapshot | None
+    warnings: list[str] = field(default_factory=list)
 
 
 def parse_period(s: str) -> tuple[int, int]:
@@ -133,9 +155,15 @@ class _Account:
         self.idxs: list[int] = []
         self.values: list[int] = []
 
-    def add(self, idx: int, value: int) -> None:
+    def add(self, idx: int, value: int) -> bool:
+        """Record the balance for month `idx`; True when it replaced one already recorded for that
+        month (entries arrive oldest first, ties by id, so the latest entered wins)."""
+        if self.idxs and self.idxs[-1] == idx:
+            self.values[-1] = value
+            return True
         self.idxs.append(idx)
         self.values.append(value)
+        return False
 
     def at(self, idx: int, carry: bool) -> tuple[int, int] | None:
         """(balance, entry_idx) in effect for month `idx`, or None."""
@@ -169,7 +197,7 @@ def run_net_worth_query(session: Session, q: NetWorthQuery) -> NetWorthResult:
     stmt = (
         select(BalanceEntry)
         .where(BalanceEntry.currency == q.currency)
-        .order_by(BalanceEntry.year, BalanceEntry.month)
+        .order_by(BalanceEntry.year, BalanceEntry.month, BalanceEntry.id)
     )
     if q.user_id is not None:
         stmt = stmt.where(BalanceEntry.user_id == q.user_id)
@@ -178,13 +206,19 @@ def run_net_worth_query(session: Session, q: NetWorthQuery) -> NetWorthResult:
         return NetWorthResult(q.currency, q.user_id, [], [], [], None)
 
     accounts: dict[_Key, _Account] = {}
+    names: dict[_Key, str] = {}  # display spelling: the newest entry's (rows are oldest first)
     real: set[int] = set()
+    warnings: list[str] = []
     for r in rows:
         i = _idx(r.year, r.month)
         real.add(i)
-        accounts.setdefault((r.user_id, r.category, r.account_name), _Account()).add(
-            i, r.balance_minor
-        )
+        key = (r.user_id, r.category, r.account_name.casefold())
+        names[key] = r.account_name
+        if accounts.setdefault(key, _Account()).add(i, r.balance_minor):
+            warnings.append(
+                f"{r.account_name!r} has more than one entry in {_label(i)} whose names differ "
+                "only in letter case; only the most recently entered balance is used."
+            )
     real_sorted = sorted(real)
     carry = q.carry_forward
 
@@ -208,9 +242,12 @@ def run_net_worth_query(session: Session, q: NetWorthQuery) -> NetWorthResult:
             if hit is not None:
                 points.append(AccountPoint(_label(i), hit[0], hit[1] != i))
         if points:
-            account_series.append(AccountSeries(key[0], key[1], key[2], points))
+            account_series.append(AccountSeries(key[0], key[1], names[key], points))
 
     snap_idx = _idx(*snap_ym) if snap_ym else real_sorted[-1]
+    # An explicit period is judged as of that period; the default snapshot as of the current month.
+    now = q.today or _today()
+    age_idx = snap_idx if snap_ym else max(snap_idx, _idx(now.year, now.month))
     by_cat, assets, liabilities, net = _totals(accounts, snap_idx, carry)
     previous = [i for i in real_sorted if i < snap_idx]
     prev_idx = previous[-1] if previous else None
@@ -223,11 +260,13 @@ def run_net_worth_query(session: Session, q: NetWorthQuery) -> NetWorthResult:
                 AccountBalance(
                     user_id=key[0],
                     category=key[1],
-                    account_name=key[2],
+                    account_name=names[key],
                     balance_minor=hit[0],
                     signed_minor=signed_balance(key[1], hit[0]),
                     as_of=_label(hit[1]),
                     carried=hit[1] != snap_idx,
+                    stale=age_idx - hit[1] > STALE_AFTER_MONTHS,
+                    months_old=age_idx - hit[1],
                 )
             )
     snapshot = Snapshot(
@@ -247,4 +286,5 @@ def run_net_worth_query(session: Session, q: NetWorthQuery) -> NetWorthResult:
         series=series,
         account_series=account_series,
         snapshot=snapshot,
+        warnings=list(dict.fromkeys(warnings)),
     )

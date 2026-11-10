@@ -760,6 +760,11 @@ class NetWorthAccountBalance(_Model):
     signed_minor: int
     as_of: str
     carried: bool
+    #: Carried forward from an entry more than `STALE_AFTER_MONTHS` (3) months old.
+    stale: bool = False
+    #: Whole months between `as_of` and the snapshot period, or, for the default latest snapshot,
+    #: the current month if that is later.
+    months_old: int = 0
 
 
 class NetWorthPoint(_Model):
@@ -801,6 +806,9 @@ class NetWorthSummary(_Model):
     series: list[NetWorthPoint]
     account_series: list[NetWorthAccountSeries]
     snapshot: NetWorthSnapshot | None
+    #: Data problems that change a figure, e.g. two entries of one account in a month whose
+    #: names differ only in letter case (only the most recently entered one is used).
+    warnings: list[str] = Field(default_factory=list)
 
 
 # --- Income & tax (tax forms) ------------------------------------------------------------------

@@ -39,6 +39,9 @@ export function NetWorthSection({ userId, users, currency }: NetWorthSectionProp
   }, [period, summary]);
 
   const snapshot = summary?.snapshot ?? null;
+  // Data problems that change a figure (e.g. one account entered twice in a month under names that
+  // differ only in letter case): the server says which balance it used.
+  const warnings = summary?.warnings ?? [];
   const periods = React.useMemo(() => [...(summary?.periods ?? [])].reverse(), [summary?.periods]);
   const userLabel = userId === null ? "all users" : (users.find((u) => u.id === userId)?.name ?? "");
 
@@ -109,7 +112,23 @@ export function NetWorthSection({ userId, users, currency }: NetWorthSectionProp
             </div>
           ) : null}
         </CardHeader>
-        <CardContent>{body}</CardContent>
+        <CardContent className="flex flex-col gap-4">
+          {warnings.length > 0 ? (
+            <div
+              role="status"
+              data-testid="net-worth-warnings"
+              className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm"
+            >
+              <p className="font-medium">Check these balances</p>
+              <ul className="mt-1 list-disc pl-5 text-muted-foreground">
+                {warnings.map((w) => (
+                  <li key={w}>{w}</li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+          {body}
+        </CardContent>
       </Card>
 
       {summary && summary.series.length > 0 ? (
