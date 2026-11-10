@@ -48,7 +48,7 @@ def test_import_each_form_type(migrated: Path) -> None:
     )
     assert result.exit_code == 0, result.output
     lines = result.output.strip().splitlines()
-    assert "tax document #1 -> parsed (2024: w2) 1 income / 5 tax item(s)" in lines[0]
+    assert "tax document #1 -> parsed (2024: w2) 3 income / 5 tax item(s)" in lines[0]
     assert "(2024: 1099-div)" in lines[1]
     assert "(2024: 1040)" in lines[2]
     assert not _SSN_SHAPE.search(result.output)

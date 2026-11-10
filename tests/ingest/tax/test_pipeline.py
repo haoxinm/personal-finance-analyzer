@@ -93,8 +93,14 @@ def test_w2_values_round_trip(session: Session) -> None:
     (form,) = session.scalars(select(TaxForm)).all()
     assert form.payer_name == "Pinecrest Logistics LLC"
     assert form.payer_tin_last4 == "0001"
-    wages = session.scalars(select(IncomeItem)).one()
+    wages, deferral, hsa = session.scalars(select(IncomeItem).order_by(IncomeItem.id)).all()
     assert (wages.category, wages.amount_minor) == ("salary_wages", 8_543_210)
+    assert (deferral.category, deferral.amount_minor, deferral.is_memo) == (
+        "retirement_deferral",
+        320_000,
+        True,
+    )
+    assert (hsa.category, hsa.amount_minor, hsa.box) == ("hsa_employer", 125_000, "12-W")
 
 
 def test_duplicate_file_is_a_noop(session: Session) -> None:
@@ -133,7 +139,7 @@ def test_same_form_in_two_different_pdfs_dedupes_by_fingerprint(
     )
     assert first.skipped_from == ()
     assert session.scalar(select(func.count()).select_from(TaxForm)) == 1
-    assert session.scalar(select(func.count()).select_from(IncomeItem)) == 1
+    assert session.scalar(select(func.count()).select_from(IncomeItem)) == 3  # wages + box 12
     # Deleting the second (empty) document leaves the first document's data intact.
     assert delete_tax_document(session, second.document_id) is True
     assert session.scalar(select(func.count()).select_from(TaxForm)) == 1

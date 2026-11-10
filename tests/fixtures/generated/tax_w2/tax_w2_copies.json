@@ -14,6 +14,22 @@
           "is_memo": false,
           "label": "Wages, tips, other compensation",
           "source_form": "W-2"
+        },
+        {
+          "amount_minor": 320000,
+          "box": "12-D",
+          "category": "retirement_deferral",
+          "is_memo": true,
+          "label": "Box 12 code D",
+          "source_form": "W-2"
+        },
+        {
+          "amount_minor": 125000,
+          "box": "12-W",
+          "category": "hsa_employer",
+          "is_memo": true,
+          "label": "Box 12 code W",
+          "source_form": "W-2"
         }
       ],
       "is_corrected": false,

@@ -970,8 +970,8 @@ def _tax_sections(s: TaxYearSummary) -> list[tuple[str, list[tuple[str, str, int
         if cat not in MEMO_INCOME_CATEGORIES
     ]
     income.append(("total_income", "Total income", s.total_income_minor))
-    memo_labels = {
-        "qualified_dividends": INCOME_CATEGORY_LABELS["qualified_dividends"],
+    memo_labels: dict[str, str] = {
+        **{cat: INCOME_CATEGORY_LABELS[cat] for cat in MEMO_INCOME_CATEGORIES},
         "tax_exempt": "Tax-exempt interest (memo)",
     }
     memo = [(k, memo_labels.get(k, k), v) for k, v in s.memo_by_category.items()]

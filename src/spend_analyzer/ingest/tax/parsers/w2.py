@@ -2,8 +2,11 @@
 
 Emits per employer form: box 1 as `salary_wages`; boxes 2, 4, 6 as federal income tax, Social
 Security tax and Medicare tax withheld; box 17 (one item per state line, ``jurisdiction`` = the
-state code printed in box 15) and box 19 (``jurisdiction`` = the box 20 locality name). Boxes 3, 5,
-12 and 14 are not stored. Zero withholding amounts are not emitted; box 1 is emitted even when 0.
+state code printed in box 15) and box 19 (``jurisdiction`` = the box 20 locality name). Box 12
+lines (12a-12d) with code D, E, F, G or S become memo items `retirement_deferral` (box ``12-D``...)
+and code W a memo item `hsa_employer` (``12-W``): both are already excluded from box 1 (never
+subtract them again) and are shown only for reference and the deferral-limit warning; other codes
+are ignored. Boxes 3, 5 and 14 are not stored. Zero withholding amounts are not emitted; box 1 is emitted even when 0.
 
 One file may hold several forms (two employers) or the same form repeated (Copy B / Copy C /
 Copy 2 on one page). A form starts at each "Employee's social security number" label; identical
@@ -50,6 +53,7 @@ from spend_analyzer.ingest.tax.parsers._boxes import (
     UNKNOWN_STATE,
     box_amount,
     clean_jurisdiction,
+    code_amount_in_cell,
     label_present,
     money_rows_below,
     state_code_in,
@@ -75,6 +79,13 @@ _MEDICARE_TAX = compile_label(r"Medicare\s+tax\s+withheld")
 _STATE_TAX = compile_label(r"State\s+income\s+tax")
 _LOCAL_TAX = compile_label(r"Local\s+income\s+tax")
 _LOCALITY = compile_label(r"Locality\s+name")
+
+
+#: Box 12 codes that are memo items: elective deferrals (D 401(k), E 403(b), F 408(k)(6) SEP,
+#: G 457(b), S SIMPLE 401(k)) and W (employer HSA contributions, incl. cafeteria plan).
+_DEFERRAL_CODES = frozenset({"D", "E", "F", "G", "S"})
+_BOX12_CODES = _DEFERRAL_CODES | {"W"}
+_BOX12_SLOTS = tuple(compile_label(rf"(?<![\d.])12{slot}\b(?!\d)") for slot in ("a", "b", "c", "d"))
 
 
 def _score(doc: ExtractedDoc) -> float:
@@ -145,7 +156,7 @@ def _parse_block(block: ExtractedDoc, year: int) -> ParsedTaxForm | None:
     wages = box_amount(block, _WAGES)
     if wages is None:
         raise ParserError("A W-2 form was found but box 1 (wages) has no value.")
-    income = (
+    income: tuple[ParsedIncomeItem, ...] = (
         ParsedIncomeItem(
             category="salary_wages",
             amount_minor=wages,
@@ -154,6 +165,21 @@ def _parse_block(block: ExtractedDoc, year: int) -> ParsedTaxForm | None:
             label="Wages, tips, other compensation",
         ),
     )
+    memos = [
+        ParsedIncomeItem(
+            category="hsa_employer" if code == "W" else "retirement_deferral",
+            amount_minor=amount,
+            source_form=_SOURCE,
+            box=f"12-{code}",
+            label=f"Box 12 code {code}",
+            is_memo=True,
+        )
+        for slot in _BOX12_SLOTS
+        if (found := code_amount_in_cell(block, slot, _BOX12_CODES)) is not None
+        for code, amount in (found,)
+        if amount
+    ]
+    income += tuple(memos)
     taxes: list[ParsedTaxItem] = []
     for category, label_re, box, label in (
         ("federal_income_tax_withheld", _FED, "2", "Federal income tax withheld"),

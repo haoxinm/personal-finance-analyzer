@@ -69,7 +69,7 @@ class W2Data:
     box4: int
     box5: int
     box6: int
-    box12: str = ""
+    box12: tuple[tuple[str, int], ...] = ()  # (code, cents) for 12a, 12b, 12c
     states: tuple[StateLine, ...] = ()
     local: tuple[int, int, str] | None = None  # wages, tax, locality name
     corrected: bool = False
@@ -140,12 +140,13 @@ def _w2_items(
     items += box(c0, y(6), "e Employee's first name and initial", data.employee_first, w0)
     items += cell(c0_last, y(6), "Last name", data.employee_last, width=44.0 * scale, font_size=fs)
     items += box(c1, y(6), "11 Nonqualified plans", "", w1)
-    items += box(c2, y(6), "12a See instructions for box 12", data.box12, w2)
+    items += box(c2, y(6), "12a See instructions for box 12", _box12(data, 0), w2)
     items += box(c0, y(7), "f Employee's address and ZIP code", RECIPIENT_ADDRESS_LINES[0], w0)
     items += box(c1, y(7), "13 Statutory employee", "[ ]", w1)
-    items += box(c2, y(7), "12b", "", w2)
+    items += box(c2, y(7), "12b", _box12(data, 1), w2)
     items += text_item(c0, y(8) + 10.0, RECIPIENT_ADDRESS_LINES[1])
     items += box(c1, y(8), "14 Other", "", w1)
+    items += box(c2, y(8), "12c", _box12(data, 2), w2)
     state_items: list[BoxItem] = []
     # State table: 15 / 16 / 17, one value row per state
     state_items += box(c0, y(9), "15 State Employer's state ID number", "", w0)
@@ -172,6 +173,13 @@ def _w2_items(
         moved: list[BoxItem] = [(x, yy - shift, text) for x, yy, text in state_items]
         return [(c0, y_top, f"W-2 Wage and Tax Statement{year} (continued)"), *moved]
     return items + state_items
+
+
+def _box12(data: W2Data, index: int) -> str:
+    if index >= len(data.box12):
+        return ""
+    code, cents = data.box12[index]
+    return f"{code} {money_text(cents)}"
 
 
 def _expected_form(data: W2Data) -> ParsedTaxForm:
@@ -220,6 +228,17 @@ def _expected_form(data: W2Data) -> ParsedTaxForm:
             ParsedIncomeItem(
                 "salary_wages", data.box1, _SRC, "1", "Wages, tips, other compensation"
             ),
+            *(
+                ParsedIncomeItem(
+                    "hsa_employer" if code == "W" else "retirement_deferral",
+                    cents,
+                    _SRC,
+                    f"12-{code}",
+                    f"Box 12 code {code}",
+                    is_memo=True,
+                )
+                for code, cents in data.box12
+            ),
         ),
         taxes=tuple(taxes),
         warnings=(_CORRECTED_WARNING,) if data.corrected else (),
@@ -237,7 +256,7 @@ _NORMAL = W2Data(
     box4=549_519,
     box5=8_863_210,
     box6=128_517,
-    box12="D 3,200.00",
+    box12=(("D", 320_000), ("W", 125_000)),
     states=(_CA,),
     local=(8_543_210, 21_458, "Testville"),
 )
