@@ -52,7 +52,8 @@ jobs:
   # an unlocked gnome-keyring stand in for the desktop login a Linux user has; every other test
   # (including `pytest -q` above) runs on an in-memory keyring and skips these.
   linux-keyring:
-    runs-on: ubuntu-latest
+    # Pinned: the apt packages below (dbus-x11, gnome-keyring) are only known-good on 24.04, not 26.04.
+    runs-on: ubuntu-24.04
     env:
       PFA_TEST_LINUX_KEYRING: "1"
     defaults:
