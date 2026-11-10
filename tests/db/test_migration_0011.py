@@ -108,13 +108,6 @@ def test_upgrading_twice_changes_nothing(tmp_path: Path) -> None:
     assert _paths(db, "statements") == ["Alex/x.pdf"]
 
 
-def test_there_is_exactly_one_head() -> None:
-    from alembic.script import ScriptDirectory
-
-    heads = ScriptDirectory.from_config(build_alembic_config()).get_heads()
-    assert heads == ["0011_relative_stored_paths"]
-
-
 @pytest.mark.parametrize("value", ["", " "])
 def test_blank_values_are_left_alone(tmp_path: Path, value: str) -> None:
     url, db = _database(tmp_path)

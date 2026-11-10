@@ -26,6 +26,7 @@ from personal_finance_analyzer.core.forecast import (
     MIN_YEAR,
 )
 from personal_finance_analyzer.core.net_worth import BalanceCategory
+from personal_finance_analyzer.core.types import ClassifiedBy
 
 
 class Kind(StrEnum):
@@ -306,9 +307,6 @@ class TransactionPatch(_Model):
     #: merchant this way"), for future transactions. Needs a category and subcategory. Off by
     #: default: an edit is otherwise a one-time patch.
     create_rule: bool = False
-
-
-ClassifiedBy = Literal["cache", "user_rule", "builtin_rule", "issuer", "llm", "user", "kind"]
 
 
 class TransactionState(_Model):

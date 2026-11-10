@@ -40,6 +40,9 @@ class ClassifyResult:
     description: str
     item: Item
     needs_review: bool
+    #: True when `item` is the placeholder, not a model answer (so the row is "unplaced", not
+    #: "classified by the LLM", and must not be cached).
+    unplaced: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,6 +136,7 @@ def classify_all(
             description=descriptions[i],
             item=resolved[i],
             needs_review=i in needs_review,
+            unplaced=i in needs_review,
         )
         for i in range(total)
     )

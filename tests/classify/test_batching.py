@@ -116,6 +116,7 @@ def test_classify_all_marks_still_missing_rows_needs_review_after_retry(
     assert run.results[1].item.category == "others"
     assert run.results[1].item.subcategory == "uncategorized"
     assert run.results[1].item.confidence == 0.0
+    assert [r.unplaced for r in run.results] == [False, True, False]
     assert run.results[2].needs_review is False  # untouched row, classified in the initial call
 
 

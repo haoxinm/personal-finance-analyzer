@@ -15,11 +15,26 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import date
-from typing import Literal, Protocol, runtime_checkable
+from typing import Literal, Protocol, get_args, runtime_checkable
 
 #: `Transaction.classified_by` for a one-time edit by the user. A transaction carrying it is final:
 #: no rule, re-run, cache or LLM pass may change it (I6). It is never used for a merchant rule.
 USER_CLASSIFIED = "user"
+
+#: `Transaction.classified_by` for a row nothing could classify: no deterministic layer answered
+#: and the LLM phase produced nothing for it (no provider configured, the call failed, or the model
+#: returned no usable item), or "Revert to automatic" found no deterministic answer. It sits in
+#: `others/uncategorized` with confidence 0 and `needs_review=True`; it is never the AI's claim,
+#: never written to the merchant cache, and (unlike `user`) any later run may reclassify it.
+UNPLACED_CLASSIFIED = "unplaced"
+
+#: Every value `Transaction.classified_by` can hold: the single source of truth. The cascade writes
+#: these, and the API's `ClassifiedBy` type and the undo-token validation
+#: (`CLASSIFIED_BY_VALUES`) both derive from it.
+ClassifiedBy = Literal[
+    "cache", "user_rule", "builtin_rule", "issuer", "llm", "user", "kind", "unplaced"
+]
+CLASSIFIED_BY_VALUES: frozenset[str] = frozenset(get_args(ClassifiedBy))
 
 #: Minimum median page character count for a document to be considered to have a text layer.
 TEXT_LAYER_MIN_CHARS = 50

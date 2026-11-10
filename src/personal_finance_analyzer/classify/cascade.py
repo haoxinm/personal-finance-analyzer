@@ -41,8 +41,9 @@ Precedence, highest first: one-time edit > your rules > built-in rules > merchan
 7. **LLM batch** — everything left, deduplicated by `merchant_key`, one representative
    `description_clean` per key (A5: the modal value, tie-broken shortest then lexicographic).
    A row the LLM never successfully classifies (`classify.llm.batching`'s own fallback, or no
-   provider configured at all, D2) lands in `others/uncategorized` with `needs_review=True` —
-   step 8's fallback is already built into that result, so there is no separate step here.
+   provider configured at all, D2) lands in `others/uncategorized` with `needs_review=True` and
+   `classified_by='unplaced'` (not `llm`: no model answered) and is never written to the merchant
+   cache — step 8's fallback is already built into that result, so there is no separate step.
 
 A one-time edit (`classified_by='user'`) sits above all of these and is final for every pass of
 `classify_transactions`. The one way out is `revert_to_automatic`: it clears the edit and runs steps
@@ -82,7 +83,12 @@ from personal_finance_analyzer.classify.rules import (
 from personal_finance_analyzer.classify.taxonomy import is_dynamic
 from personal_finance_analyzer.config import LLMConfig
 from personal_finance_analyzer.core.errors import ConfigError
-from personal_finance_analyzer.core.types import USER_CLASSIFIED, Kind
+from personal_finance_analyzer.core.types import (
+    CLASSIFIED_BY_VALUES,
+    UNPLACED_CLASSIFIED,
+    USER_CLASSIFIED,
+    Kind,
+)
 from personal_finance_analyzer.db.models import (
     Category,
     Classification,
@@ -130,7 +136,8 @@ class _Outcome:
     category_key: str
     subcategory_key: str
     confidence: float | None
-    classified_by: str  # cache|user_rule|builtin_rule|issuer|llm|user (one-time edit)|kind
+    # cache|user_rule|builtin_rule|issuer|llm|user (one-time edit)|kind|unplaced
+    classified_by: str
     merchant_canonical: str | None = None
     kind_override: str | None = None
     needs_review_override: bool = False
@@ -288,8 +295,15 @@ def _run_llm_phase(
         classified = 0
         needs_review = 0
         for key, result in zip(merchant_keys, run_result.results, strict=True):
-            outcome = _outcome_from_item(session, result.item, batch_flagged=result.needs_review)
-            _write_merchant_map(session, key, outcome, source="llm")
+            outcome = (
+                _unplaced_outcome()
+                if result.unplaced
+                else _outcome_from_item(session, result.item, batch_flagged=result.needs_review)
+            )
+            if not result.unplaced:
+                # A placeholder is not an answer: caching it would replay "uncategorized" as a
+                # learned fact (and a "learned from LLM" suggestion) for every later import.
+                _write_merchant_map(session, key, outcome, source="llm")
             for txn_id in pending_llm[key]:
                 txn = session.get(Transaction, txn_id)
                 if txn is None or txn.classified_by == USER_CLASSIFIED:
@@ -773,11 +787,8 @@ class AcceptResult:
     undo: AcceptUndo
 
 
-#: The values `Transaction.classified_by` can hold (see `_Outcome.classified_by`); an undo token
-#: naming anything else is forged or corrupt.
-CLASSIFIED_BY_VALUES: frozenset[str] = frozenset(
-    {"cache", "user_rule", "builtin_rule", "issuer", "llm", "user", "kind"}
-)
+# `CLASSIFIED_BY_VALUES` (imported from `core.types`) is the set an undo token may name; anything
+# else is forged or corrupt.
 _KIND_VALUES: frozenset[str] = frozenset(
     {"purchase", "refund", "payment", "transfer", "fee", "interest", "adjustment"}
 )
@@ -954,13 +965,7 @@ def revert_to_automatic(
             session, txn, user_rules=user_rules, builtin_rules=builtin_rules, dry_run=True
         )
         if outcome is None:
-            outcome = _Outcome(
-                category_key=_UNCATEGORIZED_CATEGORY,
-                subcategory_key=_UNCATEGORIZED_SUBCATEGORY,
-                confidence=0.0,
-                classified_by="llm",
-                needs_review_override=True,
-            )
+            outcome = _unplaced_outcome()
         below_threshold = (
             outcome.confidence is not None and outcome.confidence < confidence_threshold
         )
@@ -1443,6 +1448,19 @@ def _select_representative(descriptions: Sequence[str]) -> str:
     candidates = [d for d, c in counts.items() if c == max_count]
     candidates.sort(key=lambda d: (len(d), d))
     return candidates[0]
+
+
+def _unplaced_outcome() -> _Outcome:
+    """A row nothing could classify: `others/uncategorized`, confidence 0, flagged for review,
+    honestly recorded as `unplaced` (not `llm`: no model answered). Shared by the LLM phase's
+    placeholder and `revert_to_automatic`'s fallback."""
+    return _Outcome(
+        category_key=_UNCATEGORIZED_CATEGORY,
+        subcategory_key=_UNCATEGORIZED_SUBCATEGORY,
+        confidence=0.0,
+        classified_by=UNPLACED_CLASSIFIED,
+        needs_review_override=True,
+    )
 
 
 def _outcome_from_item(session: Session, item: Item, *, batch_flagged: bool) -> _Outcome:

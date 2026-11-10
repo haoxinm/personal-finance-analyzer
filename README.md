@@ -504,8 +504,10 @@ looks off:
 - **The cascade ends in review.** Kind detection → your rules → ~120 built-in high-precision rules →
   the issuer's own category column, where the statement prints one → a cache of past
   classifications → an LLM, only for what nothing local could resolve → an `others/uncategorized`
-  fallback that still needs your review. The Review screen can re-run the cascade over everything
-  uncategorized.
+  fallback that still needs your review. That fallback is recorded as `classified_by='unplaced'`
+  ("nothing could classify this", not `llm`: no model answered) and is never saved to the merchant
+  cache; it is also what *Revert to automatic* writes when no local layer answers. The Review screen
+  can re-run the cascade over everything uncategorized.
 - **Suggestions are the cascade, laid side by side.** `GET /api/transactions/{id}/candidates`
   evaluates every layer independently, reusing the cascade's own matching so the two cannot drift:
   your rules (and legacy pins), built-in rules, the issuer's label, and the learned merchant cache
