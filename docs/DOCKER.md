@@ -216,10 +216,13 @@ How the login behaves:
   shows a 403 until you reload it, because the per-launch API token changed too).
 - **Brute force**: a login attempt is counted as a failure *before* its password is checked (and
   taken back if it was right), so sending many attempts at once does not get extra guesses. 5 wrong
-  passwords from one address within 5 minutes lock that address (`429`, even for the right
-  password) until the window passes. Once 40 have failed from all addresses together, each address
+  passwords from one device within 5 minutes lock that device (`429`, even for the right
+  password) until the window passes. A device is its IPv4 address, or its whole IPv6 /64, since one
+  machine can use any address in it. Once 40 have failed from all devices together, each device
   gets a single try per window instead: the right password still gets in (a stranger cannot lock
-  you out of your own server), while a guesser gets one guess per address. At most two password
+  you out of your own server), while a guesser gets one guess per device. After 200 attempts in 5
+  minutes the login refuses everyone, even with the right password, until the window passes, so
+  total guesses stay bounded however many addresses a guesser has. At most two password
   checks run at once (each takes about 32 MiB of memory), so a flood cannot exhaust a small NAS;
   surplus requests wait a few seconds and then get `429`. If Docker hides client addresses (below),
   all clients share one address and five wrong passwords from anyone lock everyone out for the
@@ -353,10 +356,11 @@ try and move to Option 1 later. (A `$` in a password must be written `$$` here.)
 
 - **The login page**: a plain page titled "Personal Finance Analyzer" with one **Password** field
   and a **Sign in** button. After signing in the app opens, with **Sign out** at the top right.
-- **Lockout**: five wrong passwords from one address within five minutes lock the login for that
-  address (`429`, "Too many failed attempts. Try again in N seconds.", even for the right password)
-  until the window passes. After forty from all addresses together, each address gets one try per
-  window, so the right password still works for you.
+- **Lockout**: five wrong passwords from one device within five minutes lock the login for that
+  device (`429`, "Too many failed attempts. Try again in N seconds.", even for the right password)
+  until the window passes. A device is its IPv4 address, or its whole IPv6 /64. After forty from all
+  devices together, each device gets one try per window, so the right password still works for you;
+  after 200 attempts in five minutes the login refuses everyone until the window has passed.
 - **One password, no accounts.** To give someone access, give them the password; to cut someone
   off, change it (above). The per-person views (each household member's spending, tax and net worth)
   are chosen inside the app after signing in; they are not separate logins.
