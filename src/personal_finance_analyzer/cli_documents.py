@@ -78,6 +78,71 @@ def documents_reorganize(
         typer.echo("Dry run: nothing was changed.")
 
 
+@documents_app.command(name="scan")
+def documents_scan(
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Show what would be imported; import and record nothing."),
+    ] = False,
+) -> None:
+    """Import the PDFs you put into the documents folder, once, without the server.
+
+    The folder says whose a file is and what it is: <Person>/Statements/... is a statement and
+    <Person>/Tax/<year>/... a tax form for that person (a folder whose name is not a person's is
+    reported, never turned into a person). Files stay where you put them. This is the same scan
+    the server runs in the background when folder imports are switched on in Settings; it takes
+    the same lock, so it waits its turn rather than importing a file twice. If an LLM is enabled
+    in Settings, new statements' descriptions are sent to it to be categorized, as in the app.
+    Exits with status 1 when a file needs attention, 3 when another scan is running."""
+    from personal_finance_analyzer.cli import _open_engine, _session_factory_for
+    from personal_finance_analyzer.db.migrate import is_at_head
+    from personal_finance_analyzer.watch.scanner import MANUAL_SETTLE_S, FolderScanner
+
+    with _open_engine(prepare_documents=not dry_run) as engine:
+        if not is_at_head(engine):
+            typer.echo("The database is not up to date: run `pfa migrate` first.", err=True)
+            raise typer.Exit(code=2)
+        scanner = FolderScanner(_session_factory_for(engine))
+        typer.echo(f"Documents folder: {scanner.root}")
+        report = scanner.scan(dry_run=dry_run, settle_seconds=MANUAL_SETTLE_S)
+
+    if report.busy:
+        typer.echo("Another scan is running (the server?); try again in a moment.", err=True)
+        raise typer.Exit(code=3)
+    if report.error:
+        typer.echo(report.error, err=True)
+        raise typer.Exit(code=1)
+    labels = {
+        "imported": "imported",
+        "would_import": "would import",
+        "known": "already in the app",
+        "failed": "NEEDS ATTENTION",
+        "ignored": "ignored",
+        "waiting": "waiting",
+    }
+    for item in report.items:
+        who = ", ".join(p for p in (item.person, item.kind) if p)
+        typer.echo(
+            f"{labels.get(item.action, item.action)}: {item.path}" + (f" ({who})" if who else "")
+        )
+        if item.message:
+            typer.echo(f"    {item.message}")
+    typer.echo(
+        f"{report.scanned} PDF(s) in the folder: "
+        + (
+            f"{report.would_import} would be imported, "
+            if dry_run
+            else f"{report.imported} imported, "
+        )
+        + f"{report.known} already known, {report.failed} need attention, "
+        f"{report.ignored} ignored, {report.waiting} waiting."
+    )
+    if dry_run:
+        typer.echo("Dry run: nothing was imported or recorded.")
+    if report.failed:
+        raise typer.Exit(code=1)
+
+
 @documents_app.command(name="check")
 def documents_check() -> None:
     """List PDFs the database expects but cannot find, PDFs found somewhere other than where the

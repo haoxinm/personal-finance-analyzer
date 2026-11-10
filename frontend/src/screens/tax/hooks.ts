@@ -172,9 +172,15 @@ const owner = (ownerId: OwnerId) => ({ user_id: ownerId });
 export function useDeleteTaxDocument(ownerId: OwnerId) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (id: number) => {
+    // `deletePdf`: also delete the PDF file when it is one the user put in the documents folder
+    // themselves (the server keeps such a file by default).
+    mutationFn: async (arg: number | { id: number; deletePdf?: boolean }) => {
+      const { id, deletePdf } = typeof arg === "number" ? { id: arg, deletePdf: false } : arg;
       const { error } = await apiClient.DELETE("/tax/documents/{document_id}", {
-        params: { path: { document_id: id }, query: owner(ownerId) },
+        params: {
+          path: { document_id: id },
+          query: { ...owner(ownerId), ...(deletePdf ? { delete_pdf: true } : {}) },
+        },
       });
       throwIfError(error);
     },

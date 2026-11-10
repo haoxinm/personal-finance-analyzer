@@ -121,6 +121,7 @@ export function document(over: Partial<TaxDocument> = {}): TaxDocument {
     created_at: "2026-10-25T12:00:00+00:00",
     has_pdf: false,
     pdf_missing: false,
+    pdf_in_place: false,
     staged_until: null,
     ...over,
   };

@@ -59,6 +59,23 @@ app still finds a moved or renamed file by its content (it just shows "PDF not f
 deleted). The app does NOT rename files by itself when you rename a person or an account; run
 `pfa documents reorganize` (it can show a --dry-run first) to apply the current names.
 
+Adding files yourself: the folders say whose a PDF is and what it is, so you can also drop PDFs
+here by hand (from any computer, over the network share) and the app imports them:
+
+  <Person>/Statements/<anything>/<any name>.pdf     a statement for that person
+  <Person>/Tax/<year>/<any name>.pdf                a tax form for that person
+
+<Person> must be the name of a person in the app (capitals and spacing do not matter). Turn
+"Folder imports" on in the app's Settings (or run `pfa documents scan` once). A file stays exactly
+where you put it; one the app cannot import (unknown person, a PDF with a password, a statement
+layout it does not know yet) is listed on its Import page with the reason, never silently skipped.
+Files that sit anywhere else, such as directly in this folder, are not imported.
+
+Deleting a statement or tax form in the app keeps a file you put here yourself (the app made a
+note not to import it again unless you change the file or press "Import again"); the delete
+confirmation lets you also delete the PDF file. A copy the app made itself is deleted with its
+statement. The app never renames or moves a file you put here, not even with `reorganize`.
+
 The database, settings and everything else the app needs live in its data folder, not here (in
 Docker: ./pfa/data next to ./pfa/documents). The app does not need this README; it recreates it
 only if it is missing, and never overwrites your edits.

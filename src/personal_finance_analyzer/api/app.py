@@ -14,7 +14,8 @@ visitor has signed in (`api/auth.py`).
 from __future__ import annotations
 
 import contextlib
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
@@ -44,6 +45,7 @@ from personal_finance_analyzer.api.routers import (
     backup,
     classify,
     export,
+    folder_imports,
     forecast,
     issuers,
     layout_specs,
@@ -75,6 +77,7 @@ from personal_finance_analyzer.db.documents import prepare_documents
 from personal_finance_analyzer.db.session import make_engine, make_session_factory
 from personal_finance_analyzer.ingest.tax import staging as tax_staging
 from personal_finance_analyzer.jobs.runner import JobRunner
+from personal_finance_analyzer.watch.service import WatchService
 
 #: The web/ build output is git-ignored and only present once the frontend has been built (§0.4);
 #: `create_app()` mounts it if and only if it exists, so the API works standalone in dev/tests.
@@ -115,14 +118,30 @@ def create_app(
     # A backup export or restore that was killed leaves plaintext scratch files behind.
     with contextlib.suppress(OSError):
         backup_archive.sweep_stale_work_dirs(get_home())
-    app = FastAPI(title="Personal Finance Analyzer API", version="0.1.0")
+    restore_gate = RestoreGate()
+    watch_service = WatchService(
+        resolved_engine, session_factory, paused=lambda: restore_gate.exclusive
+    )
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        # Folder imports: the thread starts only once the server does (and, by then, the database
+        # was migrated and the documents folder prepared above); it is idle while switched off.
+        watch_service.start()
+        try:
+            yield
+        finally:
+            watch_service.stop()
+
+    app = FastAPI(title="Personal Finance Analyzer API", version="0.1.0", lifespan=lifespan)
+    app.state.watch = watch_service
     app.state.engine = resolved_engine
     app.state.session_factory = session_factory
     app.state.settings = resolved_settings
     app.state.token = resolved_token
     app.state.job_runner = JobRunner(session_factory)
     app.state.job_runner.start()
-    app.state.restore_gate = RestoreGate()
+    app.state.restore_gate = restore_gate
 
     # Added first so it sits inside the localhost guard: unauthenticated requests are rejected
     # before a restore in progress can count (or turn away) them.
@@ -183,6 +202,7 @@ def create_app(
         forecast.router,
         tax.router,
         backup.router,
+        folder_imports.router,
     ):
         app.include_router(router, prefix="/api")
 

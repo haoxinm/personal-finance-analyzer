@@ -44,9 +44,14 @@ from personal_finance_analyzer.db.models import (
     TaxDocument,
     TaxForm,
     User,
+    WatchedFile,
+    utcnow_iso,
 )
 
 logger = logging.getLogger(__name__)
+
+#: `watch_files.code` of a file whose row the user deleted in the app (the file was kept).
+DELETED_IN_APP = "deleted_in_app"
 
 _SHA_FILE = re.compile(r"^[0-9a-f]{64}\.pdf$")
 
@@ -198,19 +203,25 @@ def _file(session: Session, row: Row, source: Path | None, root: Path | None) ->
         folder, stem = target_of(session, row)
         old = row.stored_path
         current = docs.resolve(old, base) if old and _is_relative(old) else None
+        if row.pdf_in_place and old and current is not None and current.is_file():
+            # A file the user put there themselves stays exactly where and as they put it.
+            return old
         claimed = _claims_checker(session, sha)
+        in_place = False
         if current is not None and current.is_file():
             rel = docs.rename_within(current, folder, stem, sha, claimed=claimed, root=base)
         else:
             sibling = _sibling_copy(session, row, base)
             if sibling is not None:
                 rel = sibling
+                in_place = _path_in_place(session, sibling)
             else:
                 src = source or docs.kept_pdf(old, sha, base) or docs.staged_pdf(sha)
                 if src is None:
                     return None
                 rel = docs.place_file(src, folder, stem, sha, claimed=claimed, root=base)
         _set_path(session, row, rel, old if current is not None else None)
+        row.pdf_in_place = in_place  # (a file placed here is the app's own copy)
         session.commit()
     except (OSError, DocumentsError) as exc:
         session.rollback()
@@ -221,6 +232,17 @@ def _file(session: Session, row: Row, source: Path | None, root: Path | None) ->
 
 def _kind(row: Row) -> str:
     return "statement" if isinstance(row, Statement) else "tax document"
+
+
+def _path_in_place(session: Session, rel: str) -> bool:
+    """Whether a row records ``rel`` as a file the user put there themselves."""
+    return any(
+        session.scalar(
+            select(model.id).where(model.stored_path == rel, model.pdf_in_place.is_(True)).limit(1)
+        )
+        is not None
+        for model in (Statement, TaxDocument)
+    )
 
 
 # --------------------------------------------------------------------------------------------
@@ -275,6 +297,68 @@ def discard_copy(
     if not _any_row_with_sha(session, sha256):
         for folder in (staging_dir(), legacy_statements_dir()):
             (folder / f"{sha256}.pdf").unlink(missing_ok=True)
+
+
+def remove_row_file(
+    session: Session,
+    stored_path: str | None,
+    sha256: str,
+    *,
+    in_place: bool = False,
+    delete_file: bool = False,
+    root: Path | None = None,
+) -> None:
+    """What to do with the PDF of a row that has just been deleted (after the delete committed).
+
+    The app's own copy goes (`discard_copy`). A file the user put in the documents folder
+    themselves (``in_place``) is theirs: it stays, unless ``delete_file`` (the user ticked "also
+    delete the PDF file"). A kept file is recorded as *ignored* by the folder scan (see
+    `ignore_kept_file`), so the next scan does not import it again at once."""
+    if in_place and not delete_file:
+        discard_copy(session, None, sha256, root=root)  # only the staged upload, if any
+        if stored_path:
+            ignore_kept_file(session, stored_path, sha256, root=root)
+        return
+    discard_copy(session, stored_path, sha256, root=root)
+
+
+def ignore_kept_file(
+    session: Session, stored_path: str, sha256: str, *, root: Path | None = None
+) -> None:
+    """Record ``stored_path`` (a file the user's deleted row pointed at, left in place) in
+    ``watch_files`` as ignored ("deleted in the app"), keyed by the file's size and mtime: the
+    folder scan leaves it alone until the file changes or the user presses "Import again". Does
+    nothing if the file is gone, is not a relative path, or another row still keeps it."""
+    if not _is_relative(stored_path) or _still_referenced(session, sha256, stored_path):
+        return
+    path = docs.resolve(stored_path, _root(root))
+    if path is None:
+        return
+    try:
+        stat = path.stat()
+    except OSError:
+        return
+    record = session.scalar(select(WatchedFile).where(WatchedFile.path == stored_path))
+    now = utcnow_iso()
+    if record is None:
+        record = WatchedFile(path=stored_path, first_seen=now)
+        session.add(record)
+    record.sha256 = sha256
+    record.size_bytes = stat.st_size
+    record.mtime_ns = stat.st_mtime_ns
+    record.outcome = "ignored"
+    record.code = DELETED_IN_APP
+    record.message = "You deleted this document in the app; the PDF file was left where it is."
+    record.hint = (
+        "It is not imported again unless the file changes. To import it again, press "
+        "Import again; to get rid of it, delete the file."
+    )
+    record.kind = None
+    record.statement_id = None
+    record.tax_document_id = None
+    record.warnings = None
+    record.last_seen = now
+    session.commit()
 
 
 def _deletable(path: Path, root: Path) -> bool:
@@ -529,7 +613,7 @@ def reorganize(
 
     groups: dict[str, list[Row]] = {}
     for row in _all_rows(session):
-        if row.stored_path:
+        if row.stored_path and not row.pdf_in_place:  # a file the user put there stays put
             groups.setdefault(row.file_sha256, []).append(row)
     planned: set[str] = set()
     index = docs.ShaIndex(base)  # one walk for the whole run, built only if a file is missing

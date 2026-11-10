@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Body, HTTPException, Response
+from fastapi import APIRouter, Body, HTTPException, Request, Response
 
 from personal_finance_analyzer.api import schemas
 from personal_finance_analyzer.api.deps import SettingsDep
@@ -24,6 +24,7 @@ from personal_finance_analyzer.config import (
     ServerConfig,
     Settings,
     TaxConfig,
+    WatchConfig,
     delete_api_key,
     env_overridden_fields,
     env_override_var,
@@ -37,6 +38,7 @@ from personal_finance_analyzer.config import (
     set_api_key,
     without_stale_tax_consent,
 )
+from personal_finance_analyzer.core.paths import documents_dir
 from personal_finance_analyzer.core.pii import compile_redactor
 from personal_finance_analyzer.llm.diagnostics import check_connection
 from personal_finance_analyzer.secret_store import (
@@ -119,6 +121,11 @@ def _settings_schema(settings: Settings) -> schemas.Settings:
         ),
         server=schemas.ServerSettings(port=settings.server.port),
         tax=schemas.TaxSettings(auto_update_params=settings.tax.auto_update_params),
+        watch=schemas.WatchSettings(
+            enabled=settings.watch.enabled,
+            interval_seconds=settings.watch.interval_seconds,
+            watched_folder=str(documents_dir()),
+        ),
         env_overrides=sorted(f"{section}.{name}" for section, name in env_overridden_fields()),
     )
 
@@ -129,7 +136,7 @@ def get_settings_route(settings: SettingsDep) -> schemas.Settings:
 
 
 @router.put("/settings", response_model=schemas.Settings)
-def put_settings(body: schemas.Settings) -> schemas.Settings:
+def put_settings(request: Request, body: schemas.Settings) -> schemas.Settings:
     """Save the draft to `config.toml`. Settings an environment variable (`PFA_<SECTION>__<FIELD>`)
     controls are not written: the file keeps its own value for them (so a one-off override never
     becomes permanent), and the response lists them in `env_overrides` with the effective values."""
@@ -156,6 +163,11 @@ def put_settings(body: schemas.Settings) -> schemas.Settings:
             if "tax" in body.model_fields_set
             else current.tax
         ),
+        watch=(
+            WatchConfig(enabled=body.watch.enabled, interval_seconds=body.watch.interval_seconds)
+            if "watch" in body.model_fields_set
+            else current.watch
+        ),
         # config.toml-only: the Settings API must not reset it.
         storage=current.storage,
         # Changed only through `PUT /settings/secret-storage`, which carries the warning.
@@ -163,6 +175,9 @@ def put_settings(body: schemas.Settings) -> schemas.Settings:
     )
     new_settings = without_stale_tax_consent(keep_file_values(new_settings, current))
     save_settings(new_settings)
+    watch = getattr(request.app.state, "watch", None)
+    if watch is not None:
+        watch.wake()  # the folder watcher re-reads [watch] now
     return _settings_schema(load_settings())
 
 

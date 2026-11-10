@@ -7,6 +7,7 @@ import { useToast } from "@/components/ui/use-toast";
 
 import { BackupSection } from "./components/backup-section";
 import { EgressPreviewSection } from "./components/egress-preview-section";
+import { FolderImportsSection } from "./components/folder-imports-section";
 import { LlmSettingsSection } from "./components/llm-settings-section";
 import { PrivacySection } from "./components/privacy-section";
 import { TaxParametersSection } from "./components/tax-parameters-section";
@@ -16,6 +17,7 @@ import {
   type PrivacySettings,
   type Settings,
   type TaxSettings,
+  type WatchSettings,
   useSettingsQuery,
   useUpdateSettings,
 } from "./lib/hooks";
@@ -25,6 +27,7 @@ const SECTION_LINKS = [
   { id: "users", label: "Users and accounts" },
   { id: "llm", label: "LLM provider" },
   { id: "privacy", label: "Privacy" },
+  { id: "folder-imports", label: "Folder imports" },
   { id: "tax-parameters", label: "Tax parameters" },
   { id: "egress-preview", label: "Preview what will be sent" },
   { id: "backup", label: "Backup & restore" },
@@ -60,7 +63,7 @@ function SettingsScreen() {
   const header = (
     <PageHeader
       title="Settings"
-      description="Users, accounts, the LLM provider, privacy, tax parameters, exactly what would be sent to the LLM, and backup & restore."
+      description="Users, accounts, the LLM provider, privacy, folder imports, tax parameters, exactly what would be sent to the LLM, and backup & restore."
     />
   );
 
@@ -111,6 +114,16 @@ function SettingsScreen() {
     );
   };
 
+  const saveWatch = (watch: WatchSettings) => {
+    updateSettings.mutate(
+      { ...settings, watch },
+      {
+        onSuccess: () => toast({ title: "Folder import settings saved" }),
+        onError: (err) => toast({ title: "Could not save settings", description: String(err), variant: "destructive" }),
+      },
+    );
+  };
+
   const saveTax = (tax: TaxSettings) => {
     updateSettings.mutate(
       { ...settings, tax },
@@ -143,6 +156,9 @@ function SettingsScreen() {
       </Anchor>
       <Anchor id="privacy">
         <PrivacySection settings={settings} onSave={savePrivacy} saving={updateSettings.isPending} />
+      </Anchor>
+      <Anchor id="folder-imports">
+        <FolderImportsSection settings={settings} onSave={saveWatch} saving={updateSettings.isPending} />
       </Anchor>
       <Anchor id="tax-parameters">
         <TaxParametersSection settings={settings} onSave={saveTax} saving={updateSettings.isPending} />

@@ -107,4 +107,4 @@ def test_a_database_with_no_cache_rows_upgrades(tmp_path: Path) -> None:
 
 def test_single_alembic_head() -> None:
     heads = ScriptDirectory.from_config(build_alembic_config("sqlite://")).get_heads()
-    assert heads == ["0012_drop_unplaced_merchant_cache"]
+    assert heads == ["0013_watch_folder"]

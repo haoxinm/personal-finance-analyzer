@@ -737,6 +737,16 @@ class TaxSettings(_Model):
     auto_update_params: bool = False
 
 
+class WatchSettings(_Model):
+    """`[watch]`: import PDFs put into the documents folder by hand, in the background."""
+
+    enabled: bool = False
+    #: Seconds between two looks at the folder (10 to 86400; out-of-range values are clamped).
+    interval_seconds: int = 60
+    #: Read-only (ignored on `PUT`): the folder that is watched (the documents folder).
+    watched_folder: str = ""
+
+
 class Settings(_Model):
     llm: LlmSettings
     privacy: PrivacySettings
@@ -744,6 +754,8 @@ class Settings(_Model):
     server: ServerSettings
     #: Optional on `PUT` (an older client that does not send it keeps the saved value).
     tax: TaxSettings = Field(default_factory=TaxSettings)
+    #: Optional on `PUT`, like `tax`.
+    watch: WatchSettings = Field(default_factory=WatchSettings)
     #: Read-only (ignored on `PUT`): the settings an environment variable currently controls, as
     #: ``section.field`` (e.g. ``llm.enabled``). Their values here are the effective ones; saving
     #: never writes them to `config.toml`.
@@ -1065,6 +1077,9 @@ class TaxDocument(_Model):
     #: A copy was kept but is no longer in the documents folder (moved out or deleted by hand and
     #: not found by content either): the UI says "PDF not found". Only true when `has_pdf` is false.
     pdf_missing: bool = False
+    #: The PDF is a file you put in the documents folder yourself (a folder import): deleting the
+    #: document keeps it unless you ask for it to go too (`DELETE ...?delete_pdf=true`).
+    pdf_in_place: bool = False
     #: When the PDF the user re-selected for this document stops being available (ISO-8601 UTC);
     #: `None` = none staged. Only meaningful when `has_pdf` is false.
     staged_until: str | None = None
@@ -1702,3 +1717,64 @@ class ForecastPresetUpdate(_Model):
 
     name: str | None = Field(default=None, min_length=1, max_length=60)
     params: ForecastParams | None = None
+
+
+# --- Folder imports (`watch/`) --------------------------------------------------------------------
+
+WatchOutcome = Literal["imported", "known", "failed", "ignored"]
+
+
+class WatchScanSummary(_Model):
+    started_at: str
+    finished_at: str | None = None
+    scanned: int
+    imported: int
+    known: int
+    failed: int
+    ignored: int
+    #: New files that were still settling, or not whole PDFs yet.
+    waiting: int
+    #: Another scan (another process) held the lock: nothing was done.
+    busy: bool = False
+    error: str | None = None
+
+
+class WatchStatus(_Model):
+    enabled: bool
+    interval_seconds: int
+    documents_dir: str
+    #: A scan is running right now.
+    running: bool
+    next_scan_at: str | None = None
+    last_scan: WatchScanSummary | None = None
+    #: Why scans cannot run (database not migrated, folder missing...), if so.
+    problem: str | None = None
+
+
+class WatchScanStarted(_Model):
+    #: False when a scan was already running (nothing new was started).
+    started: bool
+    status: WatchStatus
+
+
+class WatchFile(_Model):
+    id: int
+    path: str
+    outcome: WatchOutcome
+    code: str | None = None
+    message: str | None = None
+    hint: str | None = None
+    kind: Literal["statement", "tax"] | None = None
+    #: The person folder as named on disk.
+    folder_person: str | None = None
+    user_id: int | None = None
+    statement_id: int | None = None
+    tax_document_id: int | None = None
+    warnings: list[str] = Field(default_factory=list)
+    first_seen: str
+    last_seen: str
+
+
+class WatchFileList(_Model):
+    items: list[WatchFile]
+    total: int

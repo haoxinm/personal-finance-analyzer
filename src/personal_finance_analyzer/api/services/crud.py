@@ -256,11 +256,21 @@ def delete_statement(session: Session, statement: Statement) -> tuple[str | None
     return kept
 
 
-def discard_pdf_copy(session: Session, stored_path: str | None, sha256: str) -> None:
-    """Remove the PDF of a deleted statement (after the delete was committed)."""
+def discard_pdf_copy(
+    session: Session,
+    stored_path: str | None,
+    sha256: str,
+    *,
+    in_place: bool = False,
+    delete_file: bool = False,
+) -> None:
+    """Remove the PDF of a deleted statement (after the delete was committed). The app's own copy
+    goes; a file the user put in the documents folder (``in_place``) stays unless ``delete_file``."""
     from personal_finance_analyzer.db import documents as doc_files
 
-    doc_files.discard_copy(session, stored_path, sha256)
+    doc_files.remove_row_file(
+        session, stored_path, sha256, in_place=in_place, delete_file=delete_file
+    )
 
 
 # --- Transactions ----------------------------------------------------------------------------------

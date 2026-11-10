@@ -469,7 +469,9 @@ no tax document with id 99
 ```
 
 Deletes one document, every form and figure parsed from it, and a kept PDF copy if there is one.
-Exits 1 when the id doesn't exist. Use it to remove a superseded original after importing a
+A PDF you put in the documents folder yourself ([folder import](#folder-imports)) is **kept** (the
+folder scan then leaves it alone until the file changes); add `--delete-pdf` to delete it too. The
+app's own copy of an upload always goes. Exits 1 when the id doesn't exist. Use it to remove a superseded original after importing a
 corrected form.
 
 ## `export`
@@ -600,6 +602,72 @@ is never chmod-ed.
   1), the ones found somewhere else than recorded (moved by hand), the PDFs in the folder that no
   statement or tax form refers to (left alone: the app never deletes files it does not recognise),
   and leftover temporary files from an interrupted copy.
+- **`documents scan [--dry-run]`** imports the PDFs you put into the folder by hand, once, without
+  the server (see [Folder imports](#folder-imports)). `--dry-run` lists what would be imported and
+  what would be reported, and imports and records nothing. Exit status 1 when a file needs
+  attention, 3 when another scan is running.
+
+### Folder imports
+
+The folder's layout says whose a PDF is and what it is, so dropping a PDF into the right place is
+enough to import it:
+
+```
+<Person>/Statements/<any subfolders>/<any name>.pdf     a bank or card statement for that person
+<Person>/Tax/<year>/<any name>.pdf                      a W-2, 1099 or 1040 for that person
+```
+
+- `<Person>` is matched to a person in the app by name, ignoring capitals, spacing and Unicode form
+  (the folder the app itself makes for a person always matches). An unknown name is **reported, never
+  created as a person**; so is a name that matches two people. `Shared/` belongs to no one, and a
+  statement or tax form needs a person, so a PDF there is reported too, as is any PDF directly in the
+  documents folder or in a folder other than `Statements`/`Tax`.
+- Statements can sit in any depth of subfolders under `Statements/`. For tax forms the `<year>`
+  folder is a hint: **the form's own tax year wins** (a mismatch is a warning on the file, not a
+  failure), and the folder year is used only when the form does not print one.
+- **Files stay where you put them.** Their location is recorded as the row's PDF (the row is marked
+  as using *your* file); nothing is renamed, moved or copied, and neither `pfa documents reorganize`
+  nor finishing the import on the Import page renames it. A tax PDF is recorded regardless of
+  `[privacy] store_tax_pdf_copies` (that setting decides whether the app *copies an upload*; this
+  file is already where you want it).
+- **Deleting the row does not delete your file.** Deleting a statement or tax document that came
+  from a folder import keeps the PDF by default (the app's own copies of uploads are still deleted
+  with their row). The delete confirmation on the Tax page has an "Also delete the PDF file" box,
+  `DELETE /api/statements/{id}` and `DELETE /api/tax/documents/{id}` take `?delete_pdf=true`, and
+  `pfa tax delete` takes `--delete-pdf`. A kept file is recorded as *ignored (deleted in the app)* so
+  the next scan does not import it again at once; it is imported again if the file changes, or when
+  you press **Import again** on the Import page.
+- A file is imported only once it is **stable**: the same size and modification time on two
+  consecutive scans (a manual scan checks across a two-second pause instead) and it looks like a
+  whole PDF (`%PDF-` at the start, `%%EOF` near the end). Hidden files, `.part` files, Office lock
+  files (`~$...`), non-PDFs, the `README.txt` and the app's staging folder are ignored.
+- Files the app already has (the ones it filed itself, whatever became of them, and earlier folder
+  imports) are skipped without being read. A file over the 25 MB upload limit is reported as too
+  large and never read. The same content in a second place for the same person is noted as already
+  imported; in **another person's folder it is reported** (upload it from the Import page to import
+  it for both).
+- Everything goes through the same pipelines as an upload: statements are recognised, parsed,
+  deduplicated and categorized (rules first; **if an LLM is enabled in Settings, the descriptions of
+  new statements are sent to it without a click**, exactly as after an upload), and land in the
+  review queue. A statement whose layout the app does not recognise confidently is **not guessed**:
+  it is reported with the way forward (upload it once from the Import page and choose its
+  extractor). Statements set to be read by the LLM are always reported, as they need you to choose
+  the pages. Tax forms are read locally unless the tax LLM fallback is on.
+- What failed (unknown person, a password-protected PDF, an unrecognised layout, a scan with no
+  text layer, a duplicate of another person's file, ...) is recorded per file and **not retried
+  until the file's size or modification time changes**; the Import page lists these with a Retry
+  button. A scan stops between files when a backup restore starts, so a restore waits at most for
+  the file being imported. A problem caused only by the path (an unknown person) resolves by itself once the person
+  exists or the folder is renamed.
+- A scan holds a lock in the data directory, so `pfa documents scan` and the server (or two servers
+  on one data directory) never import the same file twice.
+
+The server runs the same scan in the background when **Settings > Folder imports** is on
+(`[watch] enabled = true`, `interval_seconds = 60`; environment `PFA_WATCH_ENABLED=1` and
+`PFA_WATCH_INTERVAL=60`; the interval is clamped to 10 s to 24 h). It is **off by default**, polls
+rather than listening for file events (which are unreliable over SMB/NFS), and a new file is
+typically imported within one to two intervals. The Import page shows its state, a "Scan now"
+button, what was imported and what needs attention.
 
 **Upgrading.** Versions before the documents folder kept PDFs as `<data dir>/statements/<sha256>.pdf`.
 The first command that opens the database (`pfa migrate`, `pfa serve`, `pfa import`, ...; never a

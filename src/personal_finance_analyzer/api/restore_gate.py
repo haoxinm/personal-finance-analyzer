@@ -55,6 +55,12 @@ class RestoreGate:
                     raise BackupBusyError("the app is busy with other requests; try again")
                 self._cond.wait(remaining)
 
+    @property
+    def exclusive(self) -> bool:
+        """Whether a restore is under way (background work must not start meanwhile)."""
+        with self._cond:
+            return self._exclusive
+
     def end_exclusive(self) -> None:
         with self._cond:
             self._exclusive = False

@@ -11,6 +11,7 @@ export type PrivacySettings = components["schemas"]["PrivacySettings"];
 export type IngestSettings = components["schemas"]["IngestSettings"];
 export type ServerSettings = components["schemas"]["ServerSettings"];
 export type TaxSettings = components["schemas"]["TaxSettings"];
+export type WatchSettings = components["schemas"]["WatchSettings"];
 export type TaxParameters = components["schemas"]["TaxParameters"];
 export type TaxParametersRefresh = components["schemas"]["TaxParametersRefreshResponse"];
 export type User = components["schemas"]["User"];
@@ -54,6 +55,8 @@ export function useUpdateSettings() {
       void queryClient.invalidateQueries({ queryKey: ["llm-preview"] });
       // The tax parameter status reports the `auto_update_params` setting.
       void queryClient.invalidateQueries({ queryKey: TAX_PARAMETERS_KEY });
+      // The Import page's folder-import panel shows whether watching is on and its interval.
+      void queryClient.invalidateQueries({ queryKey: ["watch"] });
     },
   });
 }

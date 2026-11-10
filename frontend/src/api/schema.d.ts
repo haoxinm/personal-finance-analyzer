@@ -1640,6 +1640,85 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/watch/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Status */
+        get: operations["get_status_api_watch_status_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/watch/scan": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Scan Now
+         * @description Scan the documents folder now (also when watching is off: this is the explicit request).
+         *     Returns at once; ``started`` is false when a scan was already running.
+         */
+        post: operations["scan_now_api_watch_scan_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/watch/files": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Files
+         * @description ``recent``: the newest imports (and files that were already in the app). ``problems``:
+         *     files that need attention (failed, or not in a folder the app imports from).
+         */
+        get: operations["list_files_api_watch_files_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/watch/files/{file_id}/retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Retry File
+         * @description Forget a problem so the next scan looks at the file again (after the cause is fixed).
+         */
+        post: operations["retry_file_api_watch_files__file_id__retry_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -2997,6 +3076,7 @@ export interface components {
             ingest: components["schemas"]["IngestSettings"];
             server: components["schemas"]["ServerSettings"];
             tax?: components["schemas"]["TaxSettings"];
+            watch?: components["schemas"]["WatchSettings"];
             /** Env Overrides */
             env_overrides?: string[];
         };
@@ -3158,6 +3238,11 @@ export interface components {
              * @default false
              */
             pdf_missing: boolean;
+            /**
+             * Pdf In Place
+             * @default false
+             */
+            pdf_in_place: boolean;
             /** Staged Until */
             staged_until?: string | null;
         };
@@ -3193,6 +3278,11 @@ export interface components {
              * @default false
              */
             pdf_missing: boolean;
+            /**
+             * Pdf In Place
+             * @default false
+             */
+            pdf_in_place: boolean;
             /** Staged Until */
             staged_until?: string | null;
             /** Forms */
@@ -4279,6 +4369,116 @@ export interface components {
             /** Context */
             ctx?: Record<string, never>;
         };
+        /** WatchFile */
+        WatchFile: {
+            /** Id */
+            id: number;
+            /** Path */
+            path: string;
+            /**
+             * Outcome
+             * @enum {string}
+             */
+            outcome: "imported" | "known" | "failed" | "ignored";
+            /** Code */
+            code?: string | null;
+            /** Message */
+            message?: string | null;
+            /** Hint */
+            hint?: string | null;
+            /** Kind */
+            kind?: ("statement" | "tax") | null;
+            /** Folder Person */
+            folder_person?: string | null;
+            /** User Id */
+            user_id?: number | null;
+            /** Statement Id */
+            statement_id?: number | null;
+            /** Tax Document Id */
+            tax_document_id?: number | null;
+            /** Warnings */
+            warnings?: string[];
+            /** First Seen */
+            first_seen: string;
+            /** Last Seen */
+            last_seen: string;
+        };
+        /** WatchFileList */
+        WatchFileList: {
+            /** Items */
+            items: components["schemas"]["WatchFile"][];
+            /** Total */
+            total: number;
+        };
+        /** WatchScanStarted */
+        WatchScanStarted: {
+            /** Started */
+            started: boolean;
+            status: components["schemas"]["WatchStatus"];
+        };
+        /** WatchScanSummary */
+        WatchScanSummary: {
+            /** Started At */
+            started_at: string;
+            /** Finished At */
+            finished_at?: string | null;
+            /** Scanned */
+            scanned: number;
+            /** Imported */
+            imported: number;
+            /** Known */
+            known: number;
+            /** Failed */
+            failed: number;
+            /** Ignored */
+            ignored: number;
+            /** Waiting */
+            waiting: number;
+            /**
+             * Busy
+             * @default false
+             */
+            busy: boolean;
+            /** Error */
+            error?: string | null;
+        };
+        /**
+         * WatchSettings
+         * @description `[watch]`: import PDFs put into the documents folder by hand, in the background.
+         */
+        WatchSettings: {
+            /**
+             * Enabled
+             * @default false
+             */
+            enabled: boolean;
+            /**
+             * Interval Seconds
+             * @default 60
+             */
+            interval_seconds: number;
+            /**
+             * Watched Folder
+             * @default
+             */
+            watched_folder: string;
+        };
+        /** WatchStatus */
+        WatchStatus: {
+            /** Enabled */
+            enabled: boolean;
+            /** Interval Seconds */
+            interval_seconds: number;
+            /** Documents Dir */
+            documents_dir: string;
+            /** Running */
+            running: boolean;
+            /** Next Scan At */
+            next_scan_at?: string | null;
+            last_scan?: components["schemas"]["WatchScanSummary"] | null;
+            /** Problem */
+            problem?: string | null;
+        };
     };
     responses: never;
     parameters: never;
@@ -4590,7 +4790,10 @@ export interface operations {
     };
     delete_statement_api_statements__statement_id__delete: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Also delete the PDF file when it is one you put in the documents folder yourself (kept by default). The app's own copy is always deleted. */
+                delete_pdf?: boolean;
+            };
             header?: never;
             path: {
                 statement_id: number;
@@ -6945,6 +7148,8 @@ export interface operations {
     delete_document_api_tax_documents__document_id__delete: {
         parameters: {
             query?: {
+                /** @description Also delete the PDF file when it is one you put in the documents folder yourself (kept by default). The app's own copy is always deleted. */
+                delete_pdf?: boolean;
                 user_id?: number | null;
             };
             header?: never;
@@ -7893,6 +8098,107 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["BackupRestoreResponse"];
                 };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_status_api_watch_status_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WatchStatus"];
+                };
+            };
+        };
+    };
+    scan_now_api_watch_scan_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WatchScanStarted"];
+                };
+            };
+        };
+    };
+    list_files_api_watch_files_get: {
+        parameters: {
+            query?: {
+                view?: "recent" | "problems";
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WatchFileList"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    retry_file_api_watch_files__file_id__retry_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                file_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {

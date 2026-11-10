@@ -171,10 +171,33 @@ def _stage_pdf(pdf_path: Path, file_sha256: str) -> Path:
     return dest
 
 
-def _finish_pdf(session: Session, statement: Statement, source: Path, settings: Settings) -> None:
+def _adopt_in_place(statement: Statement, rel: str) -> None:
+    """Record ``rel`` (a file the user put in the documents folder) as the statement's PDF unless
+    the row already keeps a copy that is still on disk."""
+    current = docs.resolve(statement.stored_path) if statement.stored_path else None
+    if current is None or not current.is_file():
+        statement.stored_path = rel
+        statement.pdf_in_place = True
+
+
+def _finish_pdf(
+    session: Session,
+    statement: Statement,
+    source: Path,
+    settings: Settings,
+    *,
+    in_place: bool = False,
+) -> None:
     """Phase 2 reached a terminal outcome: file the PDF under its readable name when
     `[privacy] store_pdf_copies` asks to keep it, and remove the staged upload either way (unless
-    filing failed, in which case the staged copy stays and keeps the statement usable)."""
+    filing failed, in which case the staged copy stays and keeps the statement usable).
+
+    ``in_place``: the PDF is a file the user put in the documents folder themselves (folder
+    imports, `watch/`) and ``statement.stored_path`` already names it: it is neither copied nor
+    renamed, whatever `store_pdf_copies` says."""
+    if in_place:
+        _staged_pdf_path(statement.file_sha256).unlink(missing_ok=True)
+        return
     if (
         settings.privacy.store_pdf_copies
         and doc_files.file_statement(session, statement, source) is None
@@ -189,7 +212,12 @@ def _finish_pdf(session: Session, statement: Statement, source: Path, settings: 
 
 
 def propose_import(
-    session: Session, pdf_path: Path, *, user_id: int, original_name: str
+    session: Session,
+    pdf_path: Path,
+    *,
+    user_id: int,
+    original_name: str,
+    in_place: str | None = None,
 ) -> ImportProposal:
     """Phase 1 of A22: extract text, locate the table, match the issuer, score parsers, and
     commit a `statements` row at `status='awaiting_extractor'`. Never parses transactions.
@@ -217,6 +245,10 @@ def propose_import(
             create the account without any process-local state.
         original_name: the user-supplied filename, stored verbatim for display. The *stored*
             copy's filename is always the content hash, never this value (A12).
+        in_place: folder imports (`watch/`) only: the path, relative to the documents directory,
+            of a file the user put there themselves. It is recorded as ``stored_path`` at once and
+            nothing is staged or copied; pass ``keep_in_place=True`` to `confirm_import` so it is
+            not renamed either.
 
     Returns:
         An `ImportProposal` describing what Phase 2 would do if confirmed now.
@@ -230,7 +262,10 @@ def propose_import(
     if existing is not None:
         retry_after_failure = existing.status in (STATUS_UNSUPPORTED_LAYOUT, STATUS_ERROR)
         if existing.status != STATUS_PARSED:
-            _stage_pdf(pdf_path, file_sha256)
+            if in_place is not None:
+                _adopt_in_place(existing, in_place)
+            else:
+                _stage_pdf(pdf_path, file_sha256)
             existing.user_id = user_id
             if retry_after_failure:
                 # A failed built-in parse is retryable: re-proposing reopens the statement
@@ -256,14 +291,16 @@ def propose_import(
 
     doc = extract(pdf_path)
     settings = load_settings()
-    _stage_pdf(pdf_path, file_sha256)
+    if in_place is None:
+        _stage_pdf(pdf_path, file_sha256)
 
     if not doc.has_text_layer:
         statement = Statement(
             user_id=user_id,
             file_sha256=file_sha256,
             original_name=original_name,
-            stored_path=None,
+            stored_path=in_place,
+            pdf_in_place=in_place is not None,
             page_count=doc.page_count,
             status=STATUS_NO_TEXT_LAYER,
             error_detail=NO_TEXT_LAYER_MESSAGE,
@@ -271,7 +308,13 @@ def propose_import(
         )
         session.add(statement)
         session.commit()
-        _finish_pdf(session, statement, _staged_pdf_path(file_sha256), settings)
+        _finish_pdf(
+            session,
+            statement,
+            pdf_path if in_place is not None else _staged_pdf_path(file_sha256),
+            settings,
+            in_place=in_place is not None,
+        )
         return ImportProposal(
             statement_id=statement.id,
             status=STATUS_NO_TEXT_LAYER,
@@ -304,7 +347,8 @@ def propose_import(
         user_id=user_id,
         file_sha256=file_sha256,
         original_name=original_name,
-        stored_path=None,
+        stored_path=in_place,
+        pdf_in_place=in_place is not None,
         page_count=doc.page_count,
         issuer_id=issuer_id,
         layout_spec_id=layout_spec_id,
@@ -387,6 +431,7 @@ def confirm_import(
     layout_spec_id: int | None,
     remember: bool,
     pages: Sequence[int] | None = None,
+    keep_in_place: bool = False,
 ) -> ImportResult:
     """Phase 2 of A22: parse, normalize, reconcile, dedupe, and persist a statement's
     transactions in one atomic transaction.
@@ -408,6 +453,8 @@ def confirm_import(
         pages: 1-based pages to parse (deduped, sorted, validated against the PDF's page count)
             and saved to `statements.selected_pages`; `None` keeps the saved selection (default:
             all pages). Every parser, template or LLM, sees only the selected pages.
+        keep_in_place: the statement's PDF is a file the user put in the documents folder
+            (`propose_import(in_place=...)`): leave it where it is, under its own name.
 
     Returns:
         An `ImportResult`. `inserted`/`skipped_duplicates`/`transaction_ids` all refer to *this*
@@ -474,7 +521,7 @@ def confirm_import(
         layout_spec_id=layout_spec_id,
         remember=remember,
     )
-    _finish_pdf(session, statement, path, settings)
+    _finish_pdf(session, statement, path, settings, in_place=keep_in_place)
     return result
 
 

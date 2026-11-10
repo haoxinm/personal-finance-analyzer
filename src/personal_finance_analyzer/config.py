@@ -232,6 +232,34 @@ class StorageConfig(BaseModel):
     documents_dir: str = ""
 
 
+#: The scan interval's bounds, in seconds: not below 10 (a scan lists the whole documents folder),
+#: not above a day.
+WATCH_MIN_INTERVAL_S = 10
+WATCH_MAX_INTERVAL_S = 24 * 60 * 60
+WATCH_DEFAULT_INTERVAL_S = 60
+
+
+class WatchConfig(BaseModel):
+    """Folder imports: the app looks at the documents folder from time to time and imports PDFs
+    that were put there by hand (`watch/`). Off by default."""
+
+    model_config = ConfigDict(frozen=True)
+
+    #: Import new PDFs found in the documents folder in the background (`pfa serve` only).
+    enabled: bool = False
+    #: Seconds between two looks at the folder. Out-of-range values (a hand-edited file, an
+    #: environment variable) are clamped to 10..86400 rather than rejected, so a typo never
+    #: stops the settings from loading.
+    interval_seconds: int = WATCH_DEFAULT_INTERVAL_S
+
+    @model_validator(mode="after")
+    def _clamp_interval(self) -> WatchConfig:
+        clamped = min(max(self.interval_seconds, WATCH_MIN_INTERVAL_S), WATCH_MAX_INTERVAL_S)
+        if clamped != self.interval_seconds:
+            object.__setattr__(self, "interval_seconds", clamped)
+        return self
+
+
 class SecretsConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -251,6 +279,7 @@ class Settings(BaseModel):
     ingest: IngestConfig = IngestConfig()
     tax: TaxConfig = TaxConfig()
     server: ServerConfig = ServerConfig()
+    watch: WatchConfig = WatchConfig()
     storage: StorageConfig = StorageConfig()
     secrets: SecretsConfig = SecretsConfig()
 
@@ -297,7 +326,14 @@ def load_settings(path: Path | None = None) -> Settings:
     return _apply_env_overrides(load_file_settings(path))
 
 
-_SETTINGS_SECTIONS = ("llm", "privacy", "ingest", "tax", "server", "secrets")
+_SETTINGS_SECTIONS = ("llm", "privacy", "ingest", "tax", "server", "watch", "secrets")
+
+#: Single-underscore environment variables that name one setting directly (the same idea as
+#: `PFA_DOCUMENTS_DIR`), besides the generic ``PFA_<SECTION>__<FIELD>`` form.
+_ENV_SHORTCUTS: dict[str, tuple[str, str]] = {
+    "PFA_WATCH_ENABLED": ("watch", "enabled"),
+    "PFA_WATCH_INTERVAL": ("watch", "interval_seconds"),
+}
 
 
 def _collect_env_overrides() -> dict[tuple[str, str], tuple[str, str]]:
@@ -316,6 +352,10 @@ def _collect_env_overrides() -> dict[tuple[str, str], tuple[str, str]]:
             if section == "llm" and field_name == "mode":  # legacy: none|local|remote
                 field_name = "enabled"
             found[(section, field_name)] = (key, value)
+    for name, target in _ENV_SHORTCUTS.items():
+        shortcut = os.environ.get(name)
+        if shortcut is not None and shortcut.strip():
+            found[target] = (name, shortcut)
     return found
 
 
@@ -373,7 +413,11 @@ def _coerce(raw: str, current: object) -> object:
     if isinstance(current, bool):
         return raw.strip().lower() in ("1", "true", "yes", "on")
     if isinstance(current, int):
-        return int(raw)
+        try:
+            return int(raw)
+        except ValueError:  # a typo in one variable must not stop every load of the settings
+            _log.warning("ignoring a non-numeric environment override (%r)", raw)
+            return current
     if isinstance(current, float):
         return float(raw)
     return raw

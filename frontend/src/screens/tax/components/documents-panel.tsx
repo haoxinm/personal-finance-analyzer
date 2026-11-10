@@ -65,6 +65,8 @@ function DocumentRow({
   const [open, setOpen] = React.useState(false);
   const [adding, setAdding] = React.useState(false);
   const [confirming, setConfirming] = React.useState(false);
+  // Only offered for a PDF the user put in the documents folder themselves: it is kept otherwise.
+  const [alsoDeletePdf, setAlsoDeletePdf] = React.useState(false);
   // Unique per rendered row: compare mode renders the same document in two panes.
   const uid = React.useId();
   const detailId = `tax-doc-detail-${d.id}-${uid}`;
@@ -96,7 +98,10 @@ function DocumentRow({
 
   async function onDelete() {
     try {
-      await remove.mutateAsync(d.id);
+      await remove.mutateAsync({
+        id: d.id,
+        deletePdf: d.pdf_in_place === true && alsoDeletePdf,
+      });
     } catch (e) {
       toast({
         variant: "destructive",
@@ -243,6 +248,19 @@ function DocumentRow({
               <span className="text-xs">
                 Delete this document and its figures?
               </span>
+              {d.pdf_in_place === true ? (
+                <label className="flex items-center gap-1 text-xs">
+                  <input
+                    type="checkbox"
+                    checked={alsoDeletePdf}
+                    onChange={(e) => setAlsoDeletePdf(e.target.checked)}
+                  />
+                  Also delete the PDF file
+                  <span className="text-muted-foreground">
+                    (your file in the documents folder; kept otherwise)
+                  </span>
+                </label>
+              ) : null}
               <Button
                 size="sm"
                 variant="destructive"
@@ -254,7 +272,10 @@ function DocumentRow({
               <Button
                 size="sm"
                 variant="outline"
-                onClick={() => setConfirming(false)}
+                onClick={() => {
+                  setConfirming(false);
+                  setAlsoDeletePdf(false);
+                }}
               >
                 Cancel
               </Button>

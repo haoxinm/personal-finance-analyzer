@@ -51,6 +51,12 @@ def current_pii_terms() -> tuple[str, ...]:
     return _PII_TERMS.get()
 
 
+#: What a parser says when the form prints no year (folder imports retry with the folder's year).
+TAX_YEAR_UNKNOWN_MESSAGE = (
+    "Could not determine the tax year for this form; provide the tax year explicitly."
+)
+
+
 def require_year(doc: ExtractedDoc, override: int | None) -> int:
     """The tax year to use: `override` if given, else `detect_tax_year(doc)`.
 
@@ -64,9 +70,7 @@ def require_year(doc: ExtractedDoc, override: int | None) -> int:
         return override
     year = detect_tax_year(doc)
     if year is None:
-        raise ParserError(
-            "Could not determine the tax year for this form; provide the tax year explicitly."
-        )
+        raise ParserError(TAX_YEAR_UNKNOWN_MESSAGE)
     return year
 
 

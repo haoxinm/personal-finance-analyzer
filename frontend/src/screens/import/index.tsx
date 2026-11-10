@@ -9,6 +9,7 @@ import { useSelectedUser } from "@/hooks/use-selected-user";
 import type { JobEvent } from "@/hooks/use-job-progress";
 
 import { useExtractStatement, useImportSettings, useUploadStatement } from "./api";
+import { FolderImportsPanel } from "./folder-imports-panel";
 import { IssuerExtractorPicker } from "./issuer-extractor-picker";
 import { StatementCard } from "./statement-card";
 import { PageSelector } from "./page-selector";
@@ -245,6 +246,8 @@ function ImportScreen() {
           ))}
         </div>
       ) : null}
+
+      <FolderImportsPanel />
     </Page>
   );
 }

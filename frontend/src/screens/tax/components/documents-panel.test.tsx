@@ -301,6 +301,48 @@ describe("review figures disclosure", () => {
   });
 });
 
+type DeleteCall = [string, { params: { query: Record<string, unknown> } }];
+
+describe("deleting a document", () => {
+  const NAME = "tax_w2_normal.pdf";
+
+  it("offers no PDF choice for a copy the app made itself, and deletes without the flag", async () => {
+    renderPanel([document({ has_pdf: true, pdf_in_place: false })]);
+    await userEvent.click(screen.getByRole("button", { name: `Delete ${NAME}` }));
+    expect(screen.queryByLabelText(/Also delete the PDF file/)).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Confirm delete" }));
+    await waitFor(() => expect(del).toHaveBeenCalled());
+    expect((del.mock.calls[0] as DeleteCall)[1].params.query).not.toHaveProperty("delete_pdf");
+  });
+
+  it("keeps the user's own PDF by default and deletes it only when ticked", async () => {
+    renderPanel([document({ has_pdf: true, pdf_in_place: true })]);
+    await userEvent.click(screen.getByRole("button", { name: `Delete ${NAME}` }));
+    expect(screen.getByLabelText(/Also delete the PDF file/)).not.toBeChecked();
+    await userEvent.click(screen.getByRole("button", { name: "Confirm delete" }));
+    await waitFor(() => expect(del).toHaveBeenCalledTimes(1));
+    expect((del.mock.calls[0] as DeleteCall)[1].params.query).not.toHaveProperty("delete_pdf");
+  });
+
+  it("deletes the user's own PDF too when the box is ticked", async () => {
+    renderPanel([document({ has_pdf: true, pdf_in_place: true })]);
+    await userEvent.click(screen.getByRole("button", { name: `Delete ${NAME}` }));
+    await userEvent.click(screen.getByLabelText(/Also delete the PDF file/));
+    await userEvent.click(screen.getByRole("button", { name: "Confirm delete" }));
+    await waitFor(() => expect(del).toHaveBeenCalledTimes(1));
+    expect((del.mock.calls[0] as DeleteCall)[1].params.query).toMatchObject({ delete_pdf: true });
+  });
+
+  it("forgets the tick when the confirmation is cancelled", async () => {
+    renderPanel([document({ has_pdf: true, pdf_in_place: true })]);
+    await userEvent.click(screen.getByRole("button", { name: `Delete ${NAME}` }));
+    await userEvent.click(screen.getByLabelText(/Also delete the PDF file/));
+    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await userEvent.click(screen.getByRole("button", { name: `Delete ${NAME}` }));
+    expect(screen.getByLabelText(/Also delete the PDF file/)).not.toBeChecked();
+  });
+});
+
 describe("owner and moving a document", () => {
   it("shows the owner chip on every row, even for one user", () => {
     render(
