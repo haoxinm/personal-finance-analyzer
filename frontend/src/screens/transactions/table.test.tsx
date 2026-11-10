@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
@@ -105,5 +105,44 @@ describe("TransactionsTable column layout", () => {
     );
     await userEvent.click(screen.getByRole("columnheader", { name: /Amount/ }));
     expect(onSortChange).toHaveBeenLastCalledWith("amount_minor");
+  });
+
+  it("reports the query's total as aria-rowcount, not just the loaded rows", () => {
+    render(
+      <TransactionsTable
+        rows={TRANSACTIONS}
+        totalCount={1234}
+        context={{ categories: CATEGORIES, selectedIds: new Set(), onToggleRow: noop, onEdit: vi.fn() }}
+      />,
+    );
+    expect(screen.getByRole("table", { name: "Transactions" })).toHaveAttribute("aria-rowcount", "1235");
+  });
+
+  it("is one table with header and cell roles, and opens a row from its Edit button via the keyboard", async () => {
+    const onEdit = vi.fn();
+    const onRowClick = vi.fn();
+    render(
+      <TransactionsTable
+        rows={TRANSACTIONS}
+        onRowClick={onRowClick}
+        context={{ categories: CATEGORIES, selectedIds: new Set(), onToggleRow: noop, onEdit }}
+      />,
+    );
+
+    const table = screen.getByRole("table", { name: "Transactions" });
+    // The header row is inside the table, followed by one body row.
+    expect(within(table).getAllByRole("columnheader")).toHaveLength(7);
+    expect(within(table).getAllByRole("row")).toHaveLength(2);
+    expect(within(table).getAllByRole("cell")).toHaveLength(7);
+    expect(table).toHaveAttribute("aria-rowcount", "2");
+
+    const edit = screen.getByRole("button", { name: "Edit GARDEN CENTER" });
+    edit.focus();
+    await userEvent.keyboard("{Enter}");
+    expect(onEdit).toHaveBeenCalledWith(TRANSACTIONS[0]);
+    // One open per activation: the button's click does not also fire the row's handler.
+    expect(onRowClick).not.toHaveBeenCalled();
+    await userEvent.keyboard(" ");
+    expect(onEdit).toHaveBeenCalledTimes(2);
   });
 });

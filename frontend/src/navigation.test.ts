@@ -82,8 +82,8 @@ describe("routeInfo", () => {
 
   it("builds document titles, collapsing one-tab sections", () => {
     expect(routeInfo("/spending/review").title).toBe("Review · Spending · Spend Analyzer");
-    expect(routeInfo("/tax").title).toBe("Overview · Income & Tax · Spend Analyzer");
-    expect(routeInfo("/tax/estimate").title).toBe("Estimate · Income & Tax · Spend Analyzer");
+    expect(routeInfo("/tax").title).toBe("Overview · Income & tax · Spend Analyzer");
+    expect(routeInfo("/tax/estimate").title).toBe("Estimate · Income & tax · Spend Analyzer");
     expect(routeInfo("/spending/layout-mapper").title).toBe("Layout mapper · Spending · Spend Analyzer");
     expect(routeInfo("/net-worth").title).toBe("Overview · Net worth · Spend Analyzer");
     expect(routeInfo("/net-worth/forecast").title).toBe("Forecast · Net worth · Spend Analyzer");

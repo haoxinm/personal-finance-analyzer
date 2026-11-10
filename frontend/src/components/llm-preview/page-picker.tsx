@@ -140,7 +140,7 @@ export function PagePicker({
               {checked ? (
                 <span
                   aria-hidden="true"
-                  className="absolute right-2 top-2 rounded bg-primary px-1.5 py-0.5 text-[10px] font-semibold text-primary-foreground"
+                  className="absolute right-2 top-2 rounded bg-primary px-1.5 py-0.5 text-xs font-semibold text-primary-foreground"
                 >
                   ✓ Selected
                 </span>

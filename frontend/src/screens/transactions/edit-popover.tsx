@@ -64,15 +64,53 @@ export function EditPopover({ transaction, categories, onSave, onClose, saving }
   const canCreateRule = merchant !== "" && categoryChanged && categoryComplete;
   const ruleRequested = createRule && canCreateRule;
 
+  // Keyboard users: focus moves into the dialog, Escape closes it, and focus goes back to the
+  // control that opened it (the row's Edit button) when it unmounts.
+  const dialogRef = React.useRef<HTMLDivElement>(null);
+  React.useEffect(() => {
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    dialogRef.current?.querySelector<HTMLElement>("select, textarea, button")?.focus();
+    return () => opener?.focus();
+  }, []);
+
   return (
     <div
       className="fixed inset-0 z-20 flex items-center justify-center bg-black/30 p-4"
       onClick={onClose}
     >
     <div
+      ref={dialogRef}
       role="dialog"
+      aria-modal="true"
       aria-label={`Edit transaction ${transaction.id}`}
       onClick={(e) => e.stopPropagation()}
+      onKeyDown={(e) => {
+        if (e.key === "Escape") {
+          onClose();
+          return;
+        }
+        if (e.key !== "Tab") return;
+        // aria-modal: keep Tab / Shift+Tab inside the dialog.
+        const focusable = Array.from(
+          e.currentTarget.querySelectorAll<HTMLElement>(
+            "select:not([disabled]), textarea:not([disabled]), input:not([disabled]), button:not([disabled]), [tabindex]:not([tabindex='-1'])",
+          ),
+        );
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (!first || !last) {
+          e.preventDefault();
+          return;
+        }
+        const active = document.activeElement;
+        if (e.shiftKey && (active === first || !e.currentTarget.contains(active))) {
+          e.preventDefault();
+          last.focus();
+        } else if (!e.shiftKey && (active === last || !e.currentTarget.contains(active))) {
+          e.preventDefault();
+          first.focus();
+        }
+      }}
       className="flex w-80 flex-col gap-3 rounded-md border border-border bg-background p-4 shadow-lg"
     >
       <label className="flex flex-col gap-1 text-xs text-muted-foreground">

@@ -204,4 +204,42 @@ describe("TaxParametersSection", () => {
     await userEvent.click(screen.getByRole("button", { name: "Check now" }));
     expect(await screen.findByText(/Could not check for updates/)).toBeInTheDocument();
   });
+
+  it("disables Check now with a spinner and a polite status while the check runs, then announces the outcome", async () => {
+    let finish: (value: unknown) => void = () => {};
+    post.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    renderSection();
+    await screen.findByTestId("tax-parameters-status");
+    const region = screen.getByRole("status", { name: "" });
+    expect(region).toHaveAttribute("aria-live", "polite");
+    expect(region).toBeEmptyDOMElement();
+
+    await userEvent.click(screen.getByRole("button", { name: "Check now" }));
+    const busy = await screen.findByRole("button", { name: "Checking…" });
+    expect(busy).toBeDisabled();
+    expect(busy).toHaveAttribute("aria-busy", "true");
+    expect(busy.querySelector("svg.animate-spin")).not.toBeNull();
+    expect(region).toHaveTextContent("Checking GitHub for updated parameters");
+
+    finish({
+      data: { outcome: "current", detail: "Already on the latest version.", parameters: parameters() },
+      error: undefined,
+    });
+    await waitFor(() => expect(region).toHaveTextContent("Up to date. Already on the latest version."));
+    expect(screen.getByRole("button", { name: "Check now" })).toBeEnabled();
+  });
+
+  it("offers Try again when the status fails to load", async () => {
+    get.mockResolvedValueOnce({ data: undefined, error: { detail: "nope" } });
+    renderSection();
+    expect(await screen.findByText(/Could not load the tax parameter status/)).toBeInTheDocument();
+    get.mockResolvedValue({ data: parameters(), error: undefined });
+    await userEvent.click(screen.getByRole("button", { name: "Try again" }));
+    expect(await screen.findByTestId("tax-parameters-status")).toBeInTheDocument();
+  });
 });

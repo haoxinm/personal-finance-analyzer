@@ -76,7 +76,7 @@ export function CategoryBadge({
         <Badge
           variant="secondary"
           title="Needs review"
-          className="flex-shrink-0 whitespace-nowrap text-[10px] uppercase tracking-wide"
+          className="flex-shrink-0 whitespace-nowrap text-xs uppercase tracking-wide"
         >
           Review
         </Badge>

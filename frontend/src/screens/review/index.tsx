@@ -6,6 +6,8 @@ import { useSettings, useTaxonomy } from "@/api/hooks";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Kbd } from "@/components/primitives/kbd";
+import { Page, PageHeader } from "@/components/primitives/page";
 import { EmptyState, ErrorState, LoadingState } from "@/components/primitives/states";
 import { CategoryBadge } from "@/components/primitives/category-badge";
 import { Money } from "@/components/primitives/money";
@@ -123,32 +125,37 @@ export default function ReviewScreen() {
   }, [queue, choices, shortcutsEnabled]);
 
   return (
-    <div className="flex flex-col gap-6">
-      <header className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-xl font-semibold tracking-tight">Review</h1>
-          <p className="text-sm text-muted-foreground">
-            {queue.status === "ready"
-              ? `${queue.queue.length} need review${sel.users.length > 1 && sel.selectedUser ? ` (${sel.selectedUser.name})` : ""}`
-              : "Loading…"}
-          </p>
-        </div>
-        <div className="flex flex-wrap items-center gap-3">
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            disabled={reclassify.running || queue.isMutating}
-            title="Re-runs your rules and the classifier over uncategorized and flagged transactions. Anything you categorized yourself is left alone."
-            onClick={reclassify.start}
-          >
-            {reclassify.running ? "Re-classifying…" : "Re-classify uncategorized"}
-          </Button>
-          <Button type="button" variant="outline" size="sm" disabled={!queue.canUndo || queue.isMutating} onClick={() => void queue.undo()}>
-            Undo (u)
-          </Button>
-        </div>
-      </header>
+    <Page>
+      <PageHeader
+        title="Review transactions"
+        description={queue.status === "ready" ? `${queue.queue.length} need review` : "Loading…"}
+        actions={
+          <>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={reclassify.running || queue.isMutating}
+              title="Re-runs your rules and the classifier over uncategorized and flagged transactions. Anything you categorized yourself is left alone."
+              onClick={reclassify.start}
+            >
+              {reclassify.running ? "Re-classifying…" : "Re-classify uncategorized"}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              aria-label="Undo"
+              aria-keyshortcuts="u"
+              disabled={!queue.canUndo || queue.isMutating}
+              onClick={() => void queue.undo()}
+            >
+              Undo
+              <Kbd>u</Kbd>
+            </Button>
+          </>
+        }
+      />
 
       {llmOff && uncategorizedCount >= MANY_UNCATEGORIZED ? (
         <p
@@ -209,12 +216,14 @@ export default function ReviewScreen() {
         ) : null}
       </section>
 
-      <section aria-label="Pending stores" className="flex flex-col gap-3">
-        <h2 className="text-sm font-semibold tracking-tight text-foreground">Pending stores</h2>
+      <section aria-labelledby="new-categories-heading" className="flex flex-col gap-3">
+        <h2 id="new-categories-heading" className="text-sm font-semibold tracking-tight text-foreground">
+          New categories to approve
+        </h2>
         <p className="text-xs text-muted-foreground">Categories are shared by everyone, so this list is not filtered by user.</p>
         <PendingStores {...pendingSubcategories} />
       </section>
-    </div>
+    </Page>
   );
 }
 
@@ -303,22 +312,28 @@ function TransactionCard({
             type="button"
             onClick={onAccept}
             disabled={disabled}
+            aria-label="Accept"
+            aria-keyshortcuts="Enter"
             title="Accepts this transaction only. Nothing is remembered about the merchant."
           >
-            Accept (Enter)
+            Accept
+            <Kbd>Enter</Kbd>
           </Button>
           <Button
             type="button"
             variant="secondary"
             onClick={onAcceptAndCreateRule}
             disabled={disabled || ruleLabel === ""}
+            aria-label={ruleLabel === "" ? "Always categorize this way" : `Always categorize “${ruleLabel}” this way`}
+            aria-keyshortcuts="r"
             title="Accepts this one and saves a rule: every future import of this merchant is categorized this way automatically. Transactions you already edited by hand are never changed by it."
           >
-            {ruleLabel === "" ? "Always categorize this way (r)" : `Always categorize “${ruleLabel}” this way (r)`}
+            {ruleLabel === "" ? "Always categorize this way" : `Always categorize “${ruleLabel}” this way`}
+            <Kbd>r</Kbd>
           </Button>
         </div>
         <p className="text-xs text-muted-foreground">
-          Accept (Enter) changes this transaction only; nothing is remembered about the merchant. The
+          Accept changes this transaction only; nothing is remembered about the merchant. The
           second button also saves a rule, so future imports of this merchant need no review (see
           Rules). Transactions you accept yourself are never changed by a rule or a re-classify.
         </p>

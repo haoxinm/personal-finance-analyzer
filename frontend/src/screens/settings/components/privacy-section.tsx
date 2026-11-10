@@ -80,7 +80,7 @@ export function PrivacySection({ settings, onSave, saving }: PrivacySectionProps
                 {term}
                 <span
                   data-testid="pii-kind"
-                  className="rounded bg-background/60 px-1 text-[10px] uppercase tracking-wide text-muted-foreground"
+                  className="rounded bg-background/60 px-1 text-xs uppercase tracking-wide text-muted-foreground"
                 >
                   {entryKindLabel(term)}
                 </span>

@@ -30,6 +30,8 @@ export interface UsePendingSubcategoriesResult {
   approve: (row: PendingSubcategoryRow) => void;
   merge: (row: PendingSubcategoryRow, into: MergeTarget) => void;
   isBusy: (key: string) => boolean;
+  /** Re-fetches the taxonomy the list is derived from. */
+  refetch: () => void;
 }
 
 const TAXONOMY_KEY = ["taxonomy"];
@@ -144,6 +146,7 @@ export function usePendingSubcategories(): UsePendingSubcategoriesResult {
     mergeTargets,
     approve: (row) => approveMutation.mutate(row),
     merge: (row, into) => mergeMutation.mutate({ row, into }),
+    refetch: () => void taxonomy.refetch(),
     isBusy: (key) =>
       (approveMutation.isPending && approveMutation.variables?.key === key) ||
       (mergeMutation.isPending && mergeMutation.variables?.row.key === key),

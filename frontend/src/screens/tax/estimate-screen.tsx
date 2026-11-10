@@ -1,43 +1,42 @@
+import * as React from "react";
 import { Link } from "react-router-dom";
 
-import { EmptyState, ErrorState, LoadingState } from "@/components/primitives/states";
-import { Button } from "@/components/ui/button";
+import { Page, PageHeader } from "@/components/primitives/page";
+import { ErrorState, LoadingState } from "@/components/primitives/states";
 import { useSelectedUser } from "@/hooks/use-selected-user";
 
 import { YearPicker } from "./components/year-picker";
 import { EstimateView } from "./estimate/estimate-view";
+import { defaultEstimateYear, estimateYearOptions } from "./estimate/logic";
 import { PeopleOverview } from "./estimate/people-overview";
 import { useTaxYear, useTaxYears } from "./hooks";
 
 export const screenMeta = { path: "/tax/estimate", title: "Estimate" };
 
-const EMPTY_TEXT = "Import a W-2, 1099 or 1040 to estimate your tax";
-
 /**
- * Income & Tax estimate: a simple federal income tax estimate for one person and year, computed from
+ * Income & tax estimate: a simple federal income tax estimate for one person and year, computed from
  * the imported source forms and a few manual inputs (filing status, deduction, credits, payments).
  * The Form 1040, when there is one, is only a cross-check. With "All users" selected the screen shows
- * one summary card per person, because the estimate needs a person.
+ * one summary card per person, because the estimate needs a person. The year picker offers every year
+ * with an imported form plus the current and previous year, so an estimate can start from the manual
+ * inputs alone.
  */
 export default function TaxEstimateScreen() {
   const sel = useSelectedUser();
   const yearsQuery = useTaxYears(sel.userIds, !sel.isLoading);
-  const years = yearsQuery.data ?? [];
-  const [year, setYear] = useTaxYear(years);
+  const documentYears = React.useMemo(() => yearsQuery.data ?? [], [yearsQuery.data]);
+  const years = React.useMemo(() => estimateYearOptions(documentYears), [documentYears]);
+  const [year, setYear] = useTaxYear(years, defaultEstimateYear(documentYears));
 
   const loading = sel.isLoading || yearsQuery.isLoading;
   const error = yearsQuery.error;
 
   return (
-    <div className="flex flex-col gap-6 py-2">
-      <div>
-        <h1 className="text-xl font-semibold tracking-tight">Tax estimate</h1>
-        <p className="text-sm text-muted-foreground">
-          A planning estimate of federal income tax from your source forms and a few inputs. Not tax advice and
-          not a substitute for your return.
-          {sel.users.length > 1 && sel.selectedUser ? ` Showing ${sel.selectedUser.name}.` : ""}
-        </p>
-      </div>
+    <Page>
+      <PageHeader
+        title="Tax estimate"
+        description="A planning estimate of federal income tax from your source forms and a few inputs. Not tax advice and not a substitute for your return."
+      />
 
       {error ? (
         <ErrorState
@@ -46,19 +45,18 @@ export default function TaxEstimateScreen() {
         />
       ) : loading ? (
         <LoadingState rows={4} />
-      ) : years.length === 0 || year === null ? (
-        <EmptyState
-          title={EMPTY_TEXT}
-          description="The estimate starts from your imported tax forms."
-          action={
-            <Button asChild size="sm" variant="outline">
-              <Link to="/tax/import">Import tax forms</Link>
-            </Button>
-          }
-        />
-      ) : (
+      ) : year === null ? null : (
         <>
           <YearPicker years={years} value={year} onChange={setYear} />
+          {documentYears.includes(year) ? null : (
+            <p role="note" className="rounded-md border border-border bg-muted/40 p-3 text-sm text-muted-foreground">
+              No tax forms are imported for {year}, so the estimate uses only what you enter below.{" "}
+              <Link to="/tax/import" className="underline underline-offset-2">
+                Import tax forms
+              </Link>{" "}
+              to add the figures from your W-2s and 1099s.
+            </p>
+          )}
           {sel.selectedUserId === null ? (
             <PeopleOverview users={sel.users} year={year} onSelectUser={sel.setSelectedUserId} />
           ) : (
@@ -72,6 +70,6 @@ export default function TaxEstimateScreen() {
           )}
         </>
       )}
-    </div>
+    </Page>
   );
 }

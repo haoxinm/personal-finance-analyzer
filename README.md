@@ -250,11 +250,11 @@ build is missing or stale).
   unrecognized layout by hand, and charting spending by category over time — plus a `report`
   command for the same numbers in a terminal.
 - **Analyzes income and taxes from your tax forms.** Import W-2, 1099-INT/DIV/B/NEC/MISC,
-  consolidated 1099 and Form 1040 PDFs (`spend-analyzer tax import`, or **Income & Tax › Import** in the web UI)
+  consolidated 1099 and Form 1040 PDFs (`spend-analyzer tax import`, or **Income & tax › Import** in the web UI)
   to see income by category and payer, withholding, refund or amount owed, effective and all-in tax
   rates, and a year-over-year comparison. W-2 and 1099 forms are the source of income, the 1040 the
   source of tax owed, so nothing is double counted; the ordinary-versus-preferential split of
-  federal tax is a labelled estimate. **Income & Tax › Estimate** computes a per-person federal tax
+  federal tax is a labelled estimate. **Income & tax › Estimate** computes a per-person federal tax
   estimate ("Refund $X" / "Owe $X") from the forms plus a few inputs you enter (filing status,
   deduction, credits, payments), with your filed 1040 as a cross-check, and the Overview says whether
   federal tax is from the return, estimated or withholding only. See [docs/TAX.md](docs/TAX.md).

@@ -1,9 +1,11 @@
 import * as React from "react";
+import { Link } from "react-router-dom";
 
 import type { User } from "@/hooks/use-selected-user";
 import { Button } from "@/components/ui/button";
 import { UserChip } from "@/components/primitives/user-chip";
 import { UserSwitcher } from "@/components/primitives/user-switcher";
+import { compareSectionLabels } from "@/navigation";
 
 export interface UserBarProps {
   users: readonly User[];
@@ -19,6 +21,8 @@ export interface UserBarProps {
   onCompareUserChange: (id: number | null) => void;
   /** Optional clarifying note, e.g. "Rules apply to all users". */
   note?: string;
+  /** Key of the section the user is in; the "Compare isn't available" hint skips it. */
+  currentSectionKey?: string | null;
 }
 
 function nameOf(users: readonly User[], id: number | null): string {
@@ -40,17 +44,25 @@ export function UserBar({
   onCompareToggle,
   onCompareUserChange,
   note,
+  currentSectionKey,
 }: UserBarProps) {
   const multiple = users.length > 1;
-  const compareTitle = compareSupported
-    ? undefined
-    : "Compare is available on Spending (Overview, Transactions, Review), Income & Tax (Overview, Documents) and Net worth (Overview).";
+  const otherCompareSections = compareSectionLabels(currentSectionKey);
+  const compareHelpId = React.useId();
 
   let body: React.ReactNode;
   if (isLoading) {
     body = <span className="text-sm text-muted-foreground">Loading users…</span>;
   } else if (users.length === 0) {
-    body = <span className="text-sm text-muted-foreground">No users yet. Add one in Settings.</span>;
+    body = (
+      <span className="text-sm text-muted-foreground">
+        No users yet.{" "}
+        <Link to="/settings#users" className="underline underline-offset-2 hover:text-foreground">
+          Add one in Settings
+        </Link>
+        .
+      </span>
+    );
   } else if (compareActive) {
     body = (
       <>
@@ -91,17 +103,25 @@ export function UserBar({
           />
         ) : null}
         {multiple ? (
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            disabled={!compareSupported}
-            title={compareTitle}
-            aria-pressed={false}
-            onClick={() => onCompareToggle(true)}
-          >
-            Compare
-          </Button>
+          <>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={!compareSupported}
+              aria-describedby={compareSupported ? undefined : compareHelpId}
+              aria-pressed={false}
+              onClick={() => onCompareToggle(true)}
+            >
+              Compare
+            </Button>
+            {compareSupported ? null : (
+              <span id={compareHelpId} className="text-xs text-muted-foreground">
+                Compare isn&rsquo;t available on this page.
+                {otherCompareSections.length > 0 ? <> Try {formatList(otherCompareSections)}.</> : null}
+              </span>
+            )}
+          </>
         ) : null}
       </>
     );
@@ -115,6 +135,10 @@ export function UserBar({
       </div>
     </div>
   );
+}
+
+function formatList(items: readonly string[]): string {
+  return items.length > 1 ? `${items.slice(0, -1).join(", ")} or ${items.at(-1)}` : (items[0] ?? "");
 }
 
 function PaneSelector({

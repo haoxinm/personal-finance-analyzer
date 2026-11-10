@@ -54,7 +54,7 @@ export function createColumns(context: ColumnsContext): ColumnDef<Transaction>[]
   return [
     {
       id: "select",
-      header: () => null,
+      header: () => <span className="sr-only">Select</span>,
       size: 36,
       cell: ({ row }) => (
         <input
@@ -80,10 +80,23 @@ export function createColumns(context: ColumnsContext): ColumnDef<Transaction>[]
       id: "description",
       header: "Description",
       accessorFn: (row) => row.description_clean,
+      // A real button so the keyboard can open the editor (the row's own click handler is
+      // mouse-only); it looks like text and keeps the truncation + tooltip.
       cell: ({ row }) => (
-        <span className="block truncate" title={row.original.description_clean}>
-          {row.original.description_clean}
-        </span>
+        <button
+          type="button"
+          aria-label={`Edit ${row.original.description_clean}`}
+          aria-haspopup="dialog"
+          className="block w-full min-w-0 rounded-sm text-left hover:underline"
+          onClick={(e) => {
+            e.stopPropagation();
+            context.onEdit(row.original);
+          }}
+        >
+          <span className="block truncate" title={row.original.description_clean}>
+            {row.original.description_clean}
+          </span>
+        </button>
       ),
       // `column.getSize()` (and even `column.columnDef.size` once `@tanstack/react-table` has
       // merged its own `defaultColumn.size` into every column) is never `undefined` — so

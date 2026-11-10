@@ -6,6 +6,8 @@ import {
   ageLimits,
   breakdownSections,
   clampAge,
+  defaultEstimateYear,
+  estimateYearOptions,
   draftFromProfile,
   draftToBody,
   filingStatusLabel,
@@ -275,5 +277,21 @@ describe("breakdownSections", () => {
     expect(by("other-profile")).toMatchObject({ source: "profile" });
     expect(by("deduction")).toMatchObject({ source: "computed", minus: true });
     expect(by("total-tax").kind).toBe("total");
+  });
+});
+
+describe("estimate year options", () => {
+  const now = new Date("2026-10-30T12:00:00Z");
+
+  it("adds the current and previous year to the years with forms, newest first, without duplicates", () => {
+    expect(estimateYearOptions([], now)).toEqual([2026, 2025]);
+    expect(estimateYearOptions([2024, 2023], now)).toEqual([2026, 2025, 2024, 2023]);
+    expect(estimateYearOptions([2025, 2022], now)).toEqual([2026, 2025, 2022]);
+  });
+
+  it("defaults to the newest year with forms, else the previous calendar year", () => {
+    expect(defaultEstimateYear([2024, 2023], now)).toBe(2024);
+    expect(defaultEstimateYear([2023, 2024], now)).toBe(2024);
+    expect(defaultEstimateYear([], now)).toBe(2025);
   });
 });

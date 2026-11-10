@@ -3,26 +3,34 @@ import * as React from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle } from "@/components/ui/card";
-import { EmptyState, LoadingState } from "@/components/primitives/states";
+import { ErrorState, LoadingState } from "@/components/primitives/states";
 
 import type { MergeTarget, UsePendingSubcategoriesResult } from "../use-pending-subcategories";
 
 /**
- * "Pending stores": dynamically-proposed subcategories awaiting approval, each rendered with the
- * "approve / merge into ▾" picker the plan calls for (§P3-B, e.g. "Yami — approve /
- * merge into ▾"), keyed by `Subcategory.id`.
+ * "New categories to approve": dynamically-proposed subcategories (the plan calls them "pending
+ * stores") awaiting approval, each rendered with the "approve / merge into ▾" picker the plan calls
+ * for (§P3-B, e.g. "Yami — approve / merge into ▾"), keyed by `Subcategory.id`.
  */
-export function PendingStores({ pending, mergeTargets, approve, merge, isBusy, isLoading, isError }: UsePendingSubcategoriesResult) {
+export function PendingStores({
+  pending,
+  mergeTargets,
+  approve,
+  merge,
+  isBusy,
+  isLoading,
+  isError,
+  refetch,
+}: UsePendingSubcategoriesResult) {
   const [openMergeFor, setOpenMergeFor] = React.useState<string | null>(null);
 
   if (isLoading) return <LoadingState rows={2} />;
   if (isError) {
-    return (
-      <p className="text-sm text-destructive">Could not load pending stores.</p>
-    );
+    return <ErrorState title="Could not load new categories" onRetry={refetch} className="p-6" />;
   }
   if (pending.length === 0) {
-    return <EmptyState title="No stores waiting on approval" />;
+    // One quiet line: this section sits below the queue and is usually empty.
+    return <p className="text-sm text-muted-foreground">No new categories are waiting for approval.</p>;
   }
 
   return (
@@ -35,7 +43,7 @@ export function PendingStores({ pending, mergeTargets, approve, merge, isBusy, i
               <CardHeader className="flex-row items-center justify-between gap-2 py-3">
                 <CardTitle className="flex items-center gap-2 text-sm font-medium">
                   {row.name}
-                  <Badge variant="secondary" className="text-[10px]">
+                  <Badge variant="secondary" className="text-xs">
                     {row.categoryLabel}
                   </Badge>
                 </CardTitle>

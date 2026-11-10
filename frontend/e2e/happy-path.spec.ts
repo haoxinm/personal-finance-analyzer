@@ -58,7 +58,7 @@ test("import a statement, confirm the extractor, review it, and see an overview 
 
   // --- Review ---------------------------------------------------------------------------------
   await page.getByRole("link", { name: "Review", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "Review" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Review transactions" })).toBeVisible();
   await expect(page.getByText(/\d+ need review/)).toBeVisible({ timeout: 15_000 });
 
   // --- Overview -------------------------------------------------------------------------------

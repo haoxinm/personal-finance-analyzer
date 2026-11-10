@@ -1,7 +1,9 @@
 import * as React from "react";
-import { useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Page, PageHeader } from "@/components/primitives/page";
 import { ErrorState, LoadingState } from "@/components/primitives/states";
 
 import { useStatement, useStatementsForDrift } from "./api";
@@ -64,24 +66,32 @@ export default function LayoutMapperScreen() {
 
   if (!statementIdValid) {
     return (
-      <div className="flex flex-col gap-4 py-2">
-        <h1 className="text-xl font-semibold tracking-tight">Layout mapper</h1>
+      <Page>
+        <MapperHeader description="Pick a statement no built-in parser could read, then map its columns by hand." />
         <StatementPicker />
-      </div>
+      </Page>
     );
   }
 
   if (statementQuery.isLoading) {
-    return <LoadingState />;
+    return (
+      <Page>
+        <MapperHeader description="Loading the statement…" />
+        <LoadingState />
+      </Page>
+    );
   }
 
   if (statementQuery.isError || statement === null) {
     return (
-      <ErrorState
-        title="Could not load this statement"
-        description={statementQuery.error instanceof Error ? statementQuery.error.message : undefined}
-        onRetry={() => void statementQuery.refetch()}
-      />
+      <Page>
+        <MapperHeader />
+        <ErrorState
+          title="Could not load this statement"
+          description={statementQuery.error instanceof Error ? statementQuery.error.message : undefined}
+          onRetry={() => void statementQuery.refetch()}
+        />
+      </Page>
     );
   }
 
@@ -89,14 +99,12 @@ export default function LayoutMapperScreen() {
   const drift = computeDrift(statement, previous ?? null);
 
   return (
-    <div className="flex flex-col gap-4 py-2">
-      <div>
-        <h1 className="text-xl font-semibold tracking-tight">Layout mapper</h1>
-        <p className="text-sm text-muted-foreground">
-          Statement #{statement.id} — status: {statement.status}
-          {statement.detect_score != null ? `, best parser confidence ${statement.detect_score.toFixed(2)}` : ""}
-        </p>
-      </div>
+    <Page>
+      <MapperHeader
+        description={`Statement #${statement.id} — status: ${statement.status}${
+          statement.detect_score != null ? `, best parser confidence ${statement.detect_score.toFixed(2)}` : ""
+        }`}
+      />
 
       <DriftBanner drift={drift} />
 
@@ -177,7 +185,28 @@ export default function LayoutMapperScreen() {
         layoutSpecId={savedSpecId}
         issuerId={issuerId ? Number(issuerId) : null}
       />
-    </div>
+    </Page>
+  );
+}
+
+/** The screen's h1 plus the two places a person arrives from: Import (an unsupported layout) and
+ * the Rules screen's Extractors tab. The mapper is a hidden tab, so the sub-tabs offer no way back. */
+function MapperHeader({ description }: { description?: string }) {
+  return (
+    <PageHeader
+      title="Layout mapper"
+      description={description}
+      actions={
+        <>
+          <Button asChild size="sm" variant="outline">
+            <Link to="/spending/import">Back to Import</Link>
+          </Button>
+          <Button asChild size="sm" variant="outline">
+            <Link to="/spending/rules?tab=extractors">Back to Rules</Link>
+          </Button>
+        </>
+      }
+    />
   );
 }
 

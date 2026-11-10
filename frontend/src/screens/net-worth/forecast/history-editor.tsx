@@ -49,7 +49,7 @@ export function HistoryEditor({ userId, history }: HistoryEditorProps) {
         {rows.length === 0 ? (
           <EmptyState
             title="No history yet"
-            description="Add balances on the Overview tab or tax forms under Income & Tax, or enter a past year's net worth below."
+            description="Add balances on the Overview tab or tax forms under Income & tax, or enter a past year's net worth below."
           />
         ) : (
           <div className="overflow-x-auto">

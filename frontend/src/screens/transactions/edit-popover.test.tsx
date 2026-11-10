@@ -48,6 +48,24 @@ function setup(transaction: Transaction) {
 }
 
 describe("EditPopover", () => {
+  it("traps Tab and Shift+Tab inside the dialog", async () => {
+    const { save } = setup(makeTransaction({ notes: "n" }));
+    const dialog = screen.getByRole("dialog");
+    const cancel = screen.getByRole("button", { name: "Cancel" });
+    const category = screen.getByLabelText("Category");
+    // Make Save enabled so it is the last focusable control.
+    await userEvent.type(screen.getByLabelText("Notes"), "x");
+    save().focus();
+    await userEvent.tab();
+    expect(dialog).toContainElement(document.activeElement as HTMLElement);
+    expect(document.activeElement).toBe(category);
+    await userEvent.tab({ shift: true });
+    expect(document.activeElement).toBe(save());
+    cancel.focus();
+    await userEvent.tab();
+    expect(document.activeElement).toBe(save());
+  });
+
   it("disables Save until something changes", () => {
     const { save } = setup(makeTransaction());
     expect(save()).toBeDisabled();

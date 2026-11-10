@@ -43,7 +43,7 @@ const SOURCE_STYLE: Record<LineSource, string> = {
 /** Where a line of the computation comes from: imported documents, your profile inputs, or computed. */
 export function SourceBadge({ source }: { source: LineSource }) {
   return (
-    <Badge variant="outline" className={`px-2 py-0 text-[11px] ${SOURCE_STYLE[source]}`}>
+    <Badge variant="outline" className={`px-2 py-0 text-xs ${SOURCE_STYLE[source]}`}>
       {LINE_SOURCE_LABELS[source]}
     </Badge>
   );

@@ -82,7 +82,7 @@ describe("NetWorthScreen", () => {
 
     render(<NetWorthScreen />, { wrapper });
 
-    expect(screen.getByRole("heading", { level: 1, name: "Net worth" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1, name: "Net worth overview" })).toBeInTheDocument();
     expect(await screen.findByTestId("net-worth-section")).toBeInTheDocument();
     expect(await screen.findByText("No balances yet")).toBeInTheDocument();
 

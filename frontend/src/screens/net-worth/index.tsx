@@ -1,5 +1,6 @@
 import * as React from "react";
 
+import { Page, PageHeader } from "@/components/primitives/page";
 import { useSelectedUser } from "@/hooks/use-selected-user";
 import { useSpendQueryParams } from "@/hooks/use-spend-query-params";
 import { useAccounts } from "@/screens/dashboard/hooks";
@@ -25,39 +26,36 @@ export default function NetWorthScreen() {
   }, [accountsQuery.data, currency]);
 
   return (
-    <div className="flex flex-col gap-6 py-2">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h1 className="text-xl font-semibold tracking-tight">Net worth</h1>
-          <p className="text-sm text-muted-foreground">
-            Balances across accounts, how they split by type, and how they change over time.
-            {sel.users.length > 1 && sel.selectedUser ? ` Showing ${sel.selectedUser.name}.` : ""}
-          </p>
-        </div>
-        {currencyOptions.length > 1 ? (
-          <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-            Currency
-            <select
-              aria-label="Currency"
-              className={cn(
-                "flex h-9 w-24 items-center rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm",
-                "transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-              )}
-              value={currency}
-              onChange={(e) => setParams({ currency: e.target.value })}
-            >
-              {currencyOptions.map((c) => (
-                <option key={c} value={c}>
-                  {c}
-                </option>
-              ))}
-            </select>
-          </label>
-        ) : null}
-      </div>
+    <Page>
+      <PageHeader
+        title="Net worth overview"
+        description="Balances across accounts, how they split by type, and how they change over time."
+        actions={
+          currencyOptions.length > 1 ? (
+            <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+              Currency
+              <select
+                aria-label="Currency"
+                className={cn(
+                  "flex h-9 w-24 items-center rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm",
+                  "transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                )}
+                value={currency}
+                onChange={(e) => setParams({ currency: e.target.value })}
+              >
+                {currencyOptions.map((c) => (
+                  <option key={c} value={c}>
+                    {c}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : null
+        }
+      />
 
       {sel.isLoading ? null : <NetWorthSection userId={sel.selectedUserId} users={sel.users} currency={currency} />}
-    </div>
+    </Page>
   );
 }
 

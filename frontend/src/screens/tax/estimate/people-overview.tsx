@@ -66,6 +66,14 @@ function PersonCard({ user, year, onSelect }: { user: User; year: number; onSele
               : estimateFailure(query.error) === "spouse-conflict"
                 ? "The spouses' profiles disagree; open this person to fix it."
                 : errorMessage(query.error)}
+            {estimateFailure(query.error) === "no-parameters" || estimateFailure(query.error) === "spouse-conflict" ? null : (
+              <>
+                {" "}
+                <Button size="sm" variant="outline" onClick={() => void query.refetch()}>
+                  Try again
+                </Button>
+              </>
+            )}
           </p>
         ) : estimate ? (
           <dl className="grid grid-cols-[1fr_auto] gap-x-4 gap-y-1 text-sm">

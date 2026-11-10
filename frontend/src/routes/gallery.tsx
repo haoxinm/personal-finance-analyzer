@@ -4,6 +4,7 @@ import { CategoryBadge } from "@/components/primitives/category-badge";
 import { DateRangePicker, type DateRange } from "@/components/primitives/date-range-picker";
 import { EmptyState, ErrorState, LoadingState } from "@/components/primitives/states";
 import { Money } from "@/components/primitives/money";
+import { Page, PageHeader } from "@/components/primitives/page";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -31,13 +32,8 @@ export function ComponentGallery() {
   const [range, setRange] = React.useState<DateRange>({ from: null, to: null });
 
   return (
-    <div className="flex flex-col gap-6 py-2">
-      <div>
-        <h1 className="text-xl font-semibold tracking-tight">Component gallery</h1>
-        <p className="text-sm text-muted-foreground">
-          Every shared primitive P1-F owns, in one place.
-        </p>
-      </div>
+    <Page>
+      <PageHeader title="Component gallery" description="Every shared primitive P1-F owns, in one place." />
 
       <Section title="Money">
         <div className="flex flex-col gap-1 font-mono text-lg">
@@ -142,6 +138,6 @@ export function ComponentGallery() {
           <Skeleton className="h-4 w-full" />
         </div>
       </Section>
-    </div>
+    </Page>
   );
 }

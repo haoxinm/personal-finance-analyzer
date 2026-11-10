@@ -1,4 +1,5 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 
 import { ToastContextProvider } from "@/components/ui/toast-provider";
@@ -30,7 +31,7 @@ const settings = {
 };
 
 vi.mock("./lib/hooks", () => ({
-  useSettingsQuery: () => ({ data: settings, isPending: false, isError: false, refetch: vi.fn() }),
+  useSettingsQuery: () => ({ data: settings, isPending: false, isSuccess: true, isError: false, refetch: vi.fn() }),
   useUpdateSettings: () => ({ mutate: vi.fn(), isPending: false }),
   useUsersQuery: () => ({ data: [], isPending: false, isError: false, refetch: vi.fn() }),
   useAccountsQuery: () => ({ data: [] }),
@@ -63,19 +64,57 @@ describe("SettingsScreen", () => {
     expect(typeof mod.default).toBe("function");
   });
 
+  function renderScreen(Screen: () => JSX.Element, entry = "/settings") {
+    return render(
+      <MemoryRouter initialEntries={[entry]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <ToastContextProvider>
+          <Screen />
+        </ToastContextProvider>
+      </MemoryRouter>,
+    );
+  }
+
   it("renders every section", async () => {
     const { default: SettingsScreen } = await import("./index");
-    render(
-      <ToastContextProvider>
-        <SettingsScreen />
-      </ToastContextProvider>,
-    );
-    expect(screen.getByRole("heading", { name: "Settings" })).toBeInTheDocument();
-    expect(screen.getByText("Users and accounts")).toBeInTheDocument();
-    expect(screen.getByText("LLM provider")).toBeInTheDocument();
-    expect(screen.getByText("Privacy")).toBeInTheDocument();
-    expect(screen.getByText("Tax parameters")).toBeInTheDocument();
-    expect(screen.getByText("Preview what will be sent")).toBeInTheDocument();
-    expect(screen.getByText("Backup & restore")).toBeInTheDocument();
+    renderScreen(SettingsScreen);
+    expect(screen.getByRole("heading", { level: 1, name: "Settings" })).toBeInTheDocument();
+    for (const title of [
+      "Users and accounts",
+      "LLM provider",
+      "Privacy",
+      "Tax parameters",
+      "Preview what will be sent",
+      "Backup & restore",
+    ]) {
+      expect(screen.getByRole("heading", { level: 2, name: title })).toBeInTheDocument();
+    }
+  });
+
+  it("has an in-page nav whose links point at each section's anchor", async () => {
+    const { default: SettingsScreen } = await import("./index");
+    renderScreen(SettingsScreen);
+    const nav = screen.getByRole("navigation", { name: "On this page" });
+    const links = within(nav).getAllByRole("link");
+    expect(links.map((a) => a.textContent)).toEqual([
+      "Users and accounts",
+      "LLM provider",
+      "Privacy",
+      "Tax parameters",
+      "Preview what will be sent",
+      "Backup & restore",
+    ]);
+    for (const link of links) {
+      const id = link.getAttribute("href")!.slice(1);
+      expect(document.getElementById(id)).toBeInTheDocument();
+    }
+  });
+
+  it("scrolls to the section named by the URL hash", async () => {
+    const scrollIntoView = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoView;
+    const { default: SettingsScreen } = await import("./index");
+    renderScreen(SettingsScreen, "/settings#users");
+    expect(scrollIntoView).toHaveBeenCalledTimes(1);
+    expect(scrollIntoView.mock.contexts[0]).toBe(document.getElementById("users"));
   });
 });

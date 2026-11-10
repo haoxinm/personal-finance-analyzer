@@ -56,7 +56,7 @@ export const SECTIONS: readonly SectionSpec[] = [
   },
   {
     key: "tax",
-    label: "Income & Tax",
+    label: "Income & tax",
     base: "/tax",
     tabs: [
       { path: "/tax", label: "Overview", end: true, compare: true, keepParams: ["year"] },
@@ -136,6 +136,14 @@ function documentTitle(section: SectionSpec | null, tab: TabSpec | null): string
   // A one-tab section's tab repeats the section name ("Settings · Settings").
   const parts = section.tabs.length === 1 || tab.label === section.label ? [section.label] : [tab.label, section.label];
   return [...parts, APP_NAME].join(" · ");
+}
+
+/** Labels of the sections with at least one compare-capable tab, for the user bar's explanation
+ * (`exceptKey`: the section the user is already in, which the hint should not point at). */
+export function compareSectionLabels(exceptKey?: string | null): string[] {
+  return SECTIONS.filter((s) => !s.hidden && s.key !== exceptKey && s.tabs.some((t) => t.compare)).map(
+    (s) => s.label,
+  );
 }
 
 /** The tabs a section lists in its second nav row. */

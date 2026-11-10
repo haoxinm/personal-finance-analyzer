@@ -100,4 +100,25 @@ describe("LayoutMapperScreen", () => {
     screen.getByText("Paste a layout spec").click();
     expect(await screen.findByPlaceholderText(/id: user_acme_credit/)).toBeInTheDocument();
   });
+
+  it("keeps the h1 and the way back to Import and Rules in the picker, loading and error states", async () => {
+    await renderScreen("/spending/layout-mapper");
+    expect(screen.getByRole("heading", { level: 1, name: "Layout mapper" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Back to Import" })).toHaveAttribute("href", "/spending/import");
+    expect(screen.getByRole("link", { name: "Back to Rules" })).toHaveAttribute("href", "/spending/rules?tab=extractors");
+    await screen.findByTestId("statement-picker");
+  });
+
+  it("shows the heading and back links while the statement loads and when it fails to load", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>(() => Promise.resolve(jsonResponse({ detail: "boom" }, 500))),
+    );
+    await renderScreen("/spending/layout-mapper?statement_id=42");
+    // Loading first, then the error with its retry.
+    expect(screen.getByRole("heading", { level: 1, name: "Layout mapper" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Try again" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1, name: "Layout mapper" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Back to Import" })).toBeInTheDocument();
+  });
 });

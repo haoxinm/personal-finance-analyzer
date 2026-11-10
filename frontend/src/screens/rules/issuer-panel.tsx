@@ -131,7 +131,7 @@ function IssuerRow({ issuer }: { issuer: Issuer }) {
         </div>
         <div className="flex flex-wrap gap-1">
           {issuer.match_terms.map((term) => (
-            <Badge key={term} variant="secondary" className="font-mono text-[11px]">
+            <Badge key={term} variant="secondary" className="font-mono text-xs">
               {term}
             </Badge>
           ))}

@@ -59,11 +59,22 @@ describe("App shell nav", () => {
     vi.restoreAllMocks();
   });
 
-  it("lists Spending, Income & Tax and Net worth, with Settings pushed right", async () => {
+  it("lists Spending, Income & tax and Net worth, with Settings pushed right", async () => {
     await renderApp("/spending");
-    expect(tabNames(mainNav())).toEqual(["Spending", "Income & Tax", "Net worth", "Settings"]);
+    expect(tabNames(mainNav())).toEqual(["Spending", "Income & tax", "Net worth", "Settings"]);
     expect(screen.getByRole("link", { name: "Settings" }).className).toContain("ml-auto");
     expect(screen.queryByRole("link", { name: "Component gallery" })).not.toBeInTheDocument();
+  });
+
+  it("renders a 'Page not found' page with links to the sections for an unknown route", async () => {
+    await renderApp("/no/such/page");
+    const page = await screen.findByTestId("not-found");
+    expect(within(page).getByRole("heading", { name: "Page not found" })).toBeInTheDocument();
+    const links = within(page).getAllByRole("link");
+    expect(links.map((a) => a.textContent)).toEqual(["Spending", "Income & tax", "Net worth", "Settings"]);
+    expect(links[0]).toHaveAttribute("href", "/spending");
+    // Known routes are unaffected.
+    expect(screen.getByTestId("location")).toHaveTextContent("/no/such/page");
   });
 
   it("redirects '/' to Spending with Overview active", async () => {
@@ -71,7 +82,7 @@ describe("App shell nav", () => {
     await waitFor(() => expect(screen.getByTestId("location")).toHaveTextContent("/spending"));
     expect(screen.getByTestId("location")).not.toHaveTextContent("/spending/");
     expect(navLinkClassName("Spending")).toContain("bg-muted");
-    expect(navLinkClassName("Income & Tax")).not.toContain("bg-muted");
+    expect(navLinkClassName("Income & tax")).not.toContain("bg-muted");
     expect(activeTabs(sectionNav("Spending"))).toEqual(["Overview"]);
   });
 
@@ -79,22 +90,22 @@ describe("App shell nav", () => {
     await renderApp("/spending/review");
     expect(tabNames(sectionNav("Spending"))).toEqual(["Overview", "Transactions", "Review", "Import", "Rules"]);
     expect(activeTabs(sectionNav("Spending"))).toEqual(["Review"]);
-    expect(screen.queryByRole("navigation", { name: "Income & Tax sections" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("navigation", { name: "Income & tax sections" })).not.toBeInTheDocument();
   });
 
   it("switches the sub-tab row with the section", async () => {
     await renderApp("/tax/documents");
-    expect(navLinkClassName("Income & Tax")).toContain("bg-muted");
+    expect(navLinkClassName("Income & tax")).toContain("bg-muted");
     expect(navLinkClassName("Spending")).not.toContain("bg-muted");
-    expect(tabNames(sectionNav("Income & Tax"))).toEqual(["Overview", "Estimate", "Documents", "Import"]);
-    expect(activeTabs(sectionNav("Income & Tax"))).toEqual(["Documents"]);
+    expect(tabNames(sectionNav("Income & tax"))).toEqual(["Overview", "Estimate", "Documents", "Import"]);
+    expect(activeTabs(sectionNav("Income & tax"))).toEqual(["Documents"]);
   });
 
   it("puts Estimate between Overview and Documents and marks it active on its route", async () => {
     await renderApp("/tax/estimate?year=2023");
-    expect(activeTabs(sectionNav("Income & Tax"))).toEqual(["Estimate"]);
-    expect(document.title).toBe("Estimate · Income & Tax · Spend Analyzer");
-    expect(within(sectionNav("Income & Tax")).getByRole("link", { name: "Overview" })).toHaveAttribute(
+    expect(activeTabs(sectionNav("Income & tax"))).toEqual(["Estimate"]);
+    expect(document.title).toBe("Estimate · Income & tax · Spend Analyzer");
+    expect(within(sectionNav("Income & tax")).getByRole("link", { name: "Overview" })).toHaveAttribute(
       "href",
       "/tax?year=2023",
     );
@@ -126,7 +137,7 @@ describe("App shell nav", () => {
   it("marks Spending active but no sub-tab on the Layout mapper", async () => {
     await renderApp("/spending/layout-mapper");
     expect(navLinkClassName("Spending")).toContain("bg-muted");
-    for (const name of ["Income & Tax", "Net worth", "Settings"]) {
+    for (const name of ["Income & tax", "Net worth", "Settings"]) {
       expect(navLinkClassName(name)).not.toContain("bg-muted");
     }
     const tabs = sectionNav("Spending");
@@ -147,17 +158,50 @@ describe("App shell nav", () => {
     expect(within(tabs).getByRole("link", { name: "Review" })).toHaveAttribute("href", "/spending/review?compare=2");
     expect(within(tabs).getByRole("link", { name: "Rules" })).toHaveAttribute("href", "/spending/rules");
     expect(within(tabs).getByRole("link", { name: "Import" })).toHaveAttribute("href", "/spending/import");
-    expect(within(mainNav()).getByRole("link", { name: "Income & Tax" })).toHaveAttribute("href", "/tax?compare=2");
+    expect(within(mainNav()).getByRole("link", { name: "Income & tax" })).toHaveAttribute("href", "/tax?compare=2");
     expect(within(mainNav()).getByRole("link", { name: "Settings" })).toHaveAttribute("href", "/settings");
   });
 
-  it("carries ?year= between the Income & Tax tabs, but not into other sections", async () => {
+  it("carries ?year= between the Income & tax tabs, but not into other sections", async () => {
     await renderApp("/tax?year=2023");
-    const tabs = sectionNav("Income & Tax");
+    const tabs = sectionNav("Income & tax");
     expect(within(tabs).getByRole("link", { name: "Estimate" })).toHaveAttribute("href", "/tax/estimate?year=2023");
     expect(within(tabs).getByRole("link", { name: "Documents" })).toHaveAttribute("href", "/tax/documents?year=2023");
     expect(within(tabs).getByRole("link", { name: "Import" })).toHaveAttribute("href", "/tax/import?year=2023");
     expect(within(mainNav()).getByRole("link", { name: "Net worth" })).toHaveAttribute("href", "/net-worth");
+  });
+});
+
+describe("page headings", () => {
+  beforeEach(() => {
+    vi.resetModules();
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  // Every screen renders its one h1 through PageHeader, in its loading and error states too (the
+  // blanket mock answers every query with `[]`, which several screens treat as an error).
+  it.each([
+    ["/spending", "Spending overview"],
+    ["/spending/transactions", "Transactions"],
+    ["/spending/review", "Review transactions"],
+    ["/spending/import", "Import statements"],
+    ["/spending/rules", "Rules & taxonomy"],
+    ["/spending/layout-mapper", "Layout mapper"],
+    ["/tax", "Income & tax overview"],
+    ["/tax/estimate", "Tax estimate"],
+    ["/tax/documents", "Tax documents"],
+    ["/tax/import", "Import tax forms"],
+    ["/net-worth", "Net worth overview"],
+    ["/net-worth/forecast", "Net worth forecast"],
+    ["/settings", "Settings"],
+  ])("%s has a single h1 named %s", async (path, title) => {
+    await renderApp(path);
+    const main = screen.getByRole("main");
+    expect(await within(main).findByRole("heading", { level: 1, name: title })).toBeInTheDocument();
+    expect(within(main).getAllByRole("heading", { level: 1 })).toHaveLength(1);
   });
 });
 

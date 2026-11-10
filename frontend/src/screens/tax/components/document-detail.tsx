@@ -132,9 +132,14 @@ export function DocumentDetail({
     );
   if (query.isError) {
     return (
-      <p role="alert" className="text-xs text-destructive">
-        {errorMessage(query.error, "Could not load this document.")}
-      </p>
+      <div className="flex flex-wrap items-center gap-2">
+        <p role="alert" className="text-xs text-destructive">
+          {errorMessage(query.error, "Could not load this document.")}
+        </p>
+        <Button size="sm" variant="outline" onClick={() => void query.refetch()}>
+          Try again
+        </Button>
+      </div>
     );
   }
   return (

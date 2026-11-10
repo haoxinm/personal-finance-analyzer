@@ -145,9 +145,14 @@ export function LlmReadSection({ document: d }: { document: TaxDocument }) {
         <p className="text-xs text-muted-foreground">Loading pages…</p>
       ) : null}
       {pagesQuery.isError ? (
-        <p role="alert" className="text-xs text-destructive">
-          Could not load the pages: {errorMessage(pagesQuery.error)}
-        </p>
+        <div className="flex flex-wrap items-center gap-2">
+          <p role="alert" className="text-xs text-destructive">
+            Could not load the pages: {errorMessage(pagesQuery.error)}
+          </p>
+          <Button size="sm" variant="outline" onClick={() => void pagesQuery.refetch()}>
+            Try again
+          </Button>
+        </div>
       ) : null}
       {infos ? (
         <PagePicker

@@ -69,7 +69,7 @@ export function ParametersFootnote({ parameters }: { parameters: TaxEstimate["pa
       Tax year {parameters.tax_year} parameters (brackets, standard deduction, limits):{" "}
       {parameters.sources.length > 0 ? parameters.sources.join("; ") : "no citation recorded"}. Parameter
       data version {parameters.params_version}, source: {SOURCE_TEXT[parameters.source]}. See{" "}
-      <Link to="/settings" className="underline underline-offset-2">
+      <Link to="/settings#tax-parameters" className="underline underline-offset-2">
         Settings › Tax parameters
       </Link>{" "}
       to check for an update. This is a planning aid, not tax advice or a substitute for your return.

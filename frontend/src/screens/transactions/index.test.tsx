@@ -180,6 +180,57 @@ describe("TransactionsScreen", () => {
     expect(body).toMatchObject({ category_key: "groceries", subcategory_key: "supermarket" });
   });
 
+  it("opens the editor from the keyboard and returns focus to the row's Edit button on Escape", async () => {
+    const user = userEvent.setup();
+    await mountWithFetch((request) => {
+      if (request.url.includes("/api/taxonomy")) return jsonResponse(CATEGORIES);
+      if (request.method === "GET" && request.url.includes("/api/transactions")) {
+        return jsonResponse({ items: TRANSACTIONS, total: 2 });
+      }
+      throw new Error(`unexpected fetch: ${request.method} ${request.url}`);
+    });
+
+    await screen.findByText("Corner Store");
+    const edit = screen.getByRole("button", { name: "Edit Corner Store" });
+    edit.focus();
+    await user.keyboard("{Enter}");
+
+    const dialog = await screen.findByRole("dialog", { name: "Edit transaction 1" });
+    expect(dialog).toContainElement(document.activeElement as HTMLElement);
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(edit).toHaveFocus();
+  });
+
+  it("moves focus to the grid when saving drops the edited row out of the filter", async () => {
+    const user = userEvent.setup();
+    let saved = false;
+    await mountWithFetch((request) => {
+      if (request.url.includes("/api/taxonomy")) return jsonResponse(CATEGORIES);
+      if (request.method === "GET" && request.url.includes("/api/transactions")) {
+        return saved
+          ? jsonResponse({ items: TRANSACTIONS.slice(1), total: 1 })
+          : jsonResponse({ items: TRANSACTIONS, total: 2 });
+      }
+      if (request.method === "PATCH" && request.url.includes("/api/transactions/1")) {
+        saved = true;
+        return jsonResponse({ ...TRANSACTIONS[0], notes: "x" });
+      }
+      throw new Error(`unexpected fetch: ${request.method} ${request.url}`);
+    });
+
+    await screen.findByText("Corner Store");
+    const edit = screen.getByRole("button", { name: "Edit Corner Store" });
+    edit.focus();
+    await user.keyboard("{Enter}");
+    const dialog = await screen.findByRole("dialog", { name: "Edit transaction 1" });
+    await user.type(within(dialog).getByLabelText("Notes"), "x");
+    await user.click(within(dialog).getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(screen.queryByText("Corner Store")).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId("transactions-grid")).toHaveFocus());
+  });
+
   it("sends create_rule: false for a plain edit and true only when the rule box is ticked", async () => {
     const user = userEvent.setup();
     const fetchMock = await mountWithFetch((request) => {

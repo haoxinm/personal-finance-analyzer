@@ -1,5 +1,6 @@
 import { Link } from "react-router-dom";
 
+import { Page, PageHeader } from "@/components/primitives/page";
 import {
   EmptyState,
   ErrorState,
@@ -28,7 +29,7 @@ export const screenMeta = { path: "/tax", title: "Overview" };
 const EMPTY_TEXT = "Import a W-2, 1099 or 1040 to see income and tax";
 
 /**
- * Income & Tax overview: per-year income by category and payer, withholding / FICA / liability,
+ * Income & tax overview: per-year income by category and payer, withholding / FICA / liability,
  * effective rates and the year-over-year trend. Amounts are neutral (income and tax are not
  * "spending"). The documents behind the numbers live on the Documents tab.
  */
@@ -50,20 +51,11 @@ export default function TaxOverviewScreen() {
   const hasData = years.length > 0 && summaries.length > 0;
 
   return (
-    <div className="flex flex-col gap-6 py-2">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h1 className="text-xl font-semibold tracking-tight">
-            Income &amp; Tax
-          </h1>
-          <p className="text-sm text-muted-foreground">
-            Income, withholding and tax from your W-2, 1099 and 1040 forms.
-            {sel.users.length > 1 && sel.selectedUser
-              ? ` Showing ${sel.selectedUser.name}.`
-              : ""}
-          </p>
-        </div>
-      </div>
+    <Page>
+      <PageHeader
+        title="Income & tax overview"
+        description="Income, withholding and tax from your W-2, 1099 and 1040 forms."
+      />
 
       {error ? (
         <ErrorState
@@ -146,6 +138,6 @@ export default function TaxOverviewScreen() {
           ) : null}
         </>
       )}
-    </div>
+    </Page>
   );
 }

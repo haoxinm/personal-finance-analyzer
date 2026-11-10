@@ -3,6 +3,7 @@ import * as React from "react";
 
 import { useUsers } from "@/api/hooks";
 import { FileDropZone } from "@/components/primitives/file-drop-zone";
+import { Page, PageHeader } from "@/components/primitives/page";
 import { ErrorState, LoadingState } from "@/components/primitives/states";
 import { useSelectedUser } from "@/hooks/use-selected-user";
 import type { JobEvent } from "@/hooks/use-job-progress";
@@ -156,20 +157,33 @@ function ImportScreen() {
     [items, dispatch, queryClient, llmConfigured],
   );
 
-  if (usersQuery.isLoading) return <LoadingState rows={3} />;
+  const header = (
+    <PageHeader
+      title="Import statements"
+      description="Drop one or more statement PDFs. Each is matched to an issuer and extractor automatically; override either before importing."
+    />
+  );
+
+  if (usersQuery.isLoading) {
+    return (
+      <Page>
+        {header}
+        <LoadingState rows={3} />
+      </Page>
+    );
+  }
   if (usersQuery.isError) {
-    return <ErrorState description="Could not load users." onRetry={() => void usersQuery.refetch()} />;
+    return (
+      <Page>
+        {header}
+        <ErrorState description="Could not load users." onRetry={() => void usersQuery.refetch()} />
+      </Page>
+    );
   }
 
   return (
-    <div className="flex flex-col gap-6 py-2">
-      <div>
-        <h1 className="text-xl font-semibold tracking-tight">Import statements</h1>
-        <p className="text-sm text-muted-foreground">
-          Drop one or more statement PDFs. Each is matched to an issuer and extractor
-          automatically; override either before importing.
-        </p>
-      </div>
+    <Page>
+      {header}
 
       {sel.selectedUserId === null ? (
         <label className="flex max-w-xs flex-col gap-1 text-xs font-medium text-muted-foreground">
@@ -231,7 +245,7 @@ function ImportScreen() {
           ))}
         </div>
       ) : null}
-    </div>
+    </Page>
   );
 }
 
