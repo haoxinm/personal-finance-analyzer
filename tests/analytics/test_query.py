@@ -274,25 +274,42 @@ def test_period_bucketing_every_granularity(
     ]
 
 
-def test_week_bucketing_matches_python_strftime(session: Session) -> None:
-    """SQLite's `%W` (Monday-first week number) matches Python's `date.strftime('%W')`."""
+def test_week_bucketing_is_iso_week_across_year_boundaries(session: Session) -> None:
+    """Weekly periods are ISO weeks (`isocalendar`), so a week spanning New Year is one bucket
+    keyed by its ISO week-year instead of a `%W` split into `2025-W52` and `2026-W00`."""
     user, account, statement = _make_account(session)
-    d = date(2026, 6, 17)
-    _add_txn(
-        session,
-        statement=statement,
-        account=account,
-        user=user,
-        posted_date=d,
-        amount_minor=100,
-        kind="purchase",
-        category_key="grocery",
-        subcategory_key="grocery_stores",
-    )
+    days = [
+        date(2025, 12, 28),  # Sunday: last day of 2025-W52
+        date(2025, 12, 29),  # Monday: 2026-W01 (week-year differs from the calendar year)
+        date(2026, 1, 1),  # Thursday of that same week
+        date(2026, 1, 4),  # Sunday: last day of 2026-W01
+        date(2026, 1, 5),  # Monday: 2026-W02
+        date(2026, 6, 17),
+        date(2027, 1, 3),  # Sunday: 2026-W53
+    ]
+    for d in days:
+        _add_txn(
+            session,
+            statement=statement,
+            account=account,
+            user=user,
+            posted_date=d,
+            amount_minor=100,
+            kind="purchase",
+            category_key="grocery",
+            subcategory_key="grocery_stores",
+        )
     session.commit()
 
     rows = run_query(session, SpendQuery(granularity="week", group_by=["period"]))
-    assert rows[0]["period"] == d.strftime("%Y-W%W")
+    by_period = {str(r["period"]): r["txn_count"] for r in rows}
+    expected: dict[str, int] = {}
+    for d in days:
+        iso = d.isocalendar()
+        key = f"{iso.year}-W{iso.week:02d}"
+        expected[key] = expected.get(key, 0) + 1
+    assert by_period == expected
+    assert by_period["2026-W01"] == 3
 
 
 def test_merged_subcategory_resolves_to_merged_into(session: Session) -> None:

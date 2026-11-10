@@ -73,6 +73,38 @@ def test_top_merchants(client: TestClient, session: Session) -> None:
     assert rows[1]["display_name"] == "Trader Joes"
 
 
+def test_top_merchants_drops_unkeyed_rows_before_the_limit(
+    client: TestClient, session: Session
+) -> None:
+    _seed(session)
+    first = session.query(Transaction).first()
+    assert first is not None
+    # A large bucket with no merchant key would otherwise take the single slot the limit allows.
+    session.add(
+        Transaction(
+            statement_id=first.statement_id,
+            account_id=first.account_id,
+            user_id=first.user_id,
+            posted_date="2026-01-06",
+            description_raw="MYSTERY",
+            description_clean="MYSTERY",
+            merchant_key="",
+            amount_minor=90000,
+            currency="USD",
+            kind="purchase",
+            is_spend=True,
+            dedupe_hash="hash-unkeyed",
+            created_at=utcnow_iso(),
+            updated_at=utcnow_iso(),
+        )
+    )
+    session.commit()
+
+    response = client.get("/api/analytics/top-merchants", params={"limit": 1})
+    assert response.status_code == 200
+    assert [row["merchant"] for row in response.json()] == ["shell"]
+
+
 def test_top_merchants_display_name_prefers_the_most_common_merchant_canonical(
     client: TestClient, session: Session
 ) -> None:

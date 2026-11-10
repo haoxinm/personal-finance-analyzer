@@ -100,7 +100,9 @@ def _validate(query: SpendQuery) -> None:
 def _period_expr(granularity: Granularity) -> ColumnElement[str]:
     """Return the SQL expression that buckets `posted_date` per `granularity` (§3.9).
 
-    Day/week/month/year use SQLite `strftime`; quarter is
+    Day/month/year use SQLite `strftime`; week is the ISO 8601 week (`YYYY-Www`, the year being the
+    ISO week-year, so 2025-12-29 is in `2026-W01` rather than a split `2025-W52`/`2026-W00` pair;
+    SQLite has no `%G`/`%V`, so it is derived from the week's Thursday); quarter is
     `strftime('%Y', posted_date) || '-Q' || ((CAST(strftime('%m', posted_date) AS INTEGER) - 1) /
     3 + 1)` per §3.9; `"all"` collapses every row into a single literal bucket, `"all"`.
     """
@@ -108,7 +110,11 @@ def _period_expr(granularity: Granularity) -> ColumnElement[str]:
     if granularity == "day":
         return func.strftime("%Y-%m-%d", column)
     if granularity == "week":
-        return func.strftime("%Y-W%W", column)
+        # The ISO week-year and week number both come from the week's Thursday: the next
+        # Thursday on or after (date - 3 days) is that Thursday for every weekday.
+        thursday = func.date(column, "-3 days", "weekday 4")
+        iso_week = (cast(func.strftime("%j", thursday), Integer) - 1).self_group().op("/")(7) + 1
+        return func.printf("%s-W%02d", func.strftime("%Y", thursday), iso_week)
     if granularity == "month":
         return func.strftime("%Y-%m", column)
     if granularity == "year":
