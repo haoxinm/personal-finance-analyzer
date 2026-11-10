@@ -333,6 +333,17 @@ def _classify_column(x0: float, anchors: _ColumnAnchors) -> str:
     return min(candidates, key=lambda c: abs(x0 - c[1]))[0]
 
 
+#: This layout always prints amounts with cents (``1,234.56``, ``12.00``, ``(12.00)``). A bare
+#: integer such as the ``1234`` in ``... ending in 1234``, ``STORE 4471`` or ``CHECK 1052`` is
+#: description text, not money, even though `parse_money` (shared with layouts that print whole
+#: amounts) would accept it.
+_CENTS_RE = re.compile(r"\.\d{2}\D*$")
+
+
+def _is_amount_token(text: str) -> bool:
+    return _CENTS_RE.search(text) is not None and parse_money(text) is not None
+
+
 def _read_amount_and_balance(row: Row, anchors: _ColumnAnchors) -> tuple[int, int | None, str]:
     """Split a data row into its signed amount (the column decides the sign, per I5), an
     optional printed balance, and the description text between the date and the trailing money
@@ -345,7 +356,7 @@ def _read_amount_and_balance(row: Row, anchors: _ColumnAnchors) -> tuple[int, in
     words = list(row.words)
     money_tokens: list[tuple[int, str]] = []  # (word index, text), rightmost first
     for idx in range(len(words) - 1, 0, -1):  # never treat the date (index 0) as money
-        if parse_money(words[idx].text) is not None:
+        if _is_amount_token(words[idx].text):
             money_tokens.append((idx, words[idx].text))
         else:
             break
