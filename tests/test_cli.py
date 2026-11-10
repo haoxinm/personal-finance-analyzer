@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import re
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -16,6 +17,13 @@ from personal_finance_analyzer.db.session import make_engine_for_path
 
 runner = CliRunner()
 
+_ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+
+
+def _plain(text: str) -> str:
+    """Drop ANSI escapes, so help-text assertions hold even if a runner forces colour."""
+    return _ANSI.sub("", text)
+
 
 def _run_entry_point(
     entry: Callable[[], None], argv0: str, capsys: pytest.CaptureFixture[str]
@@ -25,7 +33,7 @@ def _run_entry_point(
         entry()
     assert exit_info.value.code == 0
     captured = capsys.readouterr()
-    return captured.out, captured.err
+    return _plain(captured.out), _plain(captured.err)
 
 
 def test_pfa_entry_point_documents_pfa_and_prints_no_notice(

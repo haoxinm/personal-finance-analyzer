@@ -94,6 +94,21 @@ def _no_legacy_env(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(name)
 
 
+@pytest.fixture(autouse=True)
+def _no_terminal_colour(monkeypatch: pytest.MonkeyPatch) -> None:
+    """CI sets the `GITHUB_ACTIONS` / `FORCE_COLOR` variables, which make Typer's Rich help force
+    ANSI escapes (Typer reads them once, at import, into `typer.rich_utils.FORCE_TERMINAL`).
+    Output assertions must not depend on the runner's colour settings, so turn colour off for
+    every test."""
+    for name in ("FORCE_COLOR", "PY_COLORS", "CLICOLOR_FORCE", "GITHUB_ACTIONS"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("NO_COLOR", "1")
+    monkeypatch.setenv("TERM", "dumb")
+    from typer import rich_utils
+
+    monkeypatch.setattr(rich_utils, "FORCE_TERMINAL", False)
+
+
 class _MemoryKeyring(keyring.backend.KeyringBackend):
     """An in-process keychain: nothing a test stores ever reaches the developer's real one."""
 
