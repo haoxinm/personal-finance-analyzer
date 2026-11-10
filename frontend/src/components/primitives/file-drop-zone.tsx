@@ -5,13 +5,13 @@ import { cn } from "@/utils";
 export interface FileDropZoneProps {
   onFiles: (files: File[]) => void;
   disabled?: boolean;
-  /** Overrides for reuse outside Import (e.g. tax forms); defaults keep the statement wording. */
+  /** Overrides for the tax-form importer; defaults keep the statement wording. */
   title?: string;
   hint?: string;
   inputLabel?: string;
 }
 
-/** Drag-and-drop (or click-to-browse) multiple PDFs onto the Import screen. Filters to
+/** Drag-and-drop (or click-to-browse) multiple PDFs (statements, tax forms). Filters to
  * `.pdf`/`application/pdf` client-side as a friendly first pass — the server re-checks the
  * magic bytes regardless (A12), so this is UX only, never the security boundary. */
 export function FileDropZone({

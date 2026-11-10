@@ -31,7 +31,7 @@ This is the reason to run this instead of a hosted budgeting app, so it comes fi
      Never dates, amounts, account numbers, issuer/bank names, or your issuer's category codes
      (`classify/llm/egress.py`).
   2. **Statement parsing with the LLM is opt-in, per statement.** Only when you choose the LLM
-     extractor for a statement (Import screen, or `import --parser-id llm`) is the text of the
+     extractor for a statement (Spending › Import, or `import --parser-id llm`) is the text of the
      pages *you selected* sent. Before it leaves, your personal-info entries are removed,
      email addresses are replaced, and any remaining card/account numbers (8+ digits) are masked
      to the last 4. Amounts and dates are kept, since they are the content being parsed
@@ -47,8 +47,8 @@ This is the reason to run this instead of a hosted budgeting app, so it comes fi
   the Import preview reports how many matches were removed (`core/pii.py`).
 - **Local endpoint = nothing leaves your machine.** Local vs. remote is derived from the address:
   `localhost`, `127.0.0.1` and `::1` are local. The redaction and previews apply either way.
-- **Preview before you send.** The Review screen shows the exact CSV a classification call would
-  send (`GET /api/classify/preview`), and the Import screen shows the exact redacted page text a
+- **Preview before you send.** The Spending › Review screen shows the exact CSV a classification call would
+  send (`GET /api/classify/preview`), and Spending › Import shows the exact redacted page text a
   statement parse would send (`GET /api/statements/{id}/llm-preview`) — the same bytes the real
   call uses, built by the same code path.
 - **One HTTP client, two callers.** Only `llm/client.py` imports an HTTP client, and only the two
@@ -189,16 +189,16 @@ build is missing or stale).
   unrecognized layout by hand, and charting spending by category over time — plus a `report`
   command for the same numbers in a terminal.
 - **Analyzes income and taxes from your tax forms.** Import W-2, 1099-INT/DIV/B/NEC/MISC,
-  consolidated 1099 and Form 1040 PDFs (`spend-analyzer tax import`, or the **Income & Tax** screen)
+  consolidated 1099 and Form 1040 PDFs (`spend-analyzer tax import`, or **Income & Tax › Import** in the web UI)
   to see income by category and payer, withholding, refund or amount owed, effective and all-in tax
   rates, and a year-over-year comparison. W-2 and 1099 forms are the source of income, the 1040 the
   source of tax owed, so nothing is double counted; the ordinary-versus-preferential split of
   federal tax is a labelled estimate. See [docs/TAX.md](docs/TAX.md).
-- **Tracks net worth.** On the Dashboard, enter monthly balances for checking, savings, investment
+- **Tracks net worth.** On the **Net worth** page, enter monthly balances for checking, savings, investment
   and credit-card accounts (several accounts per category). Net worth is assets minus credit-card
   balances, shown with a breakdown table, a pie of where your assets are held, and trend lines per
   category and per account. A month with no entry carries the account's last balance forward.
-- **Gives each person their own view.** The Dashboard, Review and Transactions screens have user
+- **Gives each person their own view.** Every page except Settings has a user bar with user
   chips ("All users" plus one per user, a dropdown beyond six users). Your choice is kept in the
   `?user=` URL parameter, so a view can be bookmarked, and remembered in your browser between
   screens.

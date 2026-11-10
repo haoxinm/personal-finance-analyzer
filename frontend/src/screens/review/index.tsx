@@ -154,7 +154,7 @@ export default function ReviewScreen() {
   );
 }
 
-export const screenMeta = { path: "/review", title: "Review" };
+export const screenMeta = { path: "/spending/review", title: "Review" };
 
 interface TransactionCardProps {
   transaction: Transaction;

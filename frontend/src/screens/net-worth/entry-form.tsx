@@ -23,14 +23,14 @@ type Entry = components["schemas"]["BalanceEntry"];
 
 export interface BalanceEntryFormProps {
   users: readonly User[];
-  /** The dashboard's selected user, or null for "All users" (the form then asks who). */
+  /** The selected user, or null for "All users" (the form then asks who). */
   selectedUserId: number | null;
   /** Existing entries, used for account-name suggestions. */
   entries: readonly Entry[];
 }
 
 /** The API only accepts USD balances (`BalanceEntryUpsert.currency` is `Literal["USD"]`), so the
- * form always saves in it, whatever display currency the dashboard has selected. */
+ * form always saves in it, whatever display currency is selected. */
 const ENTRY_CURRENCY: BalanceEntryUpsert["currency"] = "USD";
 
 const LABEL = "text-xs font-medium text-muted-foreground";

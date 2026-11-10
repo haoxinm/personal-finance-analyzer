@@ -9,7 +9,7 @@ import { apiClient } from "@/api/client";
 import { ToastContextProvider } from "@/components/ui/toast-provider";
 import { WithUserSwitcher } from "@/test/with-user-switcher";
 
-import DashboardScreen from "./index";
+import DashboardScreen, { screenMeta } from "./index";
 
 // Recharts' `ResponsiveContainer` observes its size; jsdom has no `ResizeObserver`.
 class ResizeObserverStub {
@@ -36,7 +36,7 @@ function wrapper({ children }: { children: React.ReactNode }) {
   return (
     <QueryClientProvider client={queryClient}>
       <MemoryRouter
-        initialEntries={["/"]}
+        initialEntries={["/spending"]}
         future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
       >
         <ToastContextProvider>
@@ -52,23 +52,11 @@ type Route =
   | "/accounts"
   | "/analytics/summary"
   | "/analytics/timeseries"
-  | "/analytics/top-merchants"
-  | "/net-worth/summary"
-  | "/net-worth/entries";
-
-const EMPTY_NET_WORTH = {
-  currency: "USD",
-  user_id: null,
-  periods: [],
-  series: [],
-  account_series: [],
-  snapshot: null,
-};
+  | "/analytics/top-merchants";
 
 function mockGet(responses: Partial<Record<Route, unknown>>) {
   (apiClient.GET as ReturnType<typeof vi.fn>).mockImplementation((path: string) => {
-    const fallback = path === "/net-worth/summary" ? EMPTY_NET_WORTH : [];
-    const data = responses[path as Route] ?? fallback;
+    const data: unknown = responses[path as Route] ?? [];
     return Promise.resolve({ data, error: undefined });
   });
 }
@@ -76,6 +64,16 @@ function mockGet(responses: Partial<Record<Route, unknown>>) {
 describe("DashboardScreen", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it("is the Spending overview and no longer renders net worth", async () => {
+    expect(screenMeta).toEqual({ path: "/spending", title: "Overview" });
+    mockGet({ "/users": [{ id: 1, name: "Alex", is_default: true }] });
+    render(<DashboardScreen />, { wrapper });
+    expect(await screen.findByRole("heading", { name: "Overview" })).toBeInTheDocument();
+    expect(screen.queryByTestId("net-worth-section")).not.toBeInTheDocument();
+    const paths = (apiClient.GET as ReturnType<typeof vi.fn>).mock.calls.map(([path]) => path as string);
+    expect(paths).not.toContain("/net-worth/summary");
   });
 
   it("shows an empty state before any data exists", async () => {
@@ -195,34 +193,5 @@ describe("DashboardScreen", () => {
     const banner = await screen.findByTestId("currency-banner");
     expect(within(banner).getByText("EUR")).toBeInTheDocument();
     expect(within(banner).getByText(/Not included/)).toBeInTheDocument();
-  });
-
-  it("renders the net-worth section even with no spending data, and follows the user chip", async () => {
-    mockGet({
-      "/users": [
-        { id: 1, name: "Alex", is_default: true },
-        { id: 2, name: "Sam", is_default: false },
-      ],
-      "/accounts": [],
-      "/analytics/summary": [],
-      "/analytics/timeseries": [],
-      "/analytics/top-merchants": [],
-    });
-
-    render(<DashboardScreen />, { wrapper });
-
-    expect(await screen.findByText("No data yet")).toBeInTheDocument();
-    expect(await screen.findByTestId("net-worth-section")).toBeInTheDocument();
-    expect(await screen.findByText("No balances yet")).toBeInTheDocument();
-
-    await userEvent.click(screen.getByRole("radio", { name: "Sam" }));
-
-    await waitFor(() => {
-      const calls = (apiClient.GET as ReturnType<typeof vi.fn>).mock.calls.filter(
-        ([path]) => path === "/net-worth/summary",
-      );
-      const last = calls.at(-1)![1] as { params: { query: { user_id?: number } } };
-      expect(last.params.query.user_id).toBe(2);
-    });
   });
 });

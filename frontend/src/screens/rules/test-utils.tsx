@@ -15,7 +15,7 @@ export function createTestQueryClient(): QueryClient {
 export function TestProviders({
   children,
   queryClient = createTestQueryClient(),
-  initialEntries = ["/rules"],
+  initialEntries = ["/spending/rules"],
 }: {
   children: React.ReactNode;
   queryClient?: QueryClient;

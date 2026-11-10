@@ -32,3 +32,8 @@ npm run gen:api-types # regenerate src/api/schema.d.ts from src/api/openapi.json
 - `src/hooks/` — `useSpendQueryParams` (URL search params ⇄ `SpendQuery`) and
   `useJobProgress` (SSE with reconnect).
 - `src/routes/gallery.tsx` — the Storybook-less component gallery at `/gallery`.
+- `src/navigation.ts` — the app's information architecture: sections (Spending, Income & Tax,
+  Net worth, Settings), their sub-tabs, and per-route chrome (user bar, compare, notes, document
+  title). The shell renders the top nav and the active section's sub-tab row from it. Old flat
+  paths (`/review`, `/import`, ...) redirect to their `/spending/...` equivalents, keeping the
+  query string.

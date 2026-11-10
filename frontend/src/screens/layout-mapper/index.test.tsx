@@ -76,14 +76,14 @@ describe("LayoutMapperScreen", () => {
   });
 
   it("shows a picker of statements when no statement_id is given", async () => {
-    await renderScreen("/layout-mapper");
+    await renderScreen("/spending/layout-mapper");
     const picker = await screen.findByTestId("statement-picker");
     expect(picker).toHaveTextContent("Statement #42");
     expect(picker).toHaveTextContent("Awaiting extractor");
   });
 
   it("loads the statement and renders the mapper once given a statement_id", async () => {
-    await renderScreen("/layout-mapper?statement_id=42");
+    await renderScreen("/spending/layout-mapper?statement_id=42");
 
     await waitFor(() => expect(screen.getByText(/Statement #42/)).toBeInTheDocument());
     expect(screen.getByText("Build a layout spec")).toBeInTheDocument();
@@ -94,7 +94,7 @@ describe("LayoutMapperScreen", () => {
   });
 
   it("switches to the paste-a-spec tab", async () => {
-    await renderScreen("/layout-mapper?statement_id=42");
+    await renderScreen("/spending/layout-mapper?statement_id=42");
     await waitFor(() => expect(screen.getByText(/Statement #42/)).toBeInTheDocument());
 
     screen.getByText("Paste a layout spec").click();

@@ -126,7 +126,7 @@ export function StatementCard({
                     : `The built-in parser couldn't read this statement: ${item.failure.detail}. Choose the LLM parser (or another extractor) and import again.`}
                 </p>
                 <Link
-                  to={`/layout-mapper?statement_id=${item.statementId ?? ""}`}
+                  to={`/spending/layout-mapper?statement_id=${item.statementId ?? ""}`}
                   className="self-start text-xs underline"
                 >
                   Map this layout
@@ -190,7 +190,7 @@ export function StatementCard({
               No layout parser matched this statement&rsquo;s format.
             </p>
             <Button asChild size="sm" variant="outline" className="self-start">
-              <Link to={`/layout-mapper?statement_id=${item.statementId ?? ""}`}>
+              <Link to={`/spending/layout-mapper?statement_id=${item.statementId ?? ""}`}>
                 Map this layout
               </Link>
             </Button>

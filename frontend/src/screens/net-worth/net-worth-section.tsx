@@ -22,7 +22,7 @@ export interface NetWorthSectionProps {
   currency: string;
 }
 
-/** The Dashboard's net-worth area: snapshot (headline, breakdown, pie), trends, and the entry
+/** The Net worth screen's body: snapshot (headline, breakdown, pie), trends, and the entry
  * form + table. Independent of spending data, so it renders even before any import. */
 export function NetWorthSection({ userId, users, currency }: NetWorthSectionProps) {
   // Unique per instance: compare mode renders two copies of this screen.

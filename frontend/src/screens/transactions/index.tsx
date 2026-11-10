@@ -223,4 +223,4 @@ export default function TransactionsScreen() {
   );
 }
 
-export const screenMeta = { path: "/transactions", title: "Transactions" };
+export const screenMeta = { path: "/spending/transactions", title: "Transactions" };

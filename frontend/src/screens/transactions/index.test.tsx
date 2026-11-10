@@ -91,7 +91,7 @@ describe("TransactionsScreen", () => {
   // module graph.
   async function mountWithFetch(
     fetchImpl: (request: Request) => Promise<Response> | Response,
-    initialEntry = "/transactions",
+    initialEntry = "/spending/transactions",
   ) {
     const fetchMock: FetchMock = vi.fn((request) => {
       if (request.url.includes("/api/users")) return jsonResponse(USERS);
@@ -232,7 +232,7 @@ describe("TransactionsScreen", () => {
       if (request.url.includes("/api/taxonomy")) return jsonResponse(CATEGORIES);
       if (request.url.includes("/api/transactions")) return jsonResponse({ items: TRANSACTIONS, total: 2 });
       throw new Error(`unexpected fetch: ${request.method} ${request.url}`);
-    }, "/transactions?user=1");
+    }, "/spending/transactions?user=1");
     expect(await screen.findByText("Corner Store")).toBeInTheDocument();
     const calls = callsTo(fetchMock, "GET", "/api/transactions");
     expect(calls.every((r) => new URL(r.url).searchParams.getAll("user_ids").join() === "1")).toBe(true);

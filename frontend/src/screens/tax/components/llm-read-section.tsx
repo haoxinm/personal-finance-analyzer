@@ -10,7 +10,7 @@ import {
 } from "@/components/llm-preview";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/components/ui/use-toast";
-import { FileDropZone } from "@/screens/import/file-drop-zone";
+import { FileDropZone } from "@/components/primitives/file-drop-zone";
 import { taxPageImageUrl } from "@/screens/import/spend-token";
 
 import {

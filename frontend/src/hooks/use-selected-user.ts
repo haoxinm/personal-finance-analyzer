@@ -103,7 +103,7 @@ export interface UseSelectedUser {
 
 const NO_USERS: User[] = [];
 
-/** Shared per-user view selection for Dashboard, Review and Transactions (URL + localStorage). */
+/** Shared per-user view selection for every per-user screen (URL + localStorage). */
 export function useSelectedUser(): UseSelectedUser {
   const usersQuery = useUsers();
   const [searchParams, setSearchParams] = useSearchParams();

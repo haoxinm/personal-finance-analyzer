@@ -85,7 +85,7 @@ describe("screenMeta", () => {
   it("matches the P3 screen contract", async () => {
     vi.resetModules();
     const { screenMeta } = await import("./index");
-    expect(screenMeta).toEqual({ path: "/import", title: "Import" });
+    expect(screenMeta).toEqual({ path: "/spending/import", title: "Import" });
   });
 });
 

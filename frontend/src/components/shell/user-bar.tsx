@@ -44,7 +44,7 @@ export function UserBar({
   const multiple = users.length > 1;
   const compareTitle = compareSupported
     ? undefined
-    : "Compare is available on Dashboard, Review, Transactions and Income & Tax";
+    : "Compare is available on Spending (Overview, Transactions, Review), Income & Tax (Overview, Documents) and Net worth.";
 
   let body: React.ReactNode;
   if (isLoading) {

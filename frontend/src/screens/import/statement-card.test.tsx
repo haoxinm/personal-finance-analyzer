@@ -86,7 +86,7 @@ describe("StatementCard", () => {
   it("shows a layout-mapper link for unsupported_layout, carrying the statement id", () => {
     renderCard(makeItem({ status: "unsupported_layout", statementId: 42 }));
     const link = screen.getByRole("link", { name: "Map this layout" });
-    expect(link).toHaveAttribute("href", "/layout-mapper?statement_id=42");
+    expect(link).toHaveAttribute("href", "/spending/layout-mapper?statement_id=42");
   });
 
   it("shows the reconciliation delta and shape-drift warning once parsed", () => {

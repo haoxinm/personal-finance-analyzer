@@ -58,7 +58,7 @@ describe("Import upload target", () => {
   });
 
   it("uses the globally selected user and shows no picker", async () => {
-    const { uploads } = await renderImport("/import?user=2");
+    const { uploads } = await renderImport("/spending/import?user=2");
     expect(await screen.findByTestId("import-target")).toHaveTextContent("Importing for Sam");
     expect(screen.queryByLabelText("Importing for")).not.toBeInTheDocument();
     await userEvent.upload(screen.getByLabelText("Choose statement PDFs"), pdf());
@@ -66,7 +66,7 @@ describe("Import upload target", () => {
   });
 
   it("asks which user to import for when All users is selected, and blocks upload until chosen", async () => {
-    const { uploads } = await renderImport("/import?user=all");
+    const { uploads } = await renderImport("/spending/import?user=all");
     const picker = await screen.findByLabelText("Importing for");
     expect(picker).toHaveValue("");
     expect(screen.queryByTestId("import-target")).not.toBeInTheDocument();
@@ -79,7 +79,7 @@ describe("Import upload target", () => {
   });
 
   it("ignores a stale legacy sticky Import user and starts at 'Choose a user…'", async () => {
-    await renderImport("/import?user=all", 1);
+    await renderImport("/spending/import?user=all", 1);
     expect(await screen.findByLabelText("Importing for")).toHaveValue("");
     expect(screen.getByLabelText("Choose statement PDFs")).toBeDisabled();
   });

@@ -22,7 +22,7 @@ Every layout, and the generic fallback, shares a few rules (owned by `ingest/lay
 
 > **Layouts the templates don't handle.** The recommended path for a statement none of these
 > layouts (or a saved layout spec) fits is the **LLM extractor**: choose it for that statement in
-> the Import screen, or `spend-analyzer import x.pdf --parser-id llm --pages 1-3`. It is opt-in per
+> Spending › Import, or `spend-analyzer import x.pdf --parser-id llm --pages 1-3`. It is opt-in per
 > statement, sends only the pages you select (redacted: card/account numbers masked, emails and PII
 > terms removed) to your configured endpoint — a local model keeps everything on your machine — and
 > is never auto-confirmed. See the [README](../README.md#using-an-llm-local-or-remote). The

@@ -8,7 +8,7 @@ import { useSpendQueryParams } from "./use-spend-query-params";
 function wrapper({ children }: { children: React.ReactNode }) {
   return (
     <MemoryRouter
-      initialEntries={["/?date_from=2025-01-01"]}
+      initialEntries={["/spending?date_from=2025-01-01"]}
       future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
     >
       {children}
@@ -66,7 +66,7 @@ describe("useSpendQueryParams", () => {
     function foreignWrapper({ children }: { children: React.ReactNode }) {
       return (
         <MemoryRouter
-          initialEntries={["/?user=2&date_from=2025-01-01"]}
+          initialEntries={["/spending?user=2&date_from=2025-01-01"]}
           future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
         >
           {children}
