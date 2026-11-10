@@ -5,6 +5,7 @@ import { screenMeta as dashboardMeta } from "@/screens/dashboard";
 import { screenMeta as importMeta } from "@/screens/import";
 import { screenMeta as layoutMapperMeta } from "@/screens/layout-mapper";
 import { screenMeta as netWorthMeta } from "@/screens/net-worth";
+import { screenMeta as forecastMeta } from "@/screens/net-worth/forecast";
 import { screenMeta as reviewMeta } from "@/screens/review";
 import { screenMeta as rulesMeta } from "@/screens/rules";
 import { screenMeta as settingsMeta } from "@/screens/settings";
@@ -24,6 +25,7 @@ const SCREEN_PATHS = [
   taxDocumentsMeta,
   taxImportMeta,
   netWorthMeta,
+  forecastMeta,
   settingsMeta,
 ].map((m) => m.path);
 
@@ -57,7 +59,8 @@ describe("routeInfo", () => {
       ["/tax", "tax", "Overview", { userBar: true, compare: true }],
       ["/tax/documents", "tax", "Documents", { userBar: true, compare: true }],
       ["/tax/import", "tax", "Import", { userBar: true, compare: false }],
-      ["/net-worth", "net-worth", "Net worth", { userBar: true, compare: true }],
+      ["/net-worth", "net-worth", "Overview", { userBar: true, compare: true }],
+      ["/net-worth/forecast", "net-worth", "Forecast", { userBar: true, compare: false }],
       ["/settings", "settings", "Settings", { userBar: false, compare: false }],
       ["/gallery", "gallery", "Component gallery", { userBar: false, compare: false }],
     ];
@@ -78,7 +81,8 @@ describe("routeInfo", () => {
     expect(routeInfo("/spending/review").title).toBe("Review · Spending · Spend Analyzer");
     expect(routeInfo("/tax").title).toBe("Overview · Income & Tax · Spend Analyzer");
     expect(routeInfo("/spending/layout-mapper").title).toBe("Layout mapper · Spending · Spend Analyzer");
-    expect(routeInfo("/net-worth").title).toBe("Net worth · Spend Analyzer");
+    expect(routeInfo("/net-worth").title).toBe("Overview · Net worth · Spend Analyzer");
+    expect(routeInfo("/net-worth/forecast").title).toBe("Forecast · Net worth · Spend Analyzer");
     expect(routeInfo("/settings").title).toBe("Settings · Spend Analyzer");
   });
 });
@@ -89,6 +93,8 @@ describe("carriedSearch", () => {
   it("carries compare only to compare-capable tabs", () => {
     expect(carriedSearch(tab("/spending/review"), "?user=1&compare=2", true)).toBe("?compare=2");
     expect(carriedSearch(tab("/spending/rules"), "?user=1&compare=2", true)).toBe("");
+    expect(carriedSearch(tab("/net-worth"), "?compare=2", true)).toBe("?compare=2");
+    expect(carriedSearch(tab("/net-worth/forecast"), "?compare=2", true)).toBe("");
   });
 
   it("carries keepParams only within the same section", () => {

@@ -191,7 +191,8 @@ Anything touching `classify/llm/`, `llm/` (the HTTP client and the statement par
 project's privacy model. So is the tax feature (`ingest/tax/`, especially `tin.py` and
 `pipeline.py`, plus `analytics/tax_query.py`, `api/routers/tax.py` and `core/tax_types.py`) and the
 net-worth feature (`analytics/net_worth_query.py`, `api/routers/net_worth.py`,
-`api/services/net_worth.py`): they hold taxpayer identifiers and account balances, must not import an
+`api/services/net_worth.py`, and the forecast's `analytics/forecast_baseline.py`,
+`api/routers/forecast.py`, `api/services/forecast.py`, `core/forecast.py`): they hold taxpayer identifiers and account balances, must not import an
 LLM or HTTP client (`tests/test_architecture_guards.py`), and must keep full identifiers out of the
 database, logs and extract cache — see [docs/SECURITY_REVIEW.md](docs/SECURITY_REVIEW.md) for the checklist
 those areas are held to, and [SECURITY.md](SECURITY.md) to report a vulnerability rather than

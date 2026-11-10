@@ -21,6 +21,7 @@ import TaxDocumentsScreen, { screenMeta as taxDocumentsMeta } from "@/screens/ta
 import TaxImportScreen, { screenMeta as taxImportMeta } from "@/screens/tax/import-screen";
 import TaxOverviewScreen, { screenMeta as taxOverviewMeta } from "@/screens/tax/overview-screen";
 import NetWorthScreen, { screenMeta as netWorthMeta } from "@/screens/net-worth";
+import ForecastScreen, { screenMeta as forecastMeta } from "@/screens/net-worth/forecast";
 import RulesScreen, { screenMeta as rulesMeta } from "@/screens/rules";
 import SettingsScreen, { screenMeta as settingsMeta } from "@/screens/settings";
 import LayoutMapperScreen, { screenMeta as layoutMapperMeta } from "@/screens/layout-mapper";
@@ -41,6 +42,7 @@ const SCREENS = [
   { meta: taxDocumentsMeta, Component: TaxDocumentsScreen },
   { meta: taxImportMeta, Component: TaxImportScreen },
   { meta: netWorthMeta, Component: NetWorthScreen },
+  { meta: forecastMeta, Component: ForecastScreen },
   { meta: settingsMeta, Component: SettingsScreen },
 ] as const;
 

@@ -91,9 +91,19 @@ describe("App shell nav", () => {
   });
 
   it("has no sub-tab row for the single-page sections", async () => {
-    await renderApp("/net-worth");
-    expect(navLinkClassName("Net worth")).toContain("bg-muted");
+    await renderApp("/settings");
+    expect(navLinkClassName("Settings")).toContain("bg-muted");
     expect(screen.queryByRole("navigation", { name: /sections$/ })).not.toBeInTheDocument();
+  });
+
+  it("splits Net worth into Overview and Forecast sub-tabs", async () => {
+    await renderApp("/net-worth/forecast");
+    expect(navLinkClassName("Net worth")).toContain("bg-muted");
+    expect(tabNames(sectionNav("Net worth"))).toEqual(["Overview", "Forecast"]);
+    expect(activeTabs(sectionNav("Net worth"))).toEqual(["Forecast"]);
+    expect(document.title).toBe("Forecast · Net worth · Spend Analyzer");
+    // The Overview tab is `end`-matched, so it is not also active on the Forecast route.
+    expect(within(mainNav()).getByRole("link", { name: "Net worth" })).toHaveAttribute("href", "/net-worth");
   });
 
   /**

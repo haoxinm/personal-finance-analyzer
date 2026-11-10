@@ -932,6 +932,106 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/net-worth/forecast/baseline": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Baseline */
+        get: operations["baseline_api_net_worth_forecast_baseline_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/net-worth/history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List History */
+        get: operations["list_history_api_net_worth_history_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/net-worth/history/{user_id}/{year}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get History */
+        get: operations["get_history_api_net_worth_history__user_id___year__get"];
+        /** Put History */
+        put: operations["put_history_api_net_worth_history__user_id___year__put"];
+        post?: never;
+        /** Delete History */
+        delete: operations["delete_history_api_net_worth_history__user_id___year__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/net-worth/forecast/presets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Presets
+         * @description Built-in presets plus the saved ones visible to `user_id`: shared presets and that user's
+         *     own. Without `user_id` (the all-users view), shared presets only. A saved preset whose stored
+         *     parameters no longer validate is listed under `invalid` (name only, and logged) rather than
+         *     failing the list; it can be renamed, repaired by saving new parameters, or deleted.
+         */
+        get: operations["list_presets_api_net_worth_forecast_presets_get"];
+        put?: never;
+        /** Create Preset */
+        post: operations["create_preset_api_net_worth_forecast_presets_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/net-worth/forecast/presets/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Update Preset
+         * @description Rename and/or replace the parameters. A preset whose stored parameters are invalid can be
+         *     renamed (the response is then the name-only `InvalidForecastPreset`) or repaired by sending
+         *     new `params`. `user_id` is the viewing user, as for the list: another user's preset is 404.
+         */
+        put: operations["update_preset_api_net_worth_forecast_presets__id__put"];
+        post?: never;
+        /** Delete Preset */
+        delete: operations["delete_preset_api_net_worth_forecast_presets__id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/tax/documents": {
         parameters: {
             query?: never;
@@ -1477,6 +1577,16 @@ export interface components {
             /** Tax Year */
             tax_year?: number | null;
         };
+        /** BuiltinForecastPreset */
+        BuiltinForecastPreset: {
+            /** Key */
+            key: string;
+            /** Name */
+            name: string;
+            /** Description */
+            description: string;
+            params: components["schemas"]["ForecastParams"];
+        };
         /**
          * BulkUpdateRequest
          * @description Edit every listed transaction one time each (no rule, no merchant memory).
@@ -1568,6 +1678,187 @@ export interface components {
             confidence: number;
             /** Auto Confirmed */
             auto_confirmed: boolean;
+        };
+        /** ForecastBaseline */
+        ForecastBaseline: {
+            /**
+             * Currency
+             * @constant
+             */
+            currency: "USD";
+            /** User Id */
+            user_id: number | null;
+            /** History */
+            history: components["schemas"]["ForecastHistoryRow"][];
+            defaults: components["schemas"]["ForecastDefaults"];
+        };
+        /**
+         * ForecastDefaults
+         * @description Values suggested from history; each is None when the data does not support it.
+         *
+         *     Each level is as of its own `*_year`, and the years can differ; the screen rebases income and
+         *     spending to the chosen starting year.
+         */
+        ForecastDefaults: {
+            /** Net Worth Minor */
+            net_worth_minor: number | null;
+            /** Net Worth Year */
+            net_worth_year: number | null;
+            /** Annual Income Minor */
+            annual_income_minor: number | null;
+            /** Income Year */
+            income_year: number | null;
+            /** Effective Tax Rate Pct */
+            effective_tax_rate_pct: number | null;
+            /** Annual Spending Minor */
+            annual_spending_minor: number | null;
+            /** Spending Year */
+            spending_year: number | null;
+            /** Spending Annualized */
+            spending_annualized: boolean;
+            /** Income Growth Pct */
+            income_growth_pct: number | null;
+            /** Spending Growth Pct */
+            spending_growth_pct: number | null;
+            /** Income Growth Clamped */
+            income_growth_clamped: boolean;
+            /** Spending Growth Clamped */
+            spending_growth_clamped: boolean;
+            /** Savings Rate Pct */
+            savings_rate_pct: number | null;
+        };
+        /** ForecastEvent */
+        ForecastEvent: {
+            /** Year */
+            year: number;
+            /** Amount Minor */
+            amount_minor: number;
+            /**
+             * Label
+             * @default
+             */
+            label: string;
+        };
+        /** ForecastHistoryRow */
+        ForecastHistoryRow: {
+            /** Year */
+            year: number;
+            /** Net Worth Minor */
+            net_worth_minor: number | null;
+            /** Source */
+            source: ("entries" | "manual" | "carried" | "mixed") | null;
+            /** As Of */
+            as_of: string | null;
+            /** Manual Net Worth Minor */
+            manual_net_worth_minor: number | null;
+            /** Manual Note */
+            manual_note: string | null;
+            /** Income Minor */
+            income_minor: number | null;
+            /** Earned Income Minor */
+            earned_income_minor: number | null;
+            /** Tax Minor */
+            tax_minor: number | null;
+            /** Income Basis */
+            income_basis: ("source_documents" | "return" | "none" | "mixed") | null;
+            /** Spending Minor */
+            spending_minor: number | null;
+            /** Spending Months */
+            spending_months: number;
+            /** Savings Minor */
+            savings_minor: number | null;
+        };
+        /**
+         * ForecastParams
+         * @description One forecast scenario. A None starting value means "use the figure derived from history".
+         */
+        ForecastParams: {
+            /** Horizon Years */
+            horizon_years?: number | null;
+            /** Base Year */
+            base_year?: number | null;
+            /** Start Net Worth Minor */
+            start_net_worth_minor?: number | null;
+            /** Annual Income Minor */
+            annual_income_minor?: number | null;
+            /**
+             * Income Growth Pct
+             * @default 3
+             */
+            income_growth_pct: number;
+            /** Tax Rate Pct */
+            tax_rate_pct?: number | null;
+            /** Annual Spending Minor */
+            annual_spending_minor?: number | null;
+            /**
+             * Spending Growth Pct
+             * @default 2.5
+             */
+            spending_growth_pct: number;
+            /**
+             * Spending Change Minor
+             * @default 0
+             */
+            spending_change_minor: number;
+            /**
+             * Return Pct
+             * @default 6
+             */
+            return_pct: number;
+            /**
+             * Inflation Pct
+             * @default 2.5
+             */
+            inflation_pct: number;
+            /** Retirement Year */
+            retirement_year?: number | null;
+            /**
+             * Retirement Income Minor
+             * @default 0
+             */
+            retirement_income_minor: number;
+            /** Events */
+            events?: components["schemas"]["ForecastEvent"][];
+        };
+        /** ForecastPreset */
+        ForecastPreset: {
+            /** Id */
+            id: number;
+            /** User Id */
+            user_id: number | null;
+            /** Name */
+            name: string;
+            params: components["schemas"]["ForecastParams"];
+            /** Created At */
+            created_at: string;
+            /** Updated At */
+            updated_at: string;
+        };
+        /** ForecastPresetCreate */
+        ForecastPresetCreate: {
+            /** Name */
+            name: string;
+            /** User Id */
+            user_id?: number | null;
+            params: components["schemas"]["ForecastParams"];
+        };
+        /** ForecastPresetList */
+        ForecastPresetList: {
+            /** Builtin */
+            builtin: components["schemas"]["BuiltinForecastPreset"][];
+            /** Saved */
+            saved: components["schemas"]["ForecastPreset"][];
+            /** Invalid */
+            invalid?: components["schemas"]["InvalidForecastPreset"][];
+        };
+        /**
+         * ForecastPresetUpdate
+         * @description Rename and/or replace the parameters; omitted fields are left as they are.
+         */
+        ForecastPresetUpdate: {
+            /** Name */
+            name?: string | null;
+            params?: components["schemas"]["ForecastParams"] | null;
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -1663,6 +1954,18 @@ export interface components {
             date_format_hints: string[];
             /** Default Currency */
             default_currency: string;
+        };
+        /**
+         * InvalidForecastPreset
+         * @description A saved preset whose stored parameters no longer validate: only identity is returned.
+         */
+        InvalidForecastPreset: {
+            /** Id */
+            id: number;
+            /** User Id */
+            user_id: number | null;
+            /** Name */
+            name: string;
         };
         /** Issuer */
         Issuer: {
@@ -2039,6 +2342,30 @@ export interface components {
             balance_minor: number;
             /** Signed Minor */
             signed_minor: number;
+        };
+        /** NetWorthHistory */
+        NetWorthHistory: {
+            /** Id */
+            id: number;
+            /** User Id */
+            user_id: number;
+            /** Year */
+            year: number;
+            /** Amount Minor */
+            amount_minor: number;
+            /** Note */
+            note: string | null;
+            /** Created At */
+            created_at: string;
+            /** Updated At */
+            updated_at: string;
+        };
+        /** NetWorthHistoryPut */
+        NetWorthHistoryPut: {
+            /** Amount Minor */
+            amount_minor: number;
+            /** Note */
+            note?: string | null;
         };
         /** NetWorthPoint */
         NetWorthPoint: {
@@ -5062,6 +5389,304 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["NetWorthSummary"];
                 };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    baseline_api_net_worth_forecast_baseline_get: {
+        parameters: {
+            query?: {
+                user_id?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ForecastBaseline"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_history_api_net_worth_history_get: {
+        parameters: {
+            query?: {
+                user_id?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NetWorthHistory"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_history_api_net_worth_history__user_id___year__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description User id. */
+                user_id: number;
+                /** @description Calendar year. */
+                year: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NetWorthHistory"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    put_history_api_net_worth_history__user_id___year__put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description User id. */
+                user_id: number;
+                /** @description Calendar year. */
+                year: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NetWorthHistoryPut"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NetWorthHistory"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_history_api_net_worth_history__user_id___year__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description User id. */
+                user_id: number;
+                /** @description Calendar year. */
+                year: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_presets_api_net_worth_forecast_presets_get: {
+        parameters: {
+            query?: {
+                user_id?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ForecastPresetList"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_preset_api_net_worth_forecast_presets_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ForecastPresetCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ForecastPreset"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_preset_api_net_worth_forecast_presets__id__put: {
+        parameters: {
+            query?: {
+                user_id?: number | null;
+            };
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ForecastPresetUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ForecastPreset"] | components["schemas"]["InvalidForecastPreset"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_preset_api_net_worth_forecast_presets__id__delete: {
+        parameters: {
+            query?: {
+                user_id?: number | null;
+            };
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {

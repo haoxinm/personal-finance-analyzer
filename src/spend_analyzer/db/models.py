@@ -543,3 +543,56 @@ class BalanceEntry(Base):
     updated_at: Mapped[str] = mapped_column(
         Text, nullable=False, default=utcnow_iso, onupdate=utcnow_iso
     )
+
+
+class NetWorthHistory(Base):
+    """A user-entered year-end net worth for a past year that has no balance entries (net worth
+    forecast). Signed: net worth can be negative. LOCAL ONLY, like `balance_entries`: never sent
+    to an LLM and never part of `/api/export`."""
+
+    __tablename__ = "net_worth_history"
+    __table_args__ = (
+        UniqueConstraint("user_id", "year", name="uq_net_worth_history_user_year"),
+        CheckConstraint("year BETWEEN 1900 AND 2200", name="ck_nw_history_year"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    year: Mapped[int] = mapped_column(Integer, nullable=False)
+    amount_minor: Mapped[int] = mapped_column(Integer, nullable=False)  # signed, USD
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[str] = mapped_column(Text, nullable=False, default=utcnow_iso)
+    updated_at: Mapped[str] = mapped_column(
+        Text, nullable=False, default=utcnow_iso, onupdate=utcnow_iso
+    )
+
+
+class ForecastPreset(Base):
+    """A saved set of net worth forecast parameters. `user_id` NULL = shared with every user.
+    `params` is a JSON object validated by `api/schemas.ForecastParams` on every write. SQLite
+    treats NULLs as distinct in a UNIQUE constraint, so shared names get their own partial index."""
+
+    __tablename__ = "forecast_presets"
+    __table_args__ = (
+        UniqueConstraint("user_id", "name", name="uq_forecast_preset_user_name"),
+        Index(
+            "uq_forecast_preset_shared_name",
+            "name",
+            unique=True,
+            sqlite_where=text("user_id IS NULL"),
+        ),
+        CheckConstraint("length(trim(name)) > 0", name="ck_forecast_preset_name"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True
+    )
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    params: Mapped[str] = mapped_column(Text, nullable=False)  # JSON object
+    created_at: Mapped[str] = mapped_column(Text, nullable=False, default=utcnow_iso)
+    updated_at: Mapped[str] = mapped_column(
+        Text, nullable=False, default=utcnow_iso, onupdate=utcnow_iso
+    )

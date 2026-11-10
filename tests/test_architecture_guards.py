@@ -213,6 +213,10 @@ def _net_worth_module_paths() -> list[Path]:
         "analytics/net_worth_query.py",
         "api/routers/net_worth.py",
         "api/services/net_worth.py",
+        "core/forecast.py",
+        "analytics/forecast_baseline.py",
+        "api/routers/forecast.py",
+        "api/services/forecast.py",
     )
     return [_SRC_ROOT / rel for rel in rels if (_SRC_ROOT / rel).is_file()]
 
@@ -221,7 +225,7 @@ def test_net_worth_modules_import_no_llm_or_http() -> None:
     """Balances never reach an egress seam: no LLM package and no HTTP client in the feature."""
     paths = _net_worth_module_paths()
     assert {p.name for p in paths} >= {"net_worth.py", "net_worth_query.py"}
-    assert len(paths) == 4
+    assert len(paths) == 8
     offenders: dict[str, set[str]] = {}
     for path in paths:
         tree = _parse(path)
