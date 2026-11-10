@@ -2,7 +2,8 @@
 
 `config.toml` holds every non-secret setting. Secrets (LLM provider API keys) live in the OS
 keychain via `keyring` (I7) — never in `config.toml`, never in the database, never logged. A key
-is resolved in this order: the `PFA_LLM_API_KEY` environment variable, the OS keychain, and, only
+is resolved in this order: the `PFA_LLM_API_KEY` environment variable (or the file named by
+`PFA_LLM_API_KEY_FILE`, e.g. a Docker secret), the OS keychain, and, only
 if the user opted in with ``[secrets] allow_file_store = true``, a 0600 file in the data directory
 (`secret_store.py`; for machines with no keychain). Saving a key goes to the keychain, and to the
 file only when the keychain is unavailable *and* that opt-in is on; otherwise it fails with a
@@ -32,6 +33,7 @@ import keyring.errors
 import tomli_w
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from personal_finance_analyzer.core.container import SecretFileError, read_env_or_file
 from personal_finance_analyzer.core.native_locks import KEYRING_LOCK
 from personal_finance_analyzer.core.paths import config_path, ensure_home
 from personal_finance_analyzer.secret_store import (
@@ -508,12 +510,23 @@ def get_llm_api_key(cfg: LLMConfig, *, adopt: bool = True, probe_legacy: bool = 
     the OS keychain (or the opt-in file store) for ``cfg.base_url``'s host (see
     `LLMConfig.key_account`). ``adopt=False`` is the read-only lookup for `pfa doctor`, the
     Settings screen and `pfa llm show`: it never moves a legacy-service key (see `get_api_key`)."""
-    env_value = os.environ.get(LLM_API_KEY_ENV) or os.environ.get(LEGACY_LLM_API_KEY_ENV)
+    env_value = _env_llm_key()
     if env_value:
         return env_value
     if not cfg.key_account:
         return None
     return get_api_key(cfg.key_account, adopt=adopt, probe_legacy=probe_legacy)
+
+
+def _env_llm_key() -> str | None:
+    """The key from ``PFA_LLM_API_KEY``, or the file named by ``PFA_LLM_API_KEY_FILE`` (a Docker
+    secret), or the pre-rename variable. An unreadable key file is logged and reads as no key."""
+    try:
+        value = read_env_or_file(LLM_API_KEY_ENV)
+    except SecretFileError as exc:
+        _log.warning("%s", exc)
+        value = None
+    return value or os.environ.get(LEGACY_LLM_API_KEY_ENV) or None
 
 
 def set_api_key(provider: str, key: str) -> Literal["keychain", "file"]:
@@ -681,7 +694,12 @@ def secret_storage_status(
     keychain = inspect_keychain()
     file_enabled = _allow_file_store()
     env_var = next(
-        (n for n in (LLM_API_KEY_ENV, LEGACY_LLM_API_KEY_ENV) if os.environ.get(n)), None
+        (
+            n
+            for n in (LLM_API_KEY_ENV, f"{LLM_API_KEY_ENV}_FILE", LEGACY_LLM_API_KEY_ENV)
+            if os.environ.get(n)
+        ),
+        None,
     )
     path = file_store_path()
 

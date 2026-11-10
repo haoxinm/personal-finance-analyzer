@@ -50,9 +50,11 @@ app.add_typer(users_app, name="users")
 issuers_app = typer.Typer(help="Manage issuers (§3.12a, A23/A24), so later imports auto-confirm.")
 app.add_typer(issuers_app, name="issuers")
 
+from personal_finance_analyzer.cli_auth import auth_app  # noqa: E402
 from personal_finance_analyzer.cli_backup import backup_app  # noqa: E402
 from personal_finance_analyzer.cli_llm import llm_app  # noqa: E402
 
+app.add_typer(auth_app, name="auth")
 app.add_typer(llm_app, name="llm")
 app.add_typer(backup_app, name="backup")
 
@@ -175,11 +177,33 @@ def serve_cmd(
     open_browser: bool = typer.Option(
         True, help="Open the default browser once the server starts."
     ),
+    host: str | None = typer.Option(
+        None,
+        "--host",
+        envvar="PFA_HOST",
+        help="Address to listen on (default 127.0.0.1, this machine only). Anything else, such "
+        "as 0.0.0.0 in a container, requires PFA_PASSWORD (see the README).",
+    ),
 ) -> None:
-    """Start the local web server (I8: binds 127.0.0.1 only; A31: per-launch token)."""
+    """Start the web server (I8: binds 127.0.0.1 unless --host says otherwise, and then needs a
+    password; A31: per-launch token)."""
     import uvicorn
 
     from personal_finance_analyzer.api.app import create_app
+    from personal_finance_analyzer.api.serve_config import ServeConfigError, resolve_serve_config
+    from personal_finance_analyzer.core.paths import get_home
+    from personal_finance_analyzer.db.session import storage_warning
+
+    try:
+        serve_config = resolve_serve_config(host)
+        db_warning = storage_warning(get_home())
+    except (ServeConfigError, ValueError) as exc:
+        typer.echo(f"pfa serve: {exc}", err=True)
+        raise typer.Exit(code=2) from None
+    for message in serve_config.warnings:
+        typer.echo(f"WARNING: {message}", err=True)
+    if db_warning is not None:
+        typer.echo(f"WARNING: {db_warning}", err=True)
 
     settings = load_settings()
     package_dir = Path(__file__).resolve().parent
@@ -189,15 +213,41 @@ def serve_cmd(
     with _open_engine() as engine:
         with _open_session(engine) as session:
             _sync_taxonomy_and_defaults(session)
-        app_instance = create_app(engine=engine, settings=settings)
+        app_instance = create_app(
+            engine=engine,
+            settings=settings,
+            auth=serve_config.auth,
+            allowed_hosts=serve_config.allowed_hosts,
+            client_policy=serve_config.client_policy,
+            trusted_proxies=serve_config.proxies,
+        )
         token = app_instance.state.token
         port = settings.server.port
-        url = f"http://127.0.0.1:{port}/?token={token}"
-        typer.echo(f"Personal Finance Analyzer is running at {url}")
-        typer.echo(f"Per-launch API token: {token}")
-        if open_browser:
+        if serve_config.loopback and serve_config.auth is None:
+            url = f"http://127.0.0.1:{port}/?token={token}"
+            typer.echo(f"Personal Finance Analyzer is running at {url}")
+            typer.echo(f"Per-launch API token: {token}")
+        else:
+            # Never print the token here: with a login it only exists to be handed to a signed-in
+            # browser, and a container's log is readable by more people than the password is.
+            url = f"http://{serve_config.host}:{port}/"
+            login = "password login on" if serve_config.auth is not None else "NO LOGIN"
+            typer.echo(f"Personal Finance Analyzer is listening on {url} ({login})")
+        if serve_config.client_policy is not None:
+            networks = serve_config.client_policy.describe()
+            typer.echo(f"Accepting connections only from: {networks}")
+            get_logger("serve").info("Accepting connections only from: %s", networks)
+        if open_browser and serve_config.loopback:
             webbrowser.open(url)
-        uvicorn.run(app_instance, host="127.0.0.1", port=port, log_level="warning")
+        uvicorn.run(
+            app_instance,
+            host=serve_config.host,
+            port=port,
+            log_level="warning",
+            # Off: the app's own ClientGuardMiddleware reads X-Forwarded-For/Proto, only from the
+            # proxies PFA_TRUSTED_PROXIES names, and fails closed (api/clients.py).
+            proxy_headers=False,
+        )
 
 
 def _echo_tax_form_hint(pdf_path: Path, raw_path: str) -> None:

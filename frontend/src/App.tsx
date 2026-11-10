@@ -8,6 +8,7 @@ import { cn } from "@/utils";
 import { ComparePanes } from "@/components/shell/compare-panes";
 import { RedirectKeepingSearch } from "@/components/shell/redirect-keeping-search";
 import { SectionTabs } from "@/components/shell/section-tabs";
+import { SignOutButton } from "@/components/shell/sign-out-button";
 import { UserBar } from "@/components/shell/user-bar";
 import { useCompareUser, useSelectedUser } from "@/hooks/use-selected-user";
 import { APP_NAME, HOME_PATH, LEGACY_REDIRECTS, SECTIONS, carriedSearch, routeInfo } from "@/navigation";
@@ -151,6 +152,7 @@ function Shell() {
                 );
               })}
             </nav>
+            <SignOutButton />
           </div>
         </div>
         {info.section ? <SectionTabs section={info.section} /> : null}

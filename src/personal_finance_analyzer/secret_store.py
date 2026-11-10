@@ -34,6 +34,7 @@ import keyring.backend
 import keyring.errors
 import tomli_w
 
+from personal_finance_analyzer.core.container import running_in_container
 from personal_finance_analyzer.core.errors import PfaError
 from personal_finance_analyzer.core.paths import get_home
 from personal_finance_analyzer.core.secure_delete import shred_file
@@ -125,7 +126,17 @@ def inspect_keychain() -> KeychainStatus:
 
 
 def platform_guidance(platform: str | None = None) -> str:
-    """Setup advice for getting an OS keychain working on ``platform`` (default: this one)."""
+    """Setup advice for getting an OS keychain working on ``platform`` (default: this one). Inside
+    a container (and no platform asked for) it says what a container offers instead, since there
+    is no keychain to set up."""
+    if platform is None and running_in_container():
+        return (
+            "Container: there is no system keychain here and none is needed. Supply the API key "
+            "as a Docker secret: mount it as a file and set PFA_LLM_API_KEY_FILE=/run/secrets/"
+            "llm_api_key (or set PFA_LLM_API_KEY), then restart the container. (Plaintext, last "
+            "resort: set PFA_SECRETS__ALLOW_FILE_STORE=true to let Settings keep the key in a "
+            "0600 file in the data directory.)"
+        )
     plat = platform if platform is not None else sys.platform
     if plat == "darwin":
         return (

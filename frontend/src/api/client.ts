@@ -1,5 +1,6 @@
 import createClient from "openapi-fetch";
 
+import { authEnabled, redirectToLogin } from "./auth";
 import type { paths } from "./schema";
 
 /**
@@ -39,6 +40,15 @@ export const apiClient = createClient<paths>({
     const token = readPfaToken();
     return token ? { "X-PFA-Token": token } : {};
   })(),
+});
+
+// Behind the server's login, a 401 means the session ended (idle timeout, server restart): go
+// back to the sign-in page instead of showing every screen's error state.
+apiClient.use({
+  onResponse({ response }) {
+    if (response.status === 401 && authEnabled()) redirectToLogin();
+    return undefined;
+  },
 });
 
 export type { paths } from "./schema";

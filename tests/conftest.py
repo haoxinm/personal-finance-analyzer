@@ -123,6 +123,20 @@ def _isolate_process_from_the_real_user_profile() -> None:
     os.environ["APPDATA"] = str(scratch / "user_home" / "AppData" / "Roaming")
     os.environ.pop("XDG_DATA_HOME", None)
     os.environ["PYTHON_KEYRING_BACKEND"] = "keyring.backends.null.Keyring"
+    # Deployment settings of a developer's shell or of a CI container must not change what the
+    # tests see (container-specific key guidance, journal mode, login password, allowed hosts).
+    for name in [n for n in os.environ if n.startswith(("PFA_PASSWORD", "PFA_ALLOWED_"))]:
+        del os.environ[name]
+    for name in (
+        "PFA_DB_JOURNAL_MODE",
+        "PFA_HOST",
+        "PFA_INSECURE_NO_AUTH",
+        "PFA_TRUSTED_PROXIES",
+        "PFA_COOKIE_SECURE",
+        "PFA_LLM_API_KEY_FILE",
+    ):
+        os.environ.pop(name, None)
+    os.environ["PFA_CONTAINER"] = "0"
 
 
 _isolate_process_from_the_real_user_profile()

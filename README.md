@@ -119,6 +119,86 @@ Running from a source checkout? After `git pull`, rebuild the web UI with
 `cd frontend && npm ci && npm run build` (an editable install never does; `serve` warns when the
 build is missing or stale).
 
+### Serving it on your home network
+
+By default `pfa serve` listens on this computer only. To reach the app from other devices on your
+home network (a spare PC or a home server), give it a login password and an address to listen on.
+**It is built for your home network only: it refuses connections from anywhere that is not a local
+(private) address, and you should never make it reachable from the internet.**
+
+```console
+$ printf '%s' 'a long passphrase of your own' > ~/.pfa-password && chmod 600 ~/.pfa-password
+$ PFA_PASSWORD_FILE=~/.pfa-password PFA_ALLOWED_HOSTS=nas.local,192.168.1.10 \
+    pfa serve --host 0.0.0.0 --no-open-browser          # then http://<this-machine>:8756
+```
+
+(`PFA_ALLOWED_HOSTS` lists the names or addresses you will browse to; a plain `pfa serve` on
+`127.0.0.1` still needs no password and no token handling on your part.)
+
+#### Creating the password
+
+Anything but loopback will not start without a password. There is **one shared password** (no user
+names or accounts: everyone who knows it sees the same data), at least **8 characters**; a long
+random one is best, because a login page on a home server is worth guessing at. The password is
+never stored by the app: it is read when the server starts and only a salted scrypt hash of it is
+kept, in memory. Pick one of three ways to hand it over, in order of preference:
+
+1. **A password file (recommended).** `PFA_PASSWORD_FILE=/path/to/file`, a file only you can read:
+
+   ```console
+   $ openssl rand -base64 24 > ~/.pfa-password     # a random password...
+   $ printf '%s' 'a long passphrase of your own' > ~/.pfa-password    # ...or type your own instead
+   $ chmod 600 ~/.pfa-password
+   ```
+
+   *Forgot it?* It is just a file: `cat ~/.pfa-password`. *Change it?* Write a new password into the
+   same file and restart `pfa serve`. Everyone is signed out whenever the server restarts.
+
+2. **Keep only a hash, so the password itself is written down nowhere.** Run the helper, type the
+   password twice (nothing is shown as you type), and it prints one line starting with `scrypt$`:
+
+   ```console
+   $ pfa auth hash-password
+   Password:
+   Repeat for confirmation:
+   scrypt$15$8$1$...$...
+   ```
+
+   Keep that line (just that line) in a file only you can read and point `PFA_PASSWORD_HASH_FILE`
+   at it, or set it as `PFA_PASSWORD_HASH`. A hash cannot be read back: if you forget the password,
+   make a new hash. Only one of the password and the hash may be set.
+
+3. **A plain environment variable (simplest, least private).** `PFA_PASSWORD="your password"`.
+   Anyone who can read the process environment or the file you set it in sees it. Fine for a first
+   try.
+
+When you open the site you get a plain page titled **Personal Finance Analyzer** with a single
+**Password** box and a **Sign in** button; after that the app opens, with **Sign out** at the top
+right. Five wrong passwords from one device within five minutes lock the login for that device for
+the rest of the window, even for the right password; wait and try again. (A device is its IPv4
+address, or its whole IPv6 /64, since one machine can use any address in it.) After 40 wrong
+passwords from all devices together, every other device gets a single try per window, so you can
+still sign in while someone guesses; after 200 attempts in five minutes the login refuses everyone,
+even the right password, until the window has passed.
+A session ends after 8 hours without use, or when the server restarts.
+
+#### Keeping it off the internet
+
+The app refuses computers outside your local network: a request from a public address gets
+`403 Forbidden` before the login page is even shown (private, link-local and loopback ranges are
+allowed; `PFA_ALLOWED_CLIENTS` changes that, for example `private,100.64.0.0/10` to add Tailscale).
+That is a safety net, not the lock on the door: behind some proxies and NAT layers the app cannot
+see who is really connecting (it logs a warning when it notices requests from a gateway address).
+What actually keeps your finances private:
+
+- **Never port-forward `8756` on your router** (and no "DMZ" host), and switch off UPnP/NAT-PMP
+  automatic port forwarding. Check from outside: on a phone with Wi-Fi off, the address
+  `http://<your public IP>:8756` must not load.
+- **Listen on the LAN address only** (`--host 192.168.1.10`) rather than every interface.
+- **To reach it from away from home, use a VPN** (Tailscale, WireGuard, or your router's built-in
+  VPN server), never an open port. A reverse proxy in front must stay LAN-only as well, and
+  needs `PFA_TRUSTED_PROXIES` set so the app can see who is really connecting.
+
 ## Upgrading from Spend Analyzer
 
 This project was called *Spend Analyzer* (package and command `spend-analyzer`). Nothing needs to be
@@ -247,6 +327,9 @@ This is the reason to run this instead of a hosted budgeting app.
 - **The local web server** binds `127.0.0.1` only, checks every request's `Host` header, and
   requires a random token minted fresh on every launch — so nothing else on your machine's network,
   let alone the internet, can reach it, and a malicious web page open in your browser can't either.
+  (Serving it on your home network with `--host` is the one deliberate exception: it refuses to
+  start without a login password and answers only clients on your local network; see
+  [Serving it on your home network](#serving-it-on-your-home-network).)
 
 See [docs/SECURITY_REVIEW.md](docs/SECURITY_REVIEW.md) for the full, code-verified security
 checklist, and [SECURITY.md](SECURITY.md) for the threat model and how to report a vulnerability.
@@ -422,7 +505,8 @@ how they map to categories are in [docs/TAX.md](docs/TAX.md).
 
 ```
 pfa migrate              create/upgrade the DB, sync the taxonomy and builtin rules
-pfa serve                start the local web server (binds 127.0.0.1, per-launch token)
+pfa serve                start the web server (127.0.0.1 + per-launch token; --host needs a password)
+pfa auth                 helpers for the web login (hash-password)
 pfa import <pdf>...      import statement PDFs (--pages, --parser-id llm)
 pfa classify             run the classification cascade over unclassified transactions
 pfa report               print monthly category totals for a date range
