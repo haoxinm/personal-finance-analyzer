@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from personal_finance_analyzer.api.app import create_app
 from personal_finance_analyzer.config import IngestConfig, PrivacyConfig, Settings, save_settings
-from personal_finance_analyzer.core.paths import statements_dir, tax_staging_dir
+from personal_finance_analyzer.core.paths import documents_dir, staging_dir, tax_staging_dir
 from personal_finance_analyzer.db.models import User
 from personal_finance_analyzer.ingest.tax import staging
 from tests.fixtures.gen.base import render_lines_pdf
@@ -150,7 +150,7 @@ def test_ownership_is_a_404(
     assert _source(client, {"id": 9999}, pdf_bytes).status_code == 404
 
 
-def test_staged_location_is_private_and_not_the_statements_dir(
+def test_staged_location_is_private_and_not_the_upload_or_documents_dir(
     client: TestClient, doc: dict[str, Any], pdf_bytes: bytes
 ) -> None:
     assert _source(client, doc, pdf_bytes).status_code == 200
@@ -159,7 +159,8 @@ def test_staged_location_is_private_and_not_the_statements_dir(
     if os.name == "posix":
         assert stat.S_IMODE(tax_staging_dir().stat().st_mode) == 0o700
         assert stat.S_IMODE(staged.stat().st_mode) == 0o600
-    assert list(statements_dir().glob("*.pdf")) == []
+    assert list(staging_dir().glob("*.pdf")) == []
+    assert not documents_dir().exists() or list(documents_dir().rglob("*.pdf")) == []
 
 
 def test_preview_equals_what_is_sent_and_the_copy_is_removed_after(
@@ -179,7 +180,8 @@ def test_preview_equals_what_is_sent_and_the_copy_is_removed_after(
         assert secret not in fake.last_user_text
     # Nothing persisted after the flow (store_tax_pdf_copies is off).
     assert _staged_files() == []
-    assert list(statements_dir().glob("*.pdf")) == []
+    assert list(staging_dir().glob("*.pdf")) == []
+    assert not documents_dir().exists() or list(documents_dir().rglob("*.pdf")) == []
     assert client.get(f"{base}/pages").status_code == 409
 
 

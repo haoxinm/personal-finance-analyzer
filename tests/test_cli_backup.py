@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
+from personal_finance_analyzer.backup import archive
 from personal_finance_analyzer.cli import app
 from personal_finance_analyzer.core.paths import PFA_HOME_ENV
 from tests.backup.support import DESCRIPTION, PASSPHRASE, USER_NAME, seed_home
@@ -29,6 +30,19 @@ def _use_home(monkeypatch: pytest.MonkeyPatch, path: Path) -> None:
     monkeypatch.setenv(PFA_HOME_ENV, str(path))
 
 
+def test_create_warns_about_a_file_too_large_to_restore(
+    seeded: Path, tmp_path: Path, pass_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(archive, "MAX_PDF_BYTES", 100)
+    big = seeded / "documents" / "Big scan.PDF"
+    big.write_bytes(b"%PDF-1.4\n" + b"x" * 500)
+    out = tmp_path / "all.pfabackup"
+    result = runner.invoke(app, ["backup", "create", str(out), "--passphrase-file", str(pass_file)])
+    assert result.exit_code == 0, result.output
+    assert "were not included because they are larger" in result.output
+    assert "Big scan.PDF" in result.output
+
+
 def test_create_inspect_restore_round_trip(
     seeded: Path, tmp_path: Path, pass_file: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -46,7 +60,7 @@ def test_create_inspect_restore_round_trip(
     assert inspected.exit_code == 0, inspected.output
     assert "Encrypted:  yes" in inspected.output
     assert "transactions" in inspected.output
-    assert "statement PDFs" in inspected.output
+    assert "PDF documents" in inspected.output
     # Counts and dates only: nothing personal comes out of `inspect`.
     for personal in (USER_NAME, DESCRIPTION, "Quillfeather", "Fixture Bank"):
         assert personal not in inspected.output
@@ -191,3 +205,51 @@ def test_missing_file_and_missing_database(tmp_path: Path, home: Path) -> None:
     )
     assert nothing.exit_code == 1
     assert "nothing to back up" in nothing.output
+
+
+def test_create_summary_never_reports_a_negative_file_count(home: Path, tmp_path: Path) -> None:
+    """Regression: the summary printed ``len(manifest.files) - 2`` "files", assuming a database
+    *and* a config.toml in every archive. A data directory with only a database (no settings file
+    yet, nothing imported) listed one member and printed ``-1 files``."""
+    from personal_finance_analyzer.core.paths import create_home_layout
+    from personal_finance_analyzer.db.migrate import upgrade_head
+
+    create_home_layout(home)
+    upgrade_head(f"sqlite:///{home / 'finance.db'}")
+    assert not (home / "config.toml").exists()
+    result = runner.invoke(
+        app, ["backup", "create", str(tmp_path / "bare.pfabackup"), "--no-encrypt"]
+    )
+    assert result.exit_code == 0, result.output
+    assert "-1 files" not in result.output
+    assert "0 PDF documents, 0 layout specs" in result.output
+
+
+def test_create_summary_counts_pdfs_and_specs(
+    seeded: Path, tmp_path: Path, pass_file: Path
+) -> None:
+    result = runner.invoke(
+        app,
+        ["backup", "create", str(tmp_path / "all.pfabackup"), "--passphrase-file", str(pass_file)],
+    )
+    assert "2 PDF documents, 1 layout specs" in result.output
+
+
+def test_restore_reports_the_documents_and_warns_about_unrelated_files(
+    seeded: Path, tmp_path: Path, pass_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    out = tmp_path / "all.pfabackup"
+    runner.invoke(app, ["backup", "create", str(out), "--passphrase-file", str(pass_file)])
+    other = tmp_path / "machine_b" / "PersonalFinanceAnalyzer"
+    nas = tmp_path / "nas"
+    nas.mkdir()
+    (nas / "my own file.pdf").write_bytes(b"%PDF- mine")
+    _use_home(monkeypatch, other)
+    monkeypatch.setenv("PFA_DOCUMENTS_DIR", str(nas))
+    result = runner.invoke(
+        app, ["backup", "restore", str(out), "--passphrase-file", str(pass_file)]
+    )
+    assert result.exit_code == 0, result.output
+    assert f"Documents: 2 PDF(s) restored into {nas}" in result.output
+    assert "1 other file(s)" in result.output and "left exactly as they are" in result.output
+    assert (nas / "my own file.pdf").read_bytes() == b"%PDF- mine"

@@ -83,12 +83,19 @@ export function LlmReadSection({ document: d }: { document: TaxDocument }) {
         className="flex flex-col gap-2 rounded-md border border-input p-3"
         data-testid="llm-read-section"
       >
+        {d.pdf_missing ? (
+          <p role="alert" className="text-xs text-destructive" data-testid="pdf-not-found">
+            PDF not found. The copy of this document is no longer in your
+            documents folder (it was moved out or deleted). Put it back, or
+            select the original file again below to read its pages.
+          </p>
+        ) : null}
         <p className="text-xs text-muted-foreground">
           {expired ? "The temporary copy has expired. " : null}
-          To read pages with your LLM, select the original file again (it isn’t
-          kept after import for privacy). It is held only for this session’s
-          need (about 30 minutes, or until the pages are sent) and checked to be
-          the same file.
+          To read pages with your LLM, select the original file again
+          {d.pdf_missing ? "" : " (it isn’t kept after import for privacy)"}. It
+          is held only for this session’s need (about 30 minutes, or until the
+          pages are sent) and checked to be the same file.
         </p>
         <FileDropZone
           onFiles={(files) => void onFiles(files)}

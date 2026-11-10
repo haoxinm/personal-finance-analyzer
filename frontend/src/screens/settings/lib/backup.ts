@@ -4,7 +4,8 @@
  *   POST /api/backup/export    body {passphrase, encrypt} -> the .pfabackup file
  *   POST /api/backup/restore   the raw file as an application/octet-stream body, the passphrase in the
  *                              X-Backup-Passphrase header (base64 of its UTF-8 bytes)
- *                              -> {created_at, counts, migrated, previous_dir}
+ *                              -> {created_at, counts, migrated, previous_dir,
+ *                              documents_restored, documents_unrelated, ...}
  *
  * The endpoints are in `src/api/schema.d.ts`, but the calls stay on `fetch` with hand-written
  * response types: the export is a binary download and the restore a raw-body upload, neither of
@@ -25,6 +26,13 @@ export interface RestoreResult {
   counts: Record<string, number>;
   migrated: boolean;
   previous_dir: string | null;
+  /** PDFs written into the documents folder, and ones already there with the same content. */
+  documents_restored?: number;
+  documents_already_present?: number;
+  /** Other files in the documents folder that are not part of the backup (left untouched). */
+  documents_unrelated?: number;
+  /** Set when some PDFs could not be moved into place and are still in this hidden folder. */
+  documents_pending?: string | null;
 }
 
 function readPfaToken(): string | undefined {
@@ -60,8 +68,38 @@ export function backupFilename(date: Date = new Date()): string {
   return `pfa-${date.toISOString().slice(0, 10)}.pfabackup`;
 }
 
+/** Files the backend left out of the download (a name that cannot be stored portably, or larger than
+ * a restore accepts): the total and the first few names. */
+export interface SkippedFiles {
+  count: number;
+  examples: string[];
+}
+
+export interface ExportedBackup {
+  blob: Blob;
+  /** Present when some files are NOT in the backup. */
+  skipped: SkippedFiles | null;
+}
+
+/** Reads the `X-Backup-Skipped` header (URL-quoted JSON); `null` when absent or unreadable. */
+export function parseSkipped(header: string | null): SkippedFiles | null {
+  if (!header) return null;
+  try {
+    const parsed: unknown = JSON.parse(decodeURIComponent(header));
+    if (parsed && typeof parsed === "object" && "count" in parsed && "examples" in parsed) {
+      const { count, examples } = parsed;
+      if (typeof count === "number" && Array.isArray(examples)) {
+        return { count, examples: examples.map(String) };
+      }
+    }
+  } catch {
+    // an unreadable header just means no warning
+  }
+  return null;
+}
+
 /** Asks the backend to build a backup. `passphrase: null` is an explicit "do not encrypt". */
-export async function exportBackup(passphrase: string | null): Promise<Blob> {
+export async function exportBackup(passphrase: string | null): Promise<ExportedBackup> {
   const response = await fetch(backupUrl("export"), {
     method: "POST",
     headers: { "Content-Type": "application/json", ...tokenHeaders() },
@@ -70,7 +108,7 @@ export async function exportBackup(passphrase: string | null): Promise<Blob> {
   if (!response.ok) {
     throw new Error(await readErrorDetail(response));
   }
-  return response.blob();
+  return { blob: await response.blob(), skipped: parseSkipped(response.headers.get("X-Backup-Skipped")) };
 }
 
 /** Header values are latin-1, so the passphrase travels as base64 of its UTF-8 bytes. */

@@ -811,6 +811,31 @@ describe("read pages with the LLM", () => {
     );
   });
 
+  it("says PDF not found when a kept copy was moved out or deleted", async () => {
+    setupLlm();
+    renderPanel([{ ...noCopy(), pdf_missing: true }]);
+    const section = await openSection();
+    expect(within(section).getByTestId("pdf-not-found")).toHaveTextContent(
+      /PDF not found.*no longer in your documents folder/s,
+    );
+    // It still offers the way out (select the same file again), without claiming it was never kept.
+    expect(
+      within(section).getByLabelText("Select tax_w2_normal.pdf again"),
+    ).toBeInTheDocument();
+    expect(within(section).queryByText(/isn.t kept after import/)).not.toBeInTheDocument();
+    expect(get).not.toHaveBeenCalledWith(
+      "/tax/documents/{document_id}/pages",
+      expect.anything(),
+    );
+  });
+
+  it("does not say PDF not found for a document that never kept a copy", async () => {
+    setupLlm();
+    renderPanel([noCopy()]);
+    const section = await openSection();
+    expect(within(section).queryByTestId("pdf-not-found")).not.toBeInTheDocument();
+  });
+
   it("shows the page picker after the same file is provided", async () => {
     setupLlm();
     post.mockImplementation((path: string) =>

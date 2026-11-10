@@ -47,6 +47,19 @@ def _counts_line(counts: dict[str, int]) -> str:
     return ", ".join(f"{n} {name.replace('_', ' ')}" for name, n in counts.items())
 
 
+def _is_pdf_member(path: str) -> bool:
+    return path.startswith(("documents/", "statements/", "incoming/"))
+
+
+def _files_line(manifest: archive.Manifest) -> str:
+    """ "12 PDF documents, 3 layout specs": what the archive holds besides the database and the
+    settings. (This used to be ``len(files) - 2``, which assumed a settings file was always
+    present and so printed ``-1 files`` for a data directory without a ``config.toml``.)"""
+    pdfs = sum(1 for f in manifest.files if _is_pdf_member(f.path))
+    specs = sum(1 for f in manifest.files if f.path.startswith("specs/"))
+    return f"{pdfs} PDF documents, {specs} layout specs"
+
+
 @backup_app.command(name="create")
 def backup_create(
     out: Annotated[
@@ -63,9 +76,9 @@ def backup_create(
     ] = False,
     force: Annotated[bool, typer.Option("--force", help="Overwrite OUT if it exists.")] = False,
 ) -> None:
-    """Write a backup of the whole data directory (database, statement PDFs, layout specs and
-    settings). Safe to run while `serve` is running. Encrypted with a passphrase unless
-    `--no-encrypt` is given."""
+    """Write a backup of the whole data directory (database, layout specs and settings) and of
+    the documents folder (your statement and tax PDFs). Safe to run while `serve` is running.
+    Encrypted with a passphrase unless `--no-encrypt` is given."""
     dest = out / archive.default_filename() if out.is_dir() else out
     if dest.exists() and not force:
         raise _fail(f"{dest} already exists; pass --force to overwrite it")
@@ -88,7 +101,24 @@ def backup_create(
         raise _fail(str(exc)) from exc
     size_mb = dest.stat().st_size / (1024 * 1024)
     typer.echo(f"Backup written to {dest} ({size_mb:.1f} MB)")
-    typer.echo(f"Contains: {_counts_line(manifest.counts)}; {len(manifest.files) - 2} files.")
+    typer.echo(f"Contains: {_counts_line(manifest.counts)}; {_files_line(manifest)}.")
+    if manifest.skipped:
+        typer.echo(
+            f"WARNING: {len(manifest.skipped)} file(s) in the documents folder were not included "
+            "because their names cannot be stored portably (rename them and back up again): "
+            + ", ".join(manifest.skipped[:5])
+            + (", ..." if len(manifest.skipped) > 5 else ""),
+            err=True,
+        )
+    if manifest.oversized:
+        typer.echo(
+            f"WARNING: {len(manifest.oversized)} file(s) were not included because they are larger "
+            "than a restore accepts (a PDF over 64 MiB, a settings file over 4 MiB, or more than "
+            "16 GiB in all), so they are NOT in this backup; copy them separately: "
+            + ", ".join(manifest.oversized[:5])
+            + (", ..." if len(manifest.oversized) > 5 else ""),
+            err=True,
+        )
     if passphrase is None:
         typer.echo(
             "WARNING: this backup is NOT encrypted; anyone who gets the file can read your "
@@ -110,7 +140,7 @@ def backup_inspect(
     it. An encrypted backup needs its passphrase."""
     info = _open_info(file, passphrase_file)
     manifest = info.manifest
-    pdfs = sum(1 for f in manifest.files if f.path.startswith("statements/"))
+    pdfs = sum(1 for f in manifest.files if _is_pdf_member(f.path))
     typer.echo(f"File:       {file}")
     typer.echo(f"Encrypted:  {'yes' if info.encrypted else 'no'}")
     typer.echo(
@@ -123,7 +153,7 @@ def backup_inspect(
     )
     for name, count in manifest.counts.items():
         typer.echo(f"  {name.replace('_', ' '):<14}{count}")
-    typer.echo(f"  {'statement PDFs':<14}{pdfs}")
+    typer.echo(f"  {'PDF documents':<14}{pdfs}")
     typer.echo(
         f"Total size: {sum(f.size for f in manifest.files) / (1024 * 1024):.1f} MB uncompressed"
     )
@@ -169,8 +199,10 @@ def backup_restore(
         ),
     ] = False,
 ) -> None:
-    """Restore a backup as this machine's data directory. The archive is fully verified before
-    anything is touched; an older database is migrated; stop `serve` first."""
+    """Restore a backup as this machine's data directory, and its PDFs into the documents folder
+    (written in place: files already there are never deleted or overwritten). The archive is
+    fully verified before anything is touched; an older database is migrated; stop `serve`
+    first."""
     if not file.is_file():
         raise _fail(f"{file}: no such file")
     try:
@@ -184,6 +216,30 @@ def backup_restore(
         typer.echo(f"Database upgraded from schema {manifest.schema_revision} to this version.")
     if result.previous_dir is not None:
         typer.echo(f"Your previous data directory was kept at {result.previous_dir}")
+    if result.documents_dir is not None:
+        typer.echo(
+            f"Documents: {result.documents_restored} PDF(s) restored into {result.documents_dir}"
+            + (
+                f" ({result.documents_already_present} already there)"
+                if result.documents_already_present
+                else ""
+            )
+            + "."
+        )
+        if result.documents_unrelated:
+            typer.echo(
+                f"NOTE: {result.documents_unrelated} other file(s) in {result.documents_dir} are "
+                "not part of this backup. They were left exactly as they are; delete them "
+                "yourself if you do not need them.",
+                err=True,
+            )
+        if result.documents_pending is not None:
+            typer.echo(
+                f"WARNING: some PDFs could not be moved into place and are still in "
+                f"{result.documents_pending}; move them into {result.documents_dir} by hand "
+                "(keep their sub-folders).",
+                err=True,
+            )
     if result.kept_secrets:
         typer.echo(
             "Your plaintext API key file (secrets/api_keys.toml) was carried over from the "

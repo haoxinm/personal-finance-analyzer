@@ -132,8 +132,9 @@ def delete_statement(statement_id: int, session: SessionDep) -> None:
     statement = crud.get_statement(session, statement_id)
     if statement is None:
         raise HTTPException(status_code=404, detail="statement not found")
-    crud.delete_statement(session, statement)
+    stored_path, sha256 = crud.delete_statement(session, statement)
     session.commit()
+    crud.discard_pdf_copy(session, stored_path, sha256)
 
 
 @router.get("/statements/{statement_id}/preview", response_model=schemas.StatementPreviewPage)
@@ -149,13 +150,7 @@ def preview_statement_page(
 
     pdf_path = crud.staged_pdf_path(statement)
     if pdf_path is None:
-        raise HTTPException(
-            status_code=404,
-            detail=(
-                "no PDF copy is available for this statement "
-                "([privacy] store_pdf_copies was off and it is already confirmed)"
-            ),
-        )
+        raise _pdf_unavailable(statement)
 
     try:
         page_preview = statement_preview.preview_page(pdf_path, page)
@@ -173,19 +168,39 @@ def preview_statement_page(
     )
 
 
+def _pdf_unavailable(statement: Statement) -> HTTPException:
+    """404 for a statement whose PDF cannot be read. ``code: pdf_not_found`` when a copy was kept
+    but is gone from the documents folder (the UI says so), ``pdf_not_kept`` when none was kept."""
+    if crud.statement_pdf_missing(statement):
+        return HTTPException(
+            status_code=404,
+            detail={
+                "code": "pdf_not_found",
+                "message": (
+                    "PDF not found: the copy of this statement is no longer in your documents "
+                    "folder (it was moved out or deleted). Put it back, or import it again."
+                ),
+            },
+        )
+    return HTTPException(
+        status_code=404,
+        detail={
+            "code": "pdf_not_kept",
+            "message": (
+                "no PDF copy is available for this statement "
+                "([privacy] store_pdf_copies was off and it is already confirmed)"
+            ),
+        },
+    )
+
+
 def _pdf_or_404(statement_id: int, session: Session) -> tuple[Statement, Path]:
     statement = crud.get_statement(session, statement_id)
     if statement is None:
         raise HTTPException(status_code=404, detail="statement not found")
     pdf_path = crud.staged_pdf_path(statement)
     if pdf_path is None:
-        raise HTTPException(
-            status_code=404,
-            detail=(
-                "no PDF copy is available for this statement "
-                "([privacy] store_pdf_copies was off and it is already confirmed)"
-            ),
-        )
+        raise _pdf_unavailable(statement)
     return statement, pdf_path
 
 

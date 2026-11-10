@@ -78,10 +78,16 @@ RUN chmod 0755 /usr/local/bin/pfa-entrypoint /usr/local/bin/pfa /usr/local/bin/p
  && mkdir -p /pfa \
  && chmod 0755 /pfa
 
-# PFA_HOME is the data directory: finance.db, config.toml, logs, statement PDFs. It sits one level
-# below the /pfa mount on purpose: restoring a backup stages the new data next to the old and swaps
-# the two directories, which needs a writable parent on the same filesystem and cannot be done to
-# a mount point itself. Mount one host directory at /pfa (see docker-compose.yml).
+# PFA_HOME is the data directory: finance.db, config.toml, logs. It sits one level below the /pfa
+# mount on purpose: restoring a backup stages the new data next to the old and swaps the two
+# directories, which needs a writable parent on the same filesystem and cannot be done to a mount
+# point itself. Mount one host directory at /pfa (see docker-compose.yml).
+#
+# PFA_DOCUMENTS_DIR is where your statement and tax PDFs are kept, under readable names
+# (Alex/Statements/Chase/2024-03 Chase credit 1234.pdf), so you can browse them on the NAS without
+# the app: /pfa/documents, a sibling of the data directory, so ./pfa/documents shows up next to
+# ./pfa/data. It can be bind-mounted on its own (for example an existing NAS share): documents are
+# written in place and the folder itself is never swapped or renamed, unlike the data directory.
 #
 # PFA_HOST/PFA_SERVER__PORT: listen on every interface of the container (docker publishes the
 # port); because that is beyond loopback, the app refuses to start without PFA_PASSWORD or
@@ -90,6 +96,7 @@ RUN chmod 0755 /usr/local/bin/pfa-entrypoint /usr/local/bin/pfa /usr/local/bin/p
 # for a D-Bus Secret Service that a container does not have.
 ENV PATH="/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/pfa/bin" \
     PFA_HOME=/pfa/data \
+    PFA_DOCUMENTS_DIR=/pfa/documents \
     PFA_HOST=0.0.0.0 \
     PFA_SERVER__PORT=8756 \
     PFA_CONTAINER=1 \

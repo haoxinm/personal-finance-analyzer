@@ -1064,6 +1064,9 @@ class TaxDocument(_Model):
     #: Is a PDF copy kept (`[privacy] store_tax_pdf_copies`)? Page thumbnails and reading chosen
     #: pages with the LLM need it.
     has_pdf: bool
+    #: A copy was kept but is no longer in the documents folder (moved out or deleted by hand and
+    #: not found by content either): the UI says "PDF not found". Only true when `has_pdf` is false.
+    pdf_missing: bool = False
     #: When the PDF the user re-selected for this document stops being available (ISO-8601 UTC);
     #: `None` = none staged. Only meaningful when `has_pdf` is false.
     staged_until: str | None = None

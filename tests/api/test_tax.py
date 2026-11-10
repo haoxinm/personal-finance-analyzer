@@ -13,7 +13,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from personal_finance_analyzer.api import schemas
-from personal_finance_analyzer.core.paths import statements_dir
+from personal_finance_analyzer.core.paths import documents_dir, staging_dir
 from personal_finance_analyzer.core.tax_types import (
     INCOME_CATEGORY_LABELS,
     TAX_CATEGORIES,
@@ -132,7 +132,8 @@ def test_upload_sanitizes_filename_and_keeps_no_pdf_copy(client: TestClient, use
     assert response.status_code == 201, response.text
     assert response.json()["document"]["original_name"] == "p_a_ss wd.pdf"
     # [privacy] store_tax_pdf_copies defaults to False: the staged upload is removed.
-    assert list(statements_dir().glob("*.pdf")) == []
+    assert list(staging_dir().glob("*.pdf")) == []
+    assert not documents_dir().exists() or list(documents_dir().rglob("*.pdf")) == []
 
 
 # --- import ------------------------------------------------------------------------------------

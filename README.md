@@ -87,8 +87,33 @@ counterpart except the layout mapper and the forecast.
 
 - **LLM** (off by default; local or remote), **Privacy** (names and numbers to strip before any LLM
   call), **Tax parameters** (the opt-in yearly check), and **Backup & restore**, which seals your
-  whole data directory into one passphrase-encrypted `.pfabackup` file for moving machines (see
-  [Moving to another machine](#moving-to-another-machine)).
+  whole data directory and your documents folder into one passphrase-encrypted `.pfabackup` file
+  for moving machines (see [Moving to another machine](#moving-to-another-machine)).
+
+### Your PDFs, readable without the app
+
+Every statement and (if you opt in) tax form you import is kept as an ordinary PDF in a **documents
+folder** with a name you can read and remember, next to, not inside, the database:
+
+```
+<documents folder>/
+  README.txt
+  Alex/Statements/Chase/2024-03 Chase credit 1234.pdf
+  Alex/Statements/Ally Bank/2024-03 Ally Bank checking 5678.pdf
+  Alex/Tax/2024/W-2 - Acme Corp.pdf
+  Alex/Tax/2024/1099-INT - Ally Bank.pdf
+  Shared/...                       not assigned to a person
+```
+
+Open it with Finder, Explorer, File Station or `ls`; copy, back up or print the files without the
+app. The default is `documents/` inside the data directory; `PFA_DOCUMENTS_DIR` (or
+`[storage] documents_dir` in `config.toml`) puts it anywhere else, for instance a NAS share (PDFs
+are fine on a network share, the database is not). In Docker it is `./pfa/documents`, beside
+`./pfa/data`. File names never contain an SSN, an EIN or a full account number. If you move or
+rename a file inside the folder the app still finds it; if you delete one the screens say "PDF not
+found". `pfa documents reorganize` re-applies the names after you rename a person or an account (the
+app never renames files by itself), and `pfa documents check` lists what is missing or not
+referenced. Details: [docs/CLI.md](docs/CLI.md#documents).
 
 ### Everyone gets their own view
 
@@ -263,7 +288,7 @@ reading the old directory:
 |---|---|---|
 | Data directory | `~/Library/Application Support/SpendAnalyzer` (macOS), `%LOCALAPPDATA%\SpendAnalyzer` (Windows), `~/.local/share/spend-analyzer` (Linux) | `.../PersonalFinanceAnalyzer`, `%LOCALAPPDATA%\PersonalFinanceAnalyzer`, `~/.local/share/personal-finance-analyzer`: the old directory is renamed in place (never copied). If that fails, or an old `spend-analyzer serve` still has the database open (stop it and restart), the old one keeps being used; if both exist the new one wins with a warning |
 | Database file | `spend.db` | `finance.db`, renamed inside whichever data directory you use |
-| Kept PDF copies | recorded by absolute path | the recorded paths are rewritten to the new directory, and copies are looked up under the current directory if a recorded path is stale |
+| Kept PDF copies | `statements/<sha256>.pdf`, recorded by absolute path | moved to readable names in the [documents folder](#your-pdfs-readable-without-the-app) the first time a command that opens the database runs (copy, flush, record, then delete the old file; safe to interrupt) |
 | LLM API key (OS credential store) | service `spend-analyzer` | service `personal-finance-analyzer`, copied and the old entry deleted the first time the key is really used (an LLM call or a save), never by `pfa doctor`, `pfa llm show` or the Settings screen, which only read it |
 | Environment variables | `SPEND_ANALYZER_HOME`, `SPEND_ANALYZER_LLM_API_KEY`, `SPEND_ANALYZER_<SECTION>__<FIELD>` | `PFA_HOME`, `PFA_LLM_API_KEY`, `PFA_<SECTION>__<FIELD>`; the old names still work, the new ones win |
 | Command | `spend-analyzer ...` | `pfa ...`; `spend-analyzer` remains as a deprecated alias that prints a one-line stderr notice |
@@ -392,14 +417,17 @@ $ pfa serve
 ```
 
 The same two actions are in the web UI under **Settings -> Backup & restore**. A backup holds your
-database, the kept statement PDFs, layout specs and settings, and is **encrypted with a passphrase
-by default** because it contains everything the app knows about your finances (there is no way to
+database, your documents folder (the PDFs, under their readable names), layout specs and settings,
+and is **encrypted with a passphrase by default** because it contains everything the app knows about your finances (there is no way to
 recover a lost passphrase). It never contains your LLM API key: that stays in the OS credential
 store of the machine that made it, so enter it again on the new one. Restore checks the whole file
 before touching anything, migrates a backup made by an older version, and refuses one from a newer
 version (including `.spendbackup` files made before the rename). If the new machine already has data, `restore` needs `--replace`, which moves the existing
 data directory aside to `<name>.<timestamp>.before-restore` instead of deleting it; the plaintext key file and the `[secrets]` opt-in of the machine being
-restored into are kept (they are not part of a backup). See [docs/CLI.md](docs/CLI.md#backup).
+restored into are kept (they are not part of a backup). The PDFs are written into your documents
+folder in place: nothing already there is deleted or overwritten (files that are not part of the backup
+are reported, not removed), so the folder can be a mount point or a share. See
+[docs/CLI.md](docs/CLI.md#backup).
 
 ## Using an LLM (local or remote)
 
@@ -556,6 +584,7 @@ pfa classify             run the classification cascade over unclassified transa
 pfa report               print monthly category totals for a date range
 pfa export               export transactions to CSV/JSON (never includes account masks)
 pfa backup               move all data to another machine (create / inspect / restore)
+pfa documents            your PDFs under readable names (where / reorganize [--dry-run] / check)
 pfa llm                  configure the LLM (show / set / enable / disable / set-key / clear-key / test)
 pfa doctor               diagnose the local install: Python, data dir, DB, secret backend (read-only; --write-test), LLM
 pfa eval                 run the classifier evaluation harness against a labelled CSV

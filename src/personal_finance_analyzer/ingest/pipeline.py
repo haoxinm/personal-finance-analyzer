@@ -48,9 +48,10 @@ from sqlalchemy.orm import Session
 
 from personal_finance_analyzer.classify.kinds import is_spend, resolve_kind
 from personal_finance_analyzer.config import Settings, load_settings
+from personal_finance_analyzer.core import documents as docs
 from personal_finance_analyzer.core.errors import ParserError, PfaError, UnsupportedLayoutError
 from personal_finance_analyzer.core.logging import get_logger
-from personal_finance_analyzer.core.paths import ensure_home, kept_pdf, statements_dir
+from personal_finance_analyzer.core.paths import ensure_home, staging_dir
 from personal_finance_analyzer.core.pii import merge_entries
 from personal_finance_analyzer.core.types import (
     USER_CLASSIFIED,
@@ -58,6 +59,7 @@ from personal_finance_analyzer.core.types import (
     ParsedStatement,
     StatementParser,
 )
+from personal_finance_analyzer.db import documents as doc_files
 from personal_finance_analyzer.db.models import Account, Issuer, LayoutSpec, Statement, Transaction
 from personal_finance_analyzer.db.pii_terms import user_pii_terms
 from personal_finance_analyzer.ingest import issuer_match
@@ -142,20 +144,21 @@ class ImportResult:
 
 # ------------------------------------------------------------------------------------------------
 # Durable staging: every uploaded PDF is written under the data dir at propose time, keyed by its
-# content hash, so `confirm_import`/`reparse` can re-read it from *any* process — the CLI's A33
-# "leave it `awaiting_extractor` and print the command that confirms it" is a different process
-# from the one that ran `propose_import`, and the server can restart in between either way.
+# content hash (`incoming/<sha256>.pdf`), so `confirm_import`/`reparse` can re-read it from *any*
+# process — the CLI's A33 "leave it `awaiting_extractor` and print the command that confirms it" is
+# a different process from the one that ran `propose_import`, and the server can restart in
+# between either way.
 #
-# `[privacy] store_pdf_copies` still controls whether the copy is *kept* (`statements.stored_path`
-# is set only when it is, per A12/§3.11): when it is `False`, the staged file is deleted once Phase
-# 2 reaches a terminal outcome (`parsed`, `error`, or `unsupported_layout`) — the module docstring
-# on §3.12a's frozen signatures already explains why `user_id` and the file both have to be
-# reachable from the `statements` row alone, not from a Python-level `Session`.
+# `[privacy] store_pdf_copies` controls whether the PDF is *kept*: when it is, Phase 2 reaching a
+# terminal outcome files the staged copy in the documents directory under a readable name (the
+# person, institution, account and statement month are only known by then) and records that path
+# in `statements.stored_path`; when it is `False` the staged file is deleted instead and
+# `stored_path` stays NULL. Until then `stored_path` is NULL and the staged copy is the PDF.
 # ------------------------------------------------------------------------------------------------
 
 
 def _staged_pdf_path(file_sha256: str) -> Path:
-    return statements_dir() / f"{file_sha256}.pdf"
+    return staging_dir() / f"{file_sha256}.pdf"
 
 
 def _stage_pdf(pdf_path: Path, file_sha256: str) -> Path:
@@ -168,13 +171,16 @@ def _stage_pdf(pdf_path: Path, file_sha256: str) -> Path:
     return dest
 
 
-def _unstage_pdf_if_not_kept(file_sha256: str, settings: Settings) -> None:
-    """Delete the staged copy once Phase 2 reaches a terminal outcome, unless
-    `[privacy] store_pdf_copies` asked to keep it (in which case `statements.stored_path` already
-    points at it and it stays)."""
-    if settings.privacy.store_pdf_copies:
+def _finish_pdf(session: Session, statement: Statement, source: Path, settings: Settings) -> None:
+    """Phase 2 reached a terminal outcome: file the PDF under its readable name when
+    `[privacy] store_pdf_copies` asks to keep it, and remove the staged upload either way (unless
+    filing failed, in which case the staged copy stays and keeps the statement usable)."""
+    if (
+        settings.privacy.store_pdf_copies
+        and doc_files.file_statement(session, statement, source) is None
+    ):
         return
-    _staged_pdf_path(file_sha256).unlink(missing_ok=True)
+    _staged_pdf_path(statement.file_sha256).unlink(missing_ok=True)
 
 
 # ------------------------------------------------------------------------------------------------
@@ -190,7 +196,8 @@ def propose_import(
 
     Idempotency (I9): if a statement with this file's SHA-256 already exists, nothing is
     re-extracted or re-scored. A `status='parsed'` row is reported back as `status='duplicate'`
-    (this upload is a no-op); its staged PDF, if any, is no longer needed and is left alone. Any
+    (this upload is a no-op); the upload's staged PDF, if any, is deleted (the kept copy, if any,
+    is already filed). Any
     other existing status (including `'awaiting_extractor'` itself) is reported as-is (a failed
     `'error'`/`'unsupported_layout'` row is reopened as `'awaiting_extractor'`, keeping its
     `error_detail`, and is never `confident`), and the
@@ -231,6 +238,10 @@ def propose_import(
                 # reported as confident, so nothing auto-confirms the parser that just failed.
                 existing.status = STATUS_AWAITING_EXTRACTOR
             session.commit()
+        if existing.status == STATUS_PARSED:
+            # Nothing to confirm and the kept copy (if any) is already filed under its readable
+            # name: the upload that arrived with this duplicate is just a stray hash-named copy.
+            _staged_pdf_path(file_sha256).unlink(missing_ok=True)
         status = "duplicate" if existing.status == STATUS_PARSED else existing.status
         return ImportProposal(
             statement_id=existing.id,
@@ -246,14 +257,13 @@ def propose_import(
     doc = extract(pdf_path)
     settings = load_settings()
     _stage_pdf(pdf_path, file_sha256)
-    stored_path = str(_staged_pdf_path(file_sha256)) if settings.privacy.store_pdf_copies else None
 
     if not doc.has_text_layer:
         statement = Statement(
             user_id=user_id,
             file_sha256=file_sha256,
             original_name=original_name,
-            stored_path=stored_path,
+            stored_path=None,
             page_count=doc.page_count,
             status=STATUS_NO_TEXT_LAYER,
             error_detail=NO_TEXT_LAYER_MESSAGE,
@@ -261,7 +271,7 @@ def propose_import(
         )
         session.add(statement)
         session.commit()
-        _unstage_pdf_if_not_kept(file_sha256, settings)
+        _finish_pdf(session, statement, _staged_pdf_path(file_sha256), settings)
         return ImportProposal(
             statement_id=statement.id,
             status=STATUS_NO_TEXT_LAYER,
@@ -294,7 +304,7 @@ def propose_import(
         user_id=user_id,
         file_sha256=file_sha256,
         original_name=original_name,
-        stored_path=stored_path,
+        stored_path=None,
         page_count=doc.page_count,
         issuer_id=issuer_id,
         layout_spec_id=layout_spec_id,
@@ -464,7 +474,7 @@ def confirm_import(
         layout_spec_id=layout_spec_id,
         remember=remember,
     )
-    _unstage_pdf_if_not_kept(statement.file_sha256, settings)
+    _finish_pdf(session, statement, path, settings)
     return result
 
 
@@ -486,8 +496,10 @@ def _resolve_source(statement: Statement) -> tuple[int, Path]:
         raise PfaError(
             f"statement {statement.id} has no user_id; it was not created by propose_import"
         )
-    path = _staged_pdf_path(statement.file_sha256)
-    if not path.exists():
+    path = docs.kept_pdf(statement.stored_path, statement.file_sha256) or docs.staged_pdf(
+        statement.file_sha256
+    )
+    if path is None:
         raise PfaError(
             f"statement {statement.id} has no staged PDF on disk; re-propose the same file to "
             "restage it before confirming"
@@ -962,9 +974,14 @@ def reparse(
     if account is None:  # pragma: no cover - defensive; FK integrity guarantees this
         raise PfaError(f"account {statement.account_id} not found")
 
-    # The recorded path is absolute and goes stale when the data directory moves; kept_pdf falls
-    # back to the copy under the current data directory (statements/<sha256>.pdf).
-    pdf_path = kept_pdf(statement.stored_path, statement.file_sha256) or Path(statement.stored_path)
+    # The recorded path is relative to the documents directory; kept_pdf falls back to finding
+    # the file by content when the user moved or renamed it.
+    pdf_path = docs.kept_pdf(statement.stored_path, statement.file_sha256)
+    if pdf_path is None:
+        raise PfaError(
+            f"the PDF of statement {statement_id} was not found in the documents folder "
+            "(it was moved out or deleted); put it back to reparse"
+        )
     full_doc = extract(pdf_path)
     doc = _apply_page_selection(statement, full_doc, pages)
     parser = _resolve_parser(

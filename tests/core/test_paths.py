@@ -24,7 +24,7 @@ def test_get_home_honors_env_override(home: Path) -> None:
 def test_ensure_home_creates_subdirs_with_0700(home: Path) -> None:
     result = paths.ensure_home()
     assert result == home
-    for name in ("statements", "extract_cache", "specs", "logs"):
+    for name in ("incoming", "extract_cache", "specs", "logs"):
         sub = home / name
         assert sub.is_dir()
         mode = stat.S_IMODE(sub.stat().st_mode)
@@ -34,7 +34,9 @@ def test_ensure_home_creates_subdirs_with_0700(home: Path) -> None:
 def test_derived_paths_live_under_home(home: Path) -> None:
     assert paths.db_path() == home / "finance.db"
     assert paths.config_path() == home / "config.toml"
-    assert paths.statements_dir() == home / "statements"
+    assert paths.legacy_statements_dir() == home / "statements"
+    assert paths.staging_dir() == home / "incoming"
+    assert paths.documents_dir() == home / "documents"
     assert paths.extract_cache_dir() == home / "extract_cache"
     assert paths.specs_dir() == home / "specs"
     assert paths.logs_dir() == home / "logs"
@@ -179,7 +181,8 @@ def test_prepare_home_on_a_fresh_install_creates_the_new_layout(
 ) -> None:
     new, legacy = defaults
     assert paths.prepare_home() == new
-    assert (new / "statements").is_dir()
+    assert (new / "incoming").is_dir()
+    assert not (new / "statements").exists()  # nothing new is kept there any more
     assert not legacy.exists()
 
 
@@ -444,7 +447,7 @@ def _stored_paths(db_file: Path) -> dict[str, list[str | None]]:
 def _legacy_install(legacy: Path) -> dict[str, str]:
     """A pre-rename data directory: a migrated ``spend.db`` whose rows record absolute paths into
     this directory, and the PDFs they name."""
-    shas = seed_home(legacy)
+    shas = seed_home(legacy, legacy=True)
     (legacy / "finance.db").rename(legacy / "spend.db")
     return shas
 
@@ -532,16 +535,27 @@ def test_rewrite_failure_is_logged_and_leaves_the_rows_unchanged(
     assert any("could not update the recorded PDF paths" in m for m in warnings_logged)
 
 
-def test_kept_pdf_prefers_the_recorded_path_then_the_current_home(home: Path) -> None:
-    paths.ensure_home()
-    sha = "ab" * 32
-    current = home / "statements" / f"{sha}.pdf"
-    current.write_bytes(b"%PDF-")
+def test_kept_pdf_finds_the_recorded_file_then_falls_back(home: Path) -> None:
+    from personal_finance_analyzer.core import documents
 
-    assert paths.kept_pdf(None, sha) == current  # no recorded path: where this version keeps it
-    assert paths.kept_pdf("/old/machine/statements/x.pdf", sha) == current  # stale record
-    recorded = home / "elsewhere.pdf"
-    recorded.write_bytes(b"%PDF-")
-    assert paths.kept_pdf(str(recorded), sha) == recorded  # a record that still exists wins
-    current.unlink()
-    assert paths.kept_pdf("/old/machine/statements/x.pdf", sha) is None
+    sha = "ab" * 32
+    rel = "Alex/Statements/Chase/2024-03 Chase.pdf"
+    kept = home / "documents" / rel
+    kept.parent.mkdir(parents=True)
+    kept.write_bytes(b"%PDF-")
+
+    assert documents.kept_pdf(rel, sha) == kept  # a relative record resolves inside the folder
+    assert documents.kept_pdf(None, sha) is None  # a row that kept no copy has none
+    legacy = home / "statements" / f"{sha}.pdf"
+    legacy.parent.mkdir()
+    legacy.write_bytes(b"%PDF-")
+    kept.unlink()
+    # The record is gone and nothing in the folder matches: the old statements/ copy is the last
+    # resort (the one-time upgrade has not moved it yet), also for a stale absolute record.
+    assert documents.kept_pdf(rel, sha) == legacy
+    assert documents.kept_pdf("/old/machine/statements/x.pdf", sha) == legacy
+    elsewhere = home / "elsewhere.pdf"
+    elsewhere.write_bytes(b"%PDF-")
+    assert documents.kept_pdf(str(elsewhere), sha) == elsewhere  # an absolute record that exists
+    legacy.unlink()
+    assert documents.kept_pdf("/old/machine/statements/x.pdf", sha) is None

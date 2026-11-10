@@ -105,16 +105,23 @@ def test_round_trip_reproduces_rows_and_files(
     assert not result.migrated
 
     for table in _ALL_TABLES:
-        assert table_rows(home_b / "finance.db", table, skip=("stored_path",)) == table_rows(
-            home_a / "finance.db", table, skip=("stored_path",)
+        assert table_rows(home_b / "finance.db", table) == table_rows(
+            home_a / "finance.db", table
         ), table
-    for sha in shas.values():
-        name = f"{sha}.pdf"
-        assert (home_b / "statements" / name).read_bytes() == (
-            home_a / "statements" / name
+    # The PDFs come back under the same readable names, and the database still names them.
+    for rel in (shas["statement_rel"], shas["tax_rel"]):
+        assert (home_b / "documents" / rel).read_bytes() == (
+            home_a / "documents" / rel
         ).read_bytes()
+    assert table_rows(home_b / "finance.db", "statements") == table_rows(
+        home_a / "finance.db", "statements"
+    )
+    assert result.documents_restored == 2
+    assert result.documents_dir == home_b / "documents"
+    assert result.documents_unrelated == 0
+    assert not (home_b / "statements").exists()
     assert (home_b / "specs" / "my-bank.yaml").read_text(encoding="utf-8") == "name: my-bank\n"
-    for sub in ("statements", "extract_cache", "specs", "logs"):
+    for sub in ("incoming", "extract_cache", "specs", "logs"):
         assert (home_b / sub).is_dir()
 
 
@@ -171,10 +178,10 @@ def test_legacy_archive_is_inspected_and_restored(
     assert (home_b / "finance.db").is_file()
     assert not (home_b / "spend.db").exists()
     assert not (home_b / "db").exists()
-    assert table_rows(home_b / "finance.db", "transactions", skip=("stored_path",)) == table_rows(
-        home_a / "finance.db", "transactions", skip=("stored_path",)
+    assert table_rows(home_b / "finance.db", "transactions") == table_rows(
+        home_a / "finance.db", "transactions"
     )
-    assert (home_b / "statements" / f"{shas['statement_sha']}.pdf").is_file()
+    assert (home_b / "documents" / shas["statement_rel"]).is_file()
 
 
 def test_manifest_listing_both_database_members_is_rejected(
@@ -214,34 +221,21 @@ def test_backup_of_a_data_dir_that_still_has_spend_db(
     )  # always written under the new name
 
 
-def test_stored_paths_point_into_the_new_home(
+def test_stored_paths_are_relative_to_the_documents_folder(
     source: tuple[Path, dict[str, str]], tmp_path: Path
 ) -> None:
-    home_a, shas = source
-    # A backup made on Windows holds backslash paths; one whose PDF was not kept holds a path too.
-    con = sqlite3.connect(home_a / "finance.db")
-    con.execute(
-        "UPDATE statements SET stored_path = ?",
-        (
-            rf"C:\Users\x\AppData\Local\PersonalFinanceAnalyzer\statements\{shas['statement_sha']}.pdf",
-        ),
-    )
-    con.execute("UPDATE tax_documents SET stored_path = '/old/machine/statements/missing.pdf'")
-    con.commit()
-    con.close()
+    _home_a, shas = source
     backup = tmp_path / "all.pfabackup"
     archive.create_backup(backup, passphrase=None)
-
     home_b = _target(tmp_path)
-    archive.restore_backup(backup, passphrase=None, home=home_b)
+    documents_b = tmp_path / "nas" / "docs"
+    result = archive.restore_backup(backup, passphrase=None, home=home_b, documents=documents_b)
     db = home_b / "finance.db"
-    assert table_rows(db, "statements")[0][
-        table_columns(db, "statements").index("stored_path")
-    ] == str(home_b / "statements" / f"{shas['statement_sha']}.pdf")
-    assert (
-        table_rows(db, "tax_documents")[0][table_columns(db, "tax_documents").index("stored_path")]
-        is None
-    )
+    column = table_columns(db, "statements").index("stored_path")
+    assert [row[column] for row in table_rows(db, "statements")] == [shas["statement_rel"]]
+    assert (documents_b / shas["statement_rel"]).is_file()
+    assert not (home_b / "documents").exists()  # nothing lands in the data directory
+    assert result.documents_dir == documents_b
 
 
 def test_archive_holds_only_allow_listed_members_and_no_secrets(
@@ -270,8 +264,8 @@ def test_archive_holds_only_allow_listed_members_and_no_secrets(
         "db/finance.db",
         "config.toml",
         "specs/my-bank.yaml",
-        f"statements/{shas['statement_sha']}.pdf",
-        f"statements/{shas['tax_sha']}.pdf",
+        f"documents/{shas['statement_rel']}",
+        f"documents/{shas['tax_rel']}",
     }
     # Never archived: the cache, logs, tax staging, the transient upload, the keychain/env key,
     # and anything secret-shaped in config.toml.
@@ -364,7 +358,7 @@ def test_tampered_member_is_rejected_by_hash(
     archive.create_backup(good, passphrase=None)
     tampered = tmp_path / "tampered.pfabackup"
     _rewrite_zip(
-        good, tampered, {f"statements/{shas['statement_sha']}.pdf": b"%PDF-1.4 swapped content"}
+        good, tampered, {f"documents/{shas['statement_rel']}": b"%PDF-1.4 swapped content"}
     )
     home_b = _target(tmp_path)
     seed_home(home_b)
@@ -513,7 +507,12 @@ def test_replace_moves_old_dir_aside_and_keeps_it(
     assert result.previous_dir.parent == home_b.parent
     assert result.previous_dir.name.startswith(f"{home_b.name}.")
     assert result.previous_dir.name.endswith(".before-restore")
-    assert tree(result.previous_dir) == before
+    # The documents folder is the user's, not part of the data directory that is replaced: it
+    # stays where it was (inside the restored directory) rather than going to *.before-restore.
+    assert tree(result.previous_dir) == {
+        k: v for k, v in before.items() if not k.startswith("documents")
+    }
+    assert (home_b / "documents").is_dir()
     assert not (home_b / "specs" / "only-on-b.yaml").exists()
     assert (home_b / "finance.db").is_file()
 

@@ -8,6 +8,7 @@ import { useToast } from "@/components/ui/use-toast";
 import {
   MIN_PASSPHRASE_LENGTH,
   type RestoreResult,
+  type SkippedFiles,
   backupFilename,
   saveBlob,
   useExportBackup,
@@ -31,6 +32,8 @@ export function BackupSection() {
   const [passphrase, setPassphrase] = React.useState("");
   const [confirmPassphrase, setConfirmPassphrase] = React.useState("");
 
+  const [skipped, setSkipped] = React.useState<SkippedFiles | null>(null);
+
   const [file, setFile] = React.useState<File | null>(null);
   const [restorePassphrase, setRestorePassphrase] = React.useState("");
   const [restored, setRestored] = React.useState<RestoreResult | null>(null);
@@ -46,10 +49,11 @@ export function BackupSection() {
     exportBackup.mutate(
       { passphrase: encrypt ? passphrase : null },
       {
-        onSuccess: (blob) => {
+        onSuccess: ({ blob, skipped }) => {
           saveBlob(blob, backupFilename());
           setPassphrase("");
           setConfirmPassphrase("");
+          setSkipped(skipped);
           toast({ title: "Backup downloaded", description: "Keep the passphrase: it cannot be recovered." });
         },
         onError: (err) => toast({ title: "Could not create the backup", description: String(err), variant: "destructive" }),
@@ -142,6 +146,13 @@ export function BackupSection() {
               {exportBackup.isPending ? "Preparing backup…" : "Download backup"}
             </Button>
           </div>
+          {skipped ? (
+            <p role="alert" className="text-xs text-destructive">
+              {skipped.count} file(s) in your documents folder are NOT in this backup, because their names cannot be
+              stored portably or they are larger than a restore accepts (a PDF over 64 MiB): {skipped.examples.join(", ")}
+              {skipped.count > skipped.examples.length ? ", ..." : ""}. Rename them or copy them separately.
+            </p>
+          ) : null}
         </div>
 
         <div className="flex flex-col gap-3 border-t pt-4">
@@ -186,6 +197,26 @@ export function BackupSection() {
               {restored.migrated ? <span>Its database was upgraded to this version.</span> : null}
               {restored.previous_dir ? (
                 <span className="text-xs text-muted-foreground">Your previous data was kept at {restored.previous_dir}</span>
+              ) : null}
+              {restored.documents_restored ? (
+                <span>
+                  {restored.documents_restored} PDF{restored.documents_restored === 1 ? "" : "s"} restored into your
+                  documents folder.
+                </span>
+              ) : null}
+              {restored.documents_unrelated ? (
+                <span className="text-xs text-muted-foreground">
+                  {restored.documents_unrelated} other file{restored.documents_unrelated === 1 ? " is" : "s are"} in
+                  your documents folder that {restored.documents_unrelated === 1 ? "is" : "are"} not part of this
+                  backup. {restored.documents_unrelated === 1 ? "It was" : "They were"} left exactly as{" "}
+                  {restored.documents_unrelated === 1 ? "it is" : "they are"}.
+                </span>
+              ) : null}
+              {restored.documents_pending ? (
+                <span role="alert" className="text-sm text-destructive">
+                  Some PDFs could not be moved into your documents folder and are still in{" "}
+                  {restored.documents_pending}. Move them into the documents folder by hand.
+                </span>
               ) : null}
               <span className="text-xs text-muted-foreground">
                 If you use an LLM that needs an API key, enter it again under LLM provider.

@@ -14,6 +14,7 @@ from personal_finance_analyzer.db.models import (
     Job,
     Statement,
     TaxDocument,
+    TaxForm,
     Transaction,
     User,
 )
@@ -48,21 +49,41 @@ def pdf_bytes(tag: str) -> bytes:
     return b"%PDF-1.4\n" + tag.encode() * 500 + b"\n%%EOF"
 
 
-def seed_home(home: Path) -> dict[str, str]:
+STATEMENT_REL = f"{USER_NAME}/Statements/Fixture Bank/2026-01 Fixture Bank credit 9876.pdf"
+TAX_REL = f"{USER_NAME}/Tax/2025/W-2 - Acme Corp.pdf"
+
+
+def seed_home(home: Path, *, legacy: bool = False, documents: Path | None = None) -> dict[str, str]:
     """Create ``home`` as a migrated data directory holding one of everything a backup carries,
-    plus the things it must leave out. Returns ``{"statement_sha": ..., "tax_sha": ...}``."""
+    plus the things it must leave out. The PDFs are in the documents folder (``documents``,
+    default ``<home>/documents``) under readable names and the database records them relative to
+    it; ``legacy=True`` lays them out the way versions before the documents folder did instead
+    (hash-named in ``<home>/statements``, absolute ``stored_path``). Returns the PDFs' hashes
+    (``statement_sha``, ``tax_sha``) and their relative paths (``statement_rel``, ``tax_rel``)."""
     create_home_layout(home)
     db_file = home / "finance.db"
     upgrade_head(f"sqlite:///{db_file}")
 
     statement_pdf = pdf_bytes("statement")
     statement_sha = hashlib.sha256(statement_pdf).hexdigest()
-    (home / "statements" / f"{statement_sha}.pdf").write_bytes(statement_pdf)
     tax_pdf = pdf_bytes("taxform")
     tax_sha = hashlib.sha256(tax_pdf).hexdigest()
-    (home / "statements" / f"{tax_sha}.pdf").write_bytes(tax_pdf)
-    # A transient upload temp file sits next to the real ones; it must not be archived.
-    (home / "statements" / "tmpabcd1234.pdf").write_bytes(b"%PDF-partial")
+    if legacy:
+        legacy_dir = home / "statements"
+        legacy_dir.mkdir(exist_ok=True)
+        (legacy_dir / f"{statement_sha}.pdf").write_bytes(statement_pdf)
+        (legacy_dir / f"{tax_sha}.pdf").write_bytes(tax_pdf)
+        # A transient upload temp file sits next to the real ones; it must not be archived.
+        (legacy_dir / "tmpabcd1234.pdf").write_bytes(b"%PDF-partial")
+        statement_stored = str(legacy_dir / f"{statement_sha}.pdf")
+        tax_stored = str(legacy_dir / f"{tax_sha}.pdf")
+    else:
+        docs = documents if documents is not None else home / "documents"
+        for rel, data in ((STATEMENT_REL, statement_pdf), (TAX_REL, tax_pdf)):
+            path = docs.joinpath(*rel.split("/"))
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
+        statement_stored, tax_stored = STATEMENT_REL, TAX_REL
 
     engine = make_engine_for_path(db_file)
     try:
@@ -75,7 +96,7 @@ def seed_home(home: Path) -> dict[str, str]:
                 user_id=user.id,
                 issuer_id=issuer.id,
                 account_type="credit",
-                display_name="Card",
+                display_name="Fixture Bank credit ...9876",
                 mask="9876",
             )
             session.add(account)
@@ -85,7 +106,8 @@ def seed_home(home: Path) -> dict[str, str]:
                 user_id=user.id,
                 file_sha256=statement_sha,
                 original_name="jan.pdf",
-                stored_path=str(home / "statements" / f"{statement_sha}.pdf"),
+                stored_path=statement_stored,
+                period_end="2026-01-31",
                 status="parsed",
             )
             session.add(statement)
@@ -106,14 +128,25 @@ def seed_home(home: Path) -> dict[str, str]:
                     dedupe_hash="h1",
                 )
             )
+            document = TaxDocument(
+                user_id=user.id,
+                file_sha256=tax_sha,
+                original_name="w2.pdf",
+                stored_path=tax_stored,
+                tax_year=2025,
+                status="parsed",
+            )
+            session.add(document)
+            session.flush()
             session.add(
-                TaxDocument(
+                TaxForm(
+                    document_id=document.id,
                     user_id=user.id,
-                    file_sha256=tax_sha,
-                    original_name="w2.pdf",
-                    stored_path=str(home / "statements" / f"{tax_sha}.pdf"),
                     tax_year=2025,
-                    status="parsed",
+                    form_type="w2",
+                    role="source",
+                    payer_name="Acme Corp",
+                    fingerprint="fixture-fingerprint",
                 )
             )
             session.add(Job(id="job-1", kind="import", status="queued"))
@@ -128,7 +161,12 @@ def seed_home(home: Path) -> dict[str, str]:
     (home / "logs" / "app.log").write_text("a log line", encoding="utf-8")
     (home / "tax_staging").mkdir()
     (home / "tax_staging" / "1.pdf").write_bytes(pdf_bytes("staged"))
-    return {"statement_sha": statement_sha, "tax_sha": tax_sha}
+    return {
+        "statement_sha": statement_sha,
+        "tax_sha": tax_sha,
+        "statement_rel": STATEMENT_REL,
+        "tax_rel": TAX_REL,
+    }
 
 
 def table_rows(

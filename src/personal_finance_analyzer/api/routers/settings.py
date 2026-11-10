@@ -156,6 +156,8 @@ def put_settings(body: schemas.Settings) -> schemas.Settings:
             if "tax" in body.model_fields_set
             else current.tax
         ),
+        # config.toml-only: the Settings API must not reset it.
+        storage=current.storage,
         # Changed only through `PUT /settings/secret-storage`, which carries the warning.
         secrets=current.secrets,
     )

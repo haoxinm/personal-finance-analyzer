@@ -6,7 +6,12 @@ Format (version 1): a zip file, optionally wrapped in `crypto.py`'s passphrase e
   row counts (no PII) and every other member's path, size and SHA-256;
 - ``db/finance.db``: a consistent snapshot taken with SQLite's online backup API, so it is safe to
   take while ``pfa serve`` is running;
-- ``statements/<sha256>.pdf``: the kept PDF copies (and PDFs awaiting confirmation);
+- ``documents/<relative path>.pdf``: the documents folder (the kept PDFs under their readable
+  names, ``documents/Alex/Statements/Chase/2024-03 Chase credit 1234.pdf``); only PDFs, and only
+  names that are portable (a file whose name Windows could not hold is left out and reported);
+- ``incoming/<sha256>.pdf``: uploads still waiting for their extractor to be confirmed;
+- ``statements/<sha256>.pdf``: what older versions called the kept PDF copies; still accepted when
+  restoring, and written for any PDF the startup upgrade has not carried over yet;
 - ``specs/...``: layout-spec mirrors, and ``config.toml``.
 
 Deliberately **not** in it: the LLM API key (it lives in the OS keychain and never leaves it; the
@@ -23,6 +28,15 @@ Restore validates everything (decryption, manifest, member names, sizes, hashes,
 database integrity) in a staging directory that is a sibling of the data directory, migrates it if
 the archive is older, and only then swaps it in with two renames. An existing data directory is
 moved aside to ``<name>.<timestamp>.before-restore``, never deleted.
+
+The documents folder is different: it may be a mount point (a NAS share) and holds files the user
+manages, so it is never swapped or emptied. Its members are extracted into a hidden staging folder
+*inside* it (the same filesystem, so a move is a rename), named collision-free against what is
+already there (recorded in the staged database before it goes live), and moved into place only
+after the data directory swap succeeded. Files already in the folder that are not part of the
+backup stay where they are and are counted in the result so the caller can say so. An archive made
+by an older version (``statements/<sha256>.pdf``) is converted to the readable layout on the way
+in.
 
 The machine-local secret state of the directory being replaced is carried over into the restored
 one: its ``secrets/`` directory (the plaintext key file the user chose to keep here) and its
@@ -49,7 +63,9 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import itertools
 import json
+import logging
 import os
 import re
 import shutil
@@ -59,11 +75,11 @@ import tempfile
 import time
 import tomllib
 import zipfile
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from importlib import metadata
-from pathlib import Path, PurePosixPath, PureWindowsPath
+from pathlib import Path, PurePosixPath
 from typing import IO, Any
 from urllib.parse import quote, urlsplit, urlunsplit
 
@@ -79,7 +95,14 @@ from personal_finance_analyzer.backup.errors import (
     RestoreTargetError,
     SchemaTooNewError,
 )
-from personal_finance_analyzer.core.paths import create_home_layout, existing_db_file, get_home
+from personal_finance_analyzer.core import doc_names
+from personal_finance_analyzer.core import documents as docs
+from personal_finance_analyzer.core.paths import (
+    create_home_layout,
+    documents_dir,
+    existing_db_file,
+    get_home,
+)
 from personal_finance_analyzer.core.secure_delete import shred_file
 from personal_finance_analyzer.db.migrate import build_alembic_config, upgrade_head
 
@@ -104,6 +127,11 @@ _COUNTED_TABLES = ("users", "accounts", "statements", "transactions", "tax_docum
 _COPY_CHUNK = 1024 * 1024
 _MAX_MANIFEST_BYTES = 1024 * 1024
 _PDF_NAME = re.compile(r"^[0-9a-f]{64}\.pdf$")
+#: A path component of a ``documents/`` member: portable on Windows, macOS, Linux and SMB.
+_log = logging.getLogger(__name__)
+_DOC_BAD_CHARS = re.compile(r'[\\:<>"|?*\x00-\x1f\x7f]')
+_MAX_DOC_DEPTH = 8
+DOCUMENTS_PREFIX = "documents/"
 _SPEC_SEGMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._ -]{0,127}$")
 _MAX_SPEC_DEPTH = 4
 
@@ -137,6 +165,14 @@ class Manifest:
     source_platform: str
     counts: dict[str, int]
     files: tuple[BackupFile, ...]
+    #: Documents-folder PDFs a *new* backup left out because their name is not portable (never
+    #: written to the manifest; reported by the command that made the backup).
+    skipped: tuple[str, ...] = ()
+    #: Members a *new* backup left out because they are larger than a restore accepts (the limits
+    #: of `_member_limit`, and `MAX_TOTAL_BYTES` for the whole archive): a backup that restore
+    #: would refuse is never written. Documents-folder files are named by their relative path,
+    #: others by member name. Never written to the manifest; reported by the command that made it.
+    oversized: tuple[str, ...] = ()
 
     def to_json(self) -> bytes:
         document: dict[str, Any] = {
@@ -167,6 +203,17 @@ class RestoreResult:
     previous_dir: Path | None
     #: The replaced directory's plaintext key file was carried over into the restored one.
     kept_secrets: bool = False
+    #: The documents folder the PDFs were restored into (``None``: the archive had none).
+    documents_dir: Path | None = None
+    #: PDFs newly written into the documents folder.
+    documents_restored: int = 0
+    #: PDFs of the backup that were already in the folder with the same content (not rewritten).
+    documents_already_present: int = 0
+    #: Visible files in the folder that are not part of the restored data: left where they are.
+    documents_unrelated: int = 0
+    #: Set when some PDFs could not be moved in after the swap: the hidden folder still holding
+    #: them (move them in by hand; the database already refers to their final names).
+    documents_pending: Path | None = None
 
 
 def app_version() -> str:
@@ -174,6 +221,14 @@ def app_version() -> str:
         return metadata.version("personal-finance-analyzer")
     except metadata.PackageNotFoundError:  # pragma: no cover - running from an unbuilt tree
         return "unknown"
+
+
+def _documents_for(target: Path, explicit_home: Path | None, documents: Path | None) -> Path:
+    """The documents folder to back up or restore into: the explicit one, else the configured one
+    when working on the configured data directory, else ``<home>/documents``."""
+    if documents is not None:
+        return documents
+    return documents_dir() if explicit_home is None else target / "documents"
 
 
 def default_filename(now: datetime | None = None) -> str:
@@ -218,15 +273,41 @@ def _db_revision(db_file: Path) -> str | None:
 # --------------------------------------------------------------------------------------------
 
 
+def _is_document_member(name: str) -> bool:
+    """Whether ``name`` is a ``documents/...pdf`` member with only portable path components."""
+    if not name.startswith(DOCUMENTS_PREFIX):
+        return False
+    parts = PurePosixPath(name).parts
+    if PurePosixPath(name).as_posix() != name:  # "a//b", "./a", a trailing slash: not canonical
+        return False
+    if not 2 <= len(parts) <= _MAX_DOC_DEPTH + 1 or not parts[-1].casefold().endswith(".pdf"):
+        return False
+    for part in parts[1:]:
+        if (
+            part in (".", "..")
+            or part.startswith(".")
+            or part != part.strip()
+            or part.endswith(".")
+            or _DOC_BAD_CHARS.search(part)
+            or len(part.encode("utf-8")) > 255
+        ):
+            return False
+    return True
+
+
 def _is_allowed_member(name: str) -> bool:
     """Whether ``name`` is a member this format may contain: an allow-list, so a crafted archive
     cannot write outside the staging directory (zip-slip) or add files we never created."""
     if name in (*_DB_MEMBERS, CONFIG_MEMBER):
         return True
-    if "\\" in name or name.startswith("/") or ":" in name:
+    if "\\" in name or name.startswith("/"):
+        return False
+    if name.startswith(DOCUMENTS_PREFIX):  # readable names: checked per component
+        return _is_document_member(name)
+    if ":" in name:
         return False
     parts = PurePosixPath(name).parts
-    if len(parts) == 2 and parts[0] == "statements":
+    if len(parts) == 2 and parts[0] in ("statements", "incoming"):
         return _PDF_NAME.fullmatch(parts[1]) is not None
     if parts and parts[0] == "specs" and 2 <= len(parts) <= _MAX_SPEC_DEPTH + 1:
         return all(_SPEC_SEGMENT.fullmatch(segment) for segment in parts[1:])
@@ -366,12 +447,14 @@ def _snapshot_database(source: Path, dest: Path) -> dict[str, int]:
 
 def _iter_home_files(home: Path) -> Iterator[tuple[str, Path]]:
     """The allow-listed files of the data directory as ``(member name, path)``: PDFs named by
-    their content hash (not the transient upload temp files next to them) and layout specs."""
-    statements = home / "statements"
-    if statements.is_dir():
-        for path in sorted(statements.iterdir()):
-            if _PDF_NAME.fullmatch(path.name) and path.is_file() and not path.is_symlink():
-                yield f"statements/{path.name}", path
+    their content hash (not the transient upload temp files next to them), in the old
+    ``statements/`` folder and in ``incoming/``, and layout specs."""
+    for folder in ("statements", "incoming"):
+        base = home / folder
+        if base.is_dir():
+            for path in sorted(base.iterdir()):
+                if _PDF_NAME.fullmatch(path.name) and path.is_file() and not path.is_symlink():
+                    yield f"{folder}/{path.name}", path
     specs = home / "specs"
     if specs.is_dir():
         for path in sorted(specs.rglob("*")):
@@ -382,7 +465,19 @@ def _iter_home_files(home: Path) -> Iterator[tuple[str, Path]]:
                 yield name, path
 
 
-def _write_zip(home: Path, zip_path: Path, work: Path) -> Manifest:
+def _iter_document_files(root: Path, skipped: list[str]) -> Iterator[tuple[str, Path]]:
+    """The PDFs of the documents folder as ``("documents/<relative path>", path)``. A file whose
+    name could not be restored everywhere (a colon, a trailing dot...) is appended to ``skipped``
+    instead."""
+    for rel, path in docs.iter_files(root):
+        name = f"{DOCUMENTS_PREFIX}{rel}"
+        if _is_document_member(name):
+            yield name, path
+        else:
+            skipped.append(rel)
+
+
+def _write_zip(home: Path, zip_path: Path, work: Path, documents: Path) -> Manifest:
     db_file = existing_db_file(home)
     if not db_file.is_file():
         raise BackupError(f"nothing to back up: no database in {home}")
@@ -399,20 +494,44 @@ def _write_zip(home: Path, zip_path: Path, work: Path) -> Manifest:
         portable.write_bytes(_portable_config(config_file.read_bytes()))
         sources.append((CONFIG_MEMBER, portable))
     sources.extend(_iter_home_files(home))
+    skipped: list[str] = []
+    sources.extend(_iter_document_files(documents, skipped))
 
     now = datetime.now(UTC)
     entries: list[BackupFile] = []
+    oversized: list[str] = []
+    total = 0
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
         for name, path in sources:
+            try:
+                declared = path.stat().st_size
+            except FileNotFoundError:  # removed between listing and reading (e.g. a delete)
+                continue
+            # The limits restore holds an archive to (`_extract`): a member over them is left out
+            # and reported rather than written into an archive that could not be restored. The
+            # database cannot be left out, so it stops the backup instead.
+            if name == DB_MEMBER and declared > _member_limit(name):
+                raise BackupError(
+                    f"the database is {declared} bytes, more than a backup may hold "
+                    f"({_member_limit(name)} bytes), so it cannot be backed up"
+                )
+            if name != DB_MEMBER and (
+                declared > _member_limit(name) or total + declared > MAX_TOTAL_BYTES
+            ):
+                oversized.append(name.removeprefix(DOCUMENTS_PREFIX))
+                continue
             info = zipfile.ZipInfo(name, date_time=now.timetuple()[:6])
             info.compress_type = (
-                zipfile.ZIP_STORED if name.endswith(".pdf") else zipfile.ZIP_DEFLATED
+                zipfile.ZIP_STORED if name.casefold().endswith(".pdf") else zipfile.ZIP_DEFLATED
             )
             try:
                 with path.open("rb") as src, zf.open(info, "w", force_zip64=True) as out:
                     size, sha256 = _copy_hashed(src, out)
             except FileNotFoundError:  # removed between listing and reading (e.g. a delete)
                 continue
+            if size > _member_limit(name) or (name != DB_MEMBER and total + size > MAX_TOTAL_BYTES):
+                raise BackupError(f"{name} grew while it was being backed up; try again")
+            total += size
             entries.append(BackupFile(name, size, sha256))
         manifest = Manifest(
             format_version=FORMAT_VERSION,
@@ -422,6 +541,8 @@ def _write_zip(home: Path, zip_path: Path, work: Path) -> Manifest:
             source_platform=sys.platform,
             counts=counts,
             files=tuple(entries),
+            skipped=tuple(skipped),
+            oversized=tuple(oversized),
         )
         zf.writestr(MANIFEST_NAME, manifest.to_json())
     return manifest
@@ -486,6 +607,8 @@ def sweep_stale_work_dirs(
         try:
             if _newest_mtime(candidate) > cutoff:
                 continue
+            if (candidate / KEEP_MARKER).exists():  # a failed restore's stranded documents
+                continue
             if candidate.is_dir() and not candidate.is_symlink():
                 shutil.rmtree(candidate)
             else:
@@ -544,8 +667,16 @@ def work_dir(home: Path, prefix: str) -> Iterator[Path]:
         remove_work_dir(work)
 
 
-def create_backup(dest: Path, *, passphrase: str | None, home: Path | None = None) -> Manifest:
-    """Write a backup of ``home`` (default: the data directory) to ``dest``.
+def create_backup(
+    dest: Path,
+    *,
+    passphrase: str | None,
+    home: Path | None = None,
+    documents: Path | None = None,
+) -> Manifest:
+    """Write a backup of ``home`` (default: the data directory) and of the documents folder
+    ``documents`` (default: the configured one, or ``<home>/documents`` for an explicit ``home``)
+    to ``dest``.
 
     ``passphrase`` encrypts the archive; ``None`` writes it unencrypted (the caller must have
     asked for that explicitly). The archive is built in a private scratch directory under the
@@ -556,13 +687,14 @@ def create_backup(dest: Path, *, passphrase: str | None, home: Path | None = Non
         BackupError: no database, an unusable config.toml, or a passphrase that is too short.
     """
     source = home if home is not None else get_home()
+    docs_root = _documents_for(source, home, documents)
     if passphrase is not None:
         crypto.validate_new_passphrase(passphrase)
     if not source.is_dir():
         raise BackupError(f"there is no data directory at {source} to back up")
     with work_dir(source, "backup") as work:
         zip_path = work / "archive.zip"
-        manifest = _write_zip(source, zip_path, work)
+        manifest = _write_zip(source, zip_path, work, docs_root)
         partial = dest.with_name(dest.name + ".partial")
         try:
             if passphrase is None:
@@ -645,13 +777,17 @@ def inspect_backup(path: Path, *, passphrase: str | None = None) -> BackupInfo:
 
 
 def _home_has_data(home: Path) -> bool:
-    """Whether ``home`` holds anything a restore would replace: a database, a config, a kept
-    statement PDF or a layout spec. Empty directories and logs do not count."""
+    """Whether ``home`` holds anything a restore would replace: a database, a config, a PDF
+    awaiting confirmation or still in the old ``statements/`` folder, or a layout spec. Empty
+    directories and logs do not count. (The documents folder is never replaced, so it does not
+    count either.)"""
     db_file = existing_db_file(home)
     if (db_file.exists() and not _db_is_pristine(db_file)) or (home / "config.toml").exists():
         return True
     return any(
-        child.is_file() for sub in ("statements", "specs") for child in (home / sub).rglob("*")
+        child.is_file()
+        for sub in ("statements", "incoming", "specs")
+        for child in (home / sub).rglob("*")
     )
 
 
@@ -742,44 +878,65 @@ def _check_target(target: Path, *, replace: bool) -> None:
 
 
 def _member_limit(path: str) -> int:
-    if path == DB_MEMBER:
+    """The largest size restore accepts for member ``path``. Export applies the same limits, so an
+    archive this app wrote is always one it can restore (the extension test is case-insensitive,
+    as the one that decides what export includes)."""
+    if path in _DB_MEMBERS:
         return MAX_DB_BYTES
-    if path.endswith(".pdf"):
+    if path.casefold().endswith(".pdf"):
         return MAX_PDF_BYTES
     return MAX_TEXT_BYTES
 
 
-def _extract(zf: zipfile.ZipFile, manifest: Manifest, new_home: Path) -> None:
-    """Write every member into ``new_home``, checking its size and SHA-256 against the manifest
-    while streaming (a member that grows past its declared size is aborted, not buffered).
+def _extract(
+    zf: zipfile.ZipFile, manifest: Manifest, new_home: Path, doc_stage: Path | None = None
+) -> None:
+    """Write every member into ``new_home`` (the ``documents/`` ones into ``doc_stage``, under
+    their relative path), checking its size and SHA-256 against the manifest while streaming (a
+    member that grows past its declared size is aborted, not buffered).
 
     The manifest is attacker-controlled too, so the sizes it declares are first held to the
-    per-member and total limits and to the free disk space, and then the bytes actually written
-    are counted against the same limits: a member that inflates past what it declared is stopped
-    at that point, never extracted whole."""
-    declared = 0
+    per-member and total limits and to the free disk space (of the filesystem each member goes
+    to), and then the bytes actually written are counted against the same limits: a member that
+    inflates past what it declared is stopped at that point, never extracted whole."""
+    declared_home = 0
+    declared_docs = 0
     for entry in manifest.files:
         if entry.size > _member_limit(entry.path):
             raise BackupFormatError(
                 f"{entry.path} is larger than a file in a backup may be "
                 f"({_member_limit(entry.path)} bytes)"
             )
-        declared += entry.size
-    if declared > MAX_TOTAL_BYTES:
+        if entry.path.startswith(DOCUMENTS_PREFIX):
+            declared_docs += entry.size
+        else:
+            declared_home += entry.size
+    if declared_home + declared_docs > MAX_TOTAL_BYTES:
         raise BackupFormatError(
             f"the backup's files add up to more than a backup may hold ({MAX_TOTAL_BYTES} bytes)"
         )
-    free = shutil.disk_usage(new_home.parent).free
-    if declared + _DISK_MARGIN_BYTES > free:
-        raise BackupError(
-            f"not enough free disk space to restore this backup: it needs about {declared} bytes "
-            f"and {free} are free"
-        )
+    for needed, where in ((declared_home, new_home.parent), (declared_docs, doc_stage)):
+        if where is None or needed == 0:
+            continue
+        free = shutil.disk_usage(where).free
+        if needed + _DISK_MARGIN_BYTES > free:
+            raise BackupError(
+                f"not enough free disk space to restore this backup: it needs about {needed} "
+                f"bytes in {where} and {free} are free"
+            )
     written = 0
     for entry in manifest.files:
-        dest = new_home.joinpath(*PurePosixPath(entry.path).parts)
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        with zf.open(entry.path) as src, dest.open("wb") as out:
+        if entry.path.startswith(DOCUMENTS_PREFIX):
+            assert doc_stage is not None
+            dest = doc_stage.joinpath(*PurePosixPath(entry.path).parts[1:])
+            docs.make_dirs(dest.parent, within=doc_stage)
+            fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL, docs.file_mode())
+            sink: IO[bytes] = os.fdopen(fd, "wb")
+        else:
+            dest = new_home.joinpath(*PurePosixPath(entry.path).parts)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            sink = dest.open("wb")
+        with zf.open(entry.path) as src, sink as out:
             size, sha256 = _copy_hashed(
                 src, out, limit=min(entry.size, MAX_TOTAL_BYTES - written), label=entry.path
             )
@@ -791,34 +948,120 @@ def _extract(zf: zipfile.ZipFile, manifest: Manifest, new_home: Path) -> None:
             )
 
 
-def _final_name(stored_path: str) -> str:
-    # Archives made on Windows hold backslash paths, which a POSIX Path would not split.
-    return PureWindowsPath(stored_path).name
+@dataclass(frozen=True)
+class _DocumentMove:
+    """One staged document and the relative path (inside the documents folder) it ends up at."""
+
+    staged: Path
+    rel: str
 
 
-def _rewrite_stored_paths(db_file: Path, new_home: Path, final_home: Path) -> None:
-    """`statements.stored_path` / `tax_documents.stored_path` are absolute paths on the machine
-    that made the backup. Point each at the same hash-named PDF in this machine's data directory
-    (``final_home``, where ``new_home`` ends up), or clear it when that PDF was not backed up."""
+def _plan_document_moves(
+    doc_stage: Path, docs_root: Path, staged_db: Path
+) -> tuple[list[_DocumentMove], int]:
+    """Decide where every staged document goes, before the data directory is swapped.
+
+    A name free in ``docs_root`` is kept. A name taken by a file with the *same content* is reused
+    (counted, nothing rewritten). A name taken by a file with other content gets `` (2)``,
+    `` (3)``..., and the staged database is updated to the final name (``stored_path``), so the
+    swap makes everything consistent in one step. Returns the moves and the number of PDFs that
+    were already present."""
+    moves: list[_DocumentMove] = []
+    already_present = 0
+    remap: dict[str, str] = {}
+    taken: set[str] = set()
+    for rel, staged in docs.iter_files(doc_stage):
+        directory = docs_root.joinpath(*PurePosixPath(rel).parts[:-1])
+        try:
+            listing = {p.name.casefold(): p.name for p in directory.iterdir()}
+        except OSError:
+            listing = {}
+        folder = PurePosixPath(rel).parent.as_posix()
+        folder = "" if folder == "." else folder
+        original = PurePosixPath(rel).name
+        digest = docs.file_sha256(staged)
+        for attempt in itertools.count(1):
+            # The member's own name, extension case included (a restore gives back the relative
+            # path the export read); only a collision adds `` (2)``.
+            name = doc_names.kept_name(original, doc_names.collision_suffix(attempt))
+            final = f"{folder}/{name}" if folder else name
+            existing = listing.get(name.casefold())
+            if existing is not None:
+                if docs.file_sha256(directory / existing) == digest:
+                    final = f"{folder}/{existing}" if folder else existing
+                    already_present += 1
+                    break
+                continue
+            if final.casefold() in taken:
+                continue
+            taken.add(final.casefold())
+            moves.append(_DocumentMove(staged, final))
+            break
+        if final != rel:
+            remap[rel] = final
+    if remap:
+        con = sqlite3.connect(staged_db)
+        try:
+            tables = {
+                row[0] for row in con.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+            }
+            for table in ("statements", "tax_documents"):
+                if table not in tables:
+                    continue
+                for old, new in remap.items():
+                    con.execute(
+                        f"UPDATE {table} SET stored_path = ? WHERE stored_path = ?", (new, old)
+                    )
+            con.commit()
+        finally:
+            con.close()
+    return moves, already_present
+
+
+def _referenced_paths(db_file: Path) -> set[str]:
+    """Every relative ``stored_path`` of the database at ``db_file``, casefolded."""
+    found: set[str] = set()
     con = sqlite3.connect(db_file)
     try:
         tables = {
             row[0] for row in con.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
         }
         for table in ("statements", "tax_documents"):
-            if table not in tables:
-                continue
-            rows = con.execute(
-                f"SELECT id, stored_path FROM {table} WHERE stored_path IS NOT NULL"
-            ).fetchall()
-            for row_id, stored in rows:
-                name = _final_name(stored)
-                kept = (new_home / "statements" / name).is_file()
-                new_value = str(final_home / "statements" / name) if kept else None
-                con.execute(f"UPDATE {table} SET stored_path = ? WHERE id = ?", (new_value, row_id))
-        con.commit()
+            if table in tables:
+                found.update(
+                    str(row[0]).casefold()
+                    for row in con.execute(
+                        f"SELECT stored_path FROM {table} WHERE stored_path IS NOT NULL"
+                    )
+                )
     finally:
         con.close()
+    return found
+
+
+def _carry_over_legacy_documents(staged_db: Path, new_home: Path, doc_stage: Path) -> None:
+    """An archive made before documents had their own folder holds ``statements/<sha256>.pdf``:
+    file those into ``doc_stage`` under readable names (and the unconfirmed ones into the staged
+    ``incoming/``), exactly like the startup upgrade does for a live data directory."""
+    from personal_finance_analyzer.db.documents import migrate_legacy_files
+    from personal_finance_analyzer.db.session import make_engine_for_path, make_session_factory
+
+    engine = make_engine_for_path(staged_db)
+    try:
+        with make_session_factory(engine)() as session:
+            report = migrate_legacy_files(
+                session,
+                legacy_dir=new_home / "statements",
+                root=doc_stage,
+                staging=new_home / "incoming",
+            )
+            if report.errors:
+                raise BackupError(
+                    "could not convert the backup's PDFs to the readable layout: "
+                    + "; ".join(report.errors)
+                )
+    finally:
+        engine.dispose()
 
 
 def _verify_database(db_file: Path, expected_revision: str) -> None:
@@ -938,12 +1181,18 @@ def restore_backup(
     replace: bool = False,
     home: Path | None = None,
     before_swap: Callable[[], None] | None = None,
+    documents: Path | None = None,
 ) -> RestoreResult:
-    """Restore ``archive`` as the data directory ``home`` (default: the configured one).
+    """Restore ``archive`` as the data directory ``home`` (default: the configured one) and its
+    PDFs into the documents folder ``documents`` (default: the configured one, or
+    ``<home>/documents`` for an explicit ``home``).
 
     Nothing in ``home`` is touched until the archive has been fully decrypted, verified and (if
     its schema is older) migrated in a staging directory next to it. ``before_swap`` runs right
     before the swap; a running server uses it to stop serving and close its database connections.
+    The documents are written *in place* (the folder may be a mount point): staged inside it,
+    moved to their final names only once the swap has succeeded, never overwriting a file, and
+    leaving every other file of the folder alone.
 
     Raises:
         PassphraseError: encrypted and the passphrase is missing or wrong.
@@ -953,10 +1202,16 @@ def restore_backup(
             in another process.
     """
     target = home if home is not None else get_home()
+    docs_root = _documents_for(target, home, documents)
     _check_target(target, replace=replace)
     sweep_stale_work_dirs(target)  # what a restore that crashed earlier left behind
     target.parent.mkdir(parents=True, exist_ok=True)
     stage = Path(tempfile.mkdtemp(prefix=f".{target.name}.restore-", dir=target.parent))
+    doc_stage: Path | None = None
+    keep_doc_stage = False
+    swapped = False
+    made_top: Path | None = None  # the highest folder of the documents path this call created
+    keep_stage = False  # the user's documents folder is inside it and could not be moved back
     try:
         work = stage / "work"
         new_home = stage / "home"
@@ -968,8 +1223,14 @@ def restore_backup(
                     f"this backup's database (schema {revision}) is newer than this version of "
                     "Personal Finance Analyzer understands; upgrade the app, then restore it again"
                 )
+            listed = [f.path for f in manifest.files]
+            has_documents = any(p.startswith(DOCUMENTS_PREFIX) for p in listed)
+            has_legacy = any(p.startswith("statements/") for p in listed)
+            if has_documents or has_legacy:
+                made_top = _topmost_missing(docs_root)
+                doc_stage = _make_doc_stage(docs_root)
             try:
-                _extract(zf, manifest, new_home)
+                _extract(zf, manifest, new_home, doc_stage)
             except OSError as exc:
                 raise BackupError(
                     f"could not write the restored files (is the disk full?): {exc}"
@@ -980,10 +1241,16 @@ def restore_backup(
         (new_home / database_member(manifest)).replace(staged_db)
         (new_home / "db").rmdir()
         _verify_database(staged_db, revision)
-        _rewrite_stored_paths(staged_db, new_home, target)
         migrated = revision != head_revision()
         if migrated:
             _migrate_staged(staged_db)
+        moves: list[_DocumentMove] = []
+        already_present = 0
+        if doc_stage is not None:
+            if has_legacy:
+                _carry_over_legacy_documents(staged_db, new_home, doc_stage)
+                shutil.rmtree(new_home / "statements", ignore_errors=True)
+            moves, already_present = _plan_document_moves(doc_stage, docs_root, staged_db)
 
         if before_swap is not None:
             before_swap()
@@ -996,21 +1263,203 @@ def restore_backup(
             )
         previous: Path | None = None
         now = datetime.now(UTC)
-        if target.exists():
-            if _contains_files(target):
-                previous = _move_aside(target, now)
-            else:
-                _remove_empty_tree(target)
+        carried = _carry_documents_folder(target, docs_root, new_home)
+        # While this is set the user's own PDF folder sits inside ``stage``, so ``stage`` must not
+        # be deleted (see the ``finally`` below).
+        stranded_docs = carried[1] if carried is not None else None
         try:
-            new_home.rename(target)
-        except OSError as exc:
-            if previous is not None:
-                previous.rename(target)
-            raise BackupError(f"could not move the restored data into place: {exc}") from exc
+            try:
+                if target.exists():
+                    if _contains_files(target):
+                        previous = _move_aside(target, now)
+                    else:
+                        _remove_empty_tree(target)
+                new_home.rename(target)
+            except BaseException as exc:
+                if previous is not None and not target.exists():
+                    with contextlib.suppress(OSError):
+                        previous.rename(target)
+                try:
+                    _undo_carry(carried)
+                except OSError as undo_exc:
+                    assert stranded_docs is not None
+                    where, parked = _park_stranded_documents(stranded_docs, stage, target, now)
+                    keep_stage = not parked
+                    if parked:
+                        stranded_docs = None  # out of the stage: the stage may go
+                    _log.error(
+                        "restore failed and the documents folder could not be put back; it is "
+                        "at %s (%s)",
+                        where,
+                        undo_exc,
+                    )
+                    if isinstance(exc, OSError):
+                        raise BackupError(
+                            f"could not move the restored data into place: {exc}. Your documents "
+                            f"folder could NOT be put back and was left at {where}; move it "
+                            f"back to {docs_root} yourself (nothing was deleted)."
+                        ) from exc
+                    raise
+                stranded_docs = None
+                if isinstance(exc, OSError):
+                    raise BackupError(
+                        f"could not move the restored data into place: {exc}"
+                    ) from exc
+                raise
+            stranded_docs = None  # the folder came across with the swap: it is at its path again
+            swapped = True
+        finally:
+            if stranded_docs is not None:
+                keep_stage = True
+                _mark_kept(stage)
         if kept_secrets and previous is not None:
             _discard_old_secrets(previous, target)
+
+        # The database now names the final files; put them there. A failure here cannot undo the
+        # swap, so what could not be moved stays staged (and is reported) instead of being lost.
+        restored, failed = _move_documents_in(moves, docs_root)
+        keep_doc_stage = bool(failed)
+        referenced = _referenced_paths(existing_db_file(target)) | {m.rel.casefold() for m in moves}
+        unrelated = sum(
+            1
+            for rel, _path in docs.iter_files(docs_root, pdf_only=False)
+            if rel.casefold() not in referenced
+        )
+        docs.invalidate_index()
         return RestoreResult(
-            manifest=manifest, migrated=migrated, previous_dir=previous, kept_secrets=kept_secrets
+            manifest=manifest,
+            migrated=migrated,
+            previous_dir=previous,
+            kept_secrets=kept_secrets,
+            documents_dir=docs_root if doc_stage is not None else None,
+            documents_restored=restored,
+            documents_already_present=already_present,
+            documents_unrelated=unrelated,
+            documents_pending=doc_stage if keep_doc_stage else None,
         )
     finally:
-        shutil.rmtree(stage, ignore_errors=True)
+        if not keep_stage:
+            shutil.rmtree(stage, ignore_errors=True)
+        if doc_stage is not None and not keep_doc_stage:
+            shutil.rmtree(doc_stage, ignore_errors=True)
+        if not swapped and made_top is not None:
+            _prune_empty(docs_root, made_top)  # a failed restore leaves no empty folders behind
+
+
+#: A file inside a restore's staging directory that tells `sweep_stale_work_dirs` the directory
+#: holds something of the user's (their documents folder, after a failed swap) and is never swept.
+KEEP_MARKER = "KEEP-your-documents-are-inside.txt"
+
+
+def _mark_kept(stage: Path) -> None:
+    """Make the sweep leave ``stage`` alone, however old it gets (best effort)."""
+    with contextlib.suppress(OSError):
+        (stage / KEEP_MARKER).write_text(
+            "A restore failed and could not put your documents folder back. It is inside this "
+            "directory (home/...). Move it back by hand; this directory is never deleted "
+            "automatically.\n",
+            encoding="utf-8",
+        )
+
+
+def _park_stranded_documents(
+    stranded: Path, stage: Path, target: Path, now: datetime
+) -> tuple[Path, bool]:
+    """Move the user's documents folder, stranded inside the staging directory ``stage``, to a
+    name the stale-directory sweep never matches (``<home>.documents-recovered-<time>``, beside
+    the data directory). Returns where the folder is, and whether it left the staging directory.
+    When the move fails too the staging directory is marked instead (see `KEEP_MARKER`) and the
+    folder stays in it."""
+    stamp = now.strftime("%Y%m%dT%H%M%S")
+    parked = target.with_name(f"{target.name}.documents-recovered-{stamp}")
+    counter = 1
+    while parked.exists():
+        counter += 1
+        parked = target.with_name(f"{target.name}.documents-recovered-{stamp}-{counter}")
+    try:
+        stranded.rename(parked)
+    except OSError:
+        _mark_kept(stage)
+        return stranded, False
+    return parked, True
+
+
+def _topmost_missing(path: Path) -> Path | None:
+    """The highest ancestor of ``path`` (or ``path`` itself) that does not exist yet, or ``None``
+    when ``path`` exists."""
+    top: Path | None = None
+    current = path
+    while not current.exists() and current != current.parent:
+        top = current
+        current = current.parent
+    return top
+
+
+def _prune_empty(path: Path, top: Path) -> None:
+    """Remove ``path`` and its empty parents up to and including ``top``, stopping at the first
+    one that is not empty."""
+    current = path
+    while True:
+        try:
+            current.rmdir()
+        except OSError:
+            return
+        if current == top or current == current.parent:
+            return
+        current = current.parent
+
+
+def _carry_documents_folder(
+    target: Path, docs_root: Path, new_home: Path
+) -> tuple[Path, Path] | None:
+    """When the documents folder is the default one *inside* the data directory, the swap would
+    carry the user's PDFs off to ``*.before-restore`` with everything else. The folder is theirs,
+    not part of the data being replaced, so it is moved (a rename) into the restored directory
+    first, together with the hidden staging folder that holds the backup's PDFs; it ends up at the
+    same path. Returns ``(where it was, where it is now)``, or ``None`` when there was nothing to
+    carry."""
+    if docs_root == target or target not in docs_root.parents or not docs_root.is_dir():
+        return None
+    destination = new_home / docs_root.relative_to(target)
+    try:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        docs_root.rename(destination)
+    except OSError as exc:
+        raise BackupError(f"could not keep your documents folder in place: {exc}") from exc
+    return docs_root, destination
+
+
+def _undo_carry(carried: tuple[Path, Path] | None) -> None:
+    if carried is not None:
+        carried[0].parent.mkdir(parents=True, exist_ok=True)
+        carried[1].rename(carried[0])
+
+
+def _make_doc_stage(docs_root: Path) -> Path:
+    """A fresh hidden staging folder inside the documents folder (same filesystem, so moving a
+    file out of it is a rename, and invisible to everything that lists the folder)."""
+    try:
+        docs.make_dirs(docs_root)
+        stage = Path(tempfile.mkdtemp(prefix=".pfa-restore-", dir=docs_root))
+    except OSError as exc:
+        raise BackupError(f"cannot write to the documents folder {docs_root}: {exc}") from exc
+    with contextlib.suppress(OSError):
+        stage.chmod(0o700)
+    return stage
+
+
+def _move_documents_in(moves: Sequence[_DocumentMove], docs_root: Path) -> tuple[int, list[str]]:
+    """Move each staged PDF to its final name (never replacing a file). Returns how many were
+    placed and the names that could not be."""
+    restored = 0
+    failed: list[str] = []
+    for move in moves:
+        final = docs_root.joinpath(*PurePosixPath(move.rel).parts)
+        try:
+            docs.make_dirs(final.parent, within=docs_root)
+            docs.publish_no_clobber_rename(move.staged, final)
+        except OSError:
+            failed.append(move.rel)
+            continue
+        restored += 1
+    return restored, failed

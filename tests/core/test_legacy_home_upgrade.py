@@ -7,6 +7,7 @@ directory (a ``spend.db`` whose rows record paths into it); `prepare_home` then 
 
 from __future__ import annotations
 
+import shutil
 import sqlite3
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -52,6 +53,22 @@ def _statement_pdf(path: Path) -> None:
     render_lines_pdf(path, [lines])
 
 
+def _revert_to_the_old_layout(session: Session, legacy: Path) -> None:
+    """The pipelines now file PDFs under readable names in the documents folder; this install is
+    what a version from before that left behind: hash-named files in ``statements/`` and an
+    absolute ``stored_path`` for each."""
+    folder = legacy / "statements"
+    folder.mkdir(exist_ok=True)
+    for row in (*session.query(Statement), *session.query(TaxDocument)):
+        assert row.stored_path is not None
+        source = paths.documents_dir() / row.stored_path
+        destination = folder / f"{row.file_sha256}.pdf"
+        shutil.move(source, destination)
+        row.stored_path = str(destination)
+    shutil.rmtree(paths.documents_dir())
+    session.commit()
+
+
 @pytest.fixture
 def legacy_install(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[Install]:
     """A pre-rename default data directory holding a statement and a tax document, both with their
@@ -93,6 +110,7 @@ def legacy_install(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[
             w2 = generated_pdf("tax_w2", "normal")
             tax = import_tax_document(session, w2, user_id=user.id, original_name="w2.pdf")
             session.commit()
+            _revert_to_the_old_layout(session, legacy)
             statement = session.get(Statement, proposal.statement_id)
             document = session.get(TaxDocument, tax.document_id)
             assert statement is not None and document is not None

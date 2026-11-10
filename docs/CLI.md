@@ -490,7 +490,7 @@ $ pfa backup create ~/Desktop/
 Passphrase (needed to restore; there is no recovery if you lose it):
 Repeat for confirmation:
 Backup written to /Users/you/Desktop/pfa-2026-10-30.pfabackup (48.2 MB)
-Contains: 3 users, 7 accounts, 41 statements, 1893 transactions, 6 tax documents; 49 files.
+Contains: 3 users, 7 accounts, 41 statements, 1893 transactions, 6 tax documents; 47 PDF documents, 2 layout specs.
 Not included: your LLM API key (it stays in this machine's keychain; run `pfa llm set-key` on the new one), the extract cache and logs.
 
 $ pfa backup inspect pfa-2026-10-30.pfabackup
@@ -501,7 +501,11 @@ Moves all your data to another machine: `create` on the old one, copy the one fi
 the new one. See [Moving to another machine](../README.md#moving-to-another-machine).
 
 - **`backup create OUT`** writes the database (a consistent snapshot, so it is safe while `serve`
-  is running), the kept statement PDFs, layout specs and `config.toml`. `OUT` is a file, or a
+  is running), the PDFs of your [documents folder](#documents) (under a `documents/` prefix, with
+  their readable names; only `.pdf` files, and a file whose name Windows could not hold is left out
+  with a warning), layout specs and `config.toml`. A backup is never written that a restore would
+  refuse: a PDF over 64 MiB (or other file over 4 MiB, or more than 16 GiB in all) is left out
+  with a warning naming it, and a database over 8 GiB stops the backup. `OUT` is a file, or a
   directory to get a dated `pfa-YYYY-MM-DD.pfabackup` in. It is **encrypted with a
   passphrase by default** (at least 8 characters; prompted twice, or read from the first line of
   `--passphrase-file`). `--no-encrypt` is the explicit opt-out: the file then holds your statements
@@ -509,7 +513,7 @@ the new one. See [Moving to another machine](../README.md#moving-to-another-mach
   API key in your OS keychain, the extract cache, logs, and `[llm] extra_headers` / credentials in
   the LLM URL (they can carry secrets).
 - **`backup inspect FILE`** prints the format, schema revision, creation time and counts
-  (users, accounts, statements, transactions, tax documents, PDFs) without extracting or restoring
+  (users, accounts, statements, transactions, tax documents, PDF documents) without extracting or restoring
   anything. It shows no names, descriptions or amounts. An encrypted file needs its passphrase.
 - **`backup restore FILE`** makes the backup this machine's data directory. The whole archive is
   verified (decryption, manifest, SHA-256 of every file, database integrity, schema revision)
@@ -525,9 +529,85 @@ the new one. See [Moving to another machine](../README.md#moving-to-another-mach
   is ignored, so a restore never switches the plaintext key file on. The key file is moved, not
   copied: once the restore has succeeded, the original in the `*.before-restore` directory is
   overwritten and removed, so no plaintext key lingers there.
+  The documents are different from the rest: the documents folder may be a mount point or a share
+  holding your own files, so a restore never swaps, empties or renames it. The backup's PDFs are
+  staged in a hidden folder *inside* it (so a move is a rename on one filesystem), given their final
+  names, and moved in only after the data directory was swapped successfully; a file that is already
+  there with the same content is left as is, a name taken by a different file gets `(2)`, `(3)`
+  (the database is updated to match before it goes live), and nothing that is already in the folder
+  is deleted or overwritten. Files in the folder that are not part of the backup are counted and
+  reported (`NOTE: 3 other file(s) in ... are not part of this backup`), never removed. When the
+  folder is the default one inside the data directory it is carried across the swap instead of
+  being moved aside with the old data. If the swap fails and that folder cannot be moved back, the
+  restore moves it to `<name>.documents-recovered-<time>` beside the data directory (never a
+  name a cleanup touches) and the error says where it is. A backup made before the documents folder existed
+  (`statements/<sha256>.pdf`) is converted to the readable layout on the way in.
 
 All three exit 1 with a message on any problem (wrong passphrase, damaged or modified file, unknown
 format). The web UI has the same two actions under Settings -> Backup & restore.
+
+## `documents`
+
+```console
+$ pfa documents where
+/Users/you/Library/Application Support/PersonalFinanceAnalyzer/documents
+$ pfa documents reorganize --dry-run
+Documents folder: /Users/you/Library/Application Support/PersonalFinanceAnalyzer/documents
+Would rename 2 file(s):
+  Alex/Statements/Chase/2024-03 Chase credit 1234.pdf
+    -> Alexandra/Statements/Chase/2024-03 Chase credit 1234.pdf
+  Alex/Tax/2024/W-2 - Acme Corp.pdf
+    -> Alexandra/Tax/2024/W-2 - Acme Corp.pdf
+Dry run: nothing was changed.
+$ pfa documents check
+```
+
+Every imported statement (and tax form, with `[privacy] store_tax_pdf_copies = true`) is kept as an
+ordinary PDF in the **documents folder**, which you can browse without the app:
+
+```
+<Person>/Statements/<Bank>/<YYYY-MM> <Bank> <account>.pdf     the month the statement ends
+<Person>/Statements/Unsorted/<date> Statement <8 hex>.pdf     not parsed (yet)
+<Person>/Tax/<year>/<Form> - <Payer>.pdf                      W-2 - Acme Corp.pdf, 1040.pdf
+Shared/...                                                    rows with no person
+```
+
+Names are sanitized for Windows, macOS, Linux and SMB (no `<>:"/\|?*`, no control characters,
+reserved names like `NUL` avoided, NFC-normalized, capped at about 120 characters), never contain an
+SSN, an EIN or a full account number (at most the last four digits of the account label), and get
+` (2)`, ` (3)` when two files would otherwise share a name. A corrected form ends in
+` (corrected)`. The database stores each file's path *relative to the folder*, plus its content
+hash, so a file you move or rename inside the folder is found again by its content, and one you
+delete shows as "PDF not found" instead of an error. One PDF used by two rows (the same W-2
+imported for two people) is kept once, and deleting one row never deletes a file another row still
+uses.
+
+Where the folder is: `PFA_DOCUMENTS_DIR` if set, else `[storage] documents_dir` in `config.toml`
+(relative paths are relative to the data directory), else `documents/` inside the data directory.
+The Docker image sets `/pfa/documents`. Directories are created `0700` and files `0600` on a normal
+install; in a container the `UMASK` decides. An existing directory (a mount point, a share's root)
+is never chmod-ed.
+
+- **`documents where`** prints the folder in use.
+- **`documents reorganize [--dry-run]`** renames the kept PDFs to the names the current data calls for
+  (after you renamed a person or an account, or moved a statement to another account), removes the
+  folders that leaves empty, and updates the database. **The app never renames files by itself**,
+  not even when you rename a person: this command is how you ask for it. A file you moved by hand
+  is left where you put it (the database just learns the new place), a deleted one is reported, and
+  a name that is taken gets a number. `--dry-run` shows the plan and changes nothing. It also moves
+  any PDFs still in the old `statements/<sha256>.pdf` folder (see below).
+- **`documents check`** lists, read-only, the PDFs the database expects but cannot find (exit status
+  1), the ones found somewhere else than recorded (moved by hand), the PDFs in the folder that no
+  statement or tax form refers to (left alone: the app never deletes files it does not recognise),
+  and leftover temporary files from an interrupted copy.
+
+**Upgrading.** Versions before the documents folder kept PDFs as `<data dir>/statements/<sha256>.pdf`.
+The first command that opens the database (`pfa migrate`, `pfa serve`, `pfa import`, ...; never a
+read-only one such as `pfa doctor` or `pfa documents check`) moves each of them to its readable
+place: copy, flush to disk, record the new path in one transaction, and only then delete the old
+file, so an interruption at any point leaves a consistent state and the next start finishes the
+job. A file no statement or tax document refers to is left where it is, and an emptied
+`statements/` folder is removed.
 
 ## `doctor`
 
