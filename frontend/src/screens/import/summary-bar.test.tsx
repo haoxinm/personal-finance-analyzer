@@ -1,8 +1,15 @@
-import { render, screen } from "@testing-library/react";
+import { render as rtlRender, screen } from "@testing-library/react";
+import type { ReactElement } from "react";
+import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it } from "vitest";
 
 import { SummaryBar } from "./summary-bar";
 import type { ImportItem } from "./types";
+
+/** The bar links to Review and Transactions, so it needs a router. */
+function render(ui: ReactElement) {
+  return rtlRender(<MemoryRouter>{ui}</MemoryRouter>);
+}
 
 function makeParsedItem(overrides: Partial<ImportItem> = {}): ImportItem {
   return {
@@ -81,5 +88,35 @@ describe("SummaryBar", () => {
   it("uses singular wording for exactly one statement/transaction", () => {
     render(<SummaryBar items={[makeParsedItem({ statement: { ...makeParsedItem().statement!, txn_count: 1 } })]} />);
     expect(screen.getByRole("status")).toHaveTextContent("1 statement imported · 1 new transaction");
+  });
+
+  it("separates rows an overlapping statement already had, and a file dropped twice", () => {
+    render(
+      <SummaryBar
+        items={[
+          makeParsedItem({ insertedCount: 90, skippedDuplicates: 10, needsReviewCount: 4 }),
+          makeParsedItem({ needsReviewCount: 0, duplicate: true }),
+        ]}
+      />,
+    );
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "1 statement imported · 90 new transactions · 10 already present · 1 already imported · 4 need review",
+    );
+  });
+
+  it("says only 'already imported' when every file was a duplicate, and offers no review link", () => {
+    render(<SummaryBar items={[makeParsedItem({ duplicate: true })]} />);
+    expect(screen.getByRole("status")).toHaveTextContent("1 already imported");
+    expect(screen.getByRole("status")).not.toHaveTextContent("new transaction");
+    expect(screen.queryByRole("link", { name: /Review/ })).not.toBeInTheDocument();
+  });
+
+  it("links on to Review when something needs it, and always to the transactions", () => {
+    render(<SummaryBar items={[makeParsedItem({ needsReviewCount: 38 })]} />);
+    expect(screen.getByRole("link", { name: /Review 38/ })).toHaveAttribute("href", "/spending/review");
+    expect(screen.getByRole("link", { name: "View transactions" })).toHaveAttribute(
+      "href",
+      "/spending/transactions",
+    );
   });
 });

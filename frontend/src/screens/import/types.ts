@@ -51,6 +51,15 @@ export interface ImportItem {
    * sums only the items that have one. See `fetchNeedsReviewCount` for the known limitation. */
   needsReviewCount?: number;
 
+  /** The upload was a byte-identical file already imported (`StatementUploadResponse.duplicate`):
+   * `statement` is the earlier, parsed one, so nothing new will be added by importing again. */
+  duplicate?: boolean;
+
+  /** From the finished import job: rows newly added, and rows skipped because the same transaction
+   * was already present (an overlapping statement). Undefined until the job's counts are read. */
+  insertedCount?: number;
+  skippedDuplicates?: number;
+
   errorMessage?: string;
 
   /** Whether the extractor of the in-flight/last import attempt was the LLM (decides the wording

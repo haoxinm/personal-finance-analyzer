@@ -60,6 +60,9 @@ def _job_response(job: Job, session: Session | None = None) -> schemas.Job:
             classified = classified_raw if isinstance(classified_raw, int) else None
             needs_review = needs_review_raw if isinstance(needs_review_raw, int) else None
 
+    inserted = payload.get("inserted")
+    skipped_duplicates = payload.get("skipped_duplicates")
+
     return schemas.Job(
         id=job.id,
         kind=job.kind,
@@ -71,6 +74,8 @@ def _job_response(job: Job, session: Session | None = None) -> schemas.Job:
         classify_job_id=classify_job_id,
         classified=classified,
         needs_review=needs_review,
+        inserted=inserted if isinstance(inserted, int) else None,
+        skipped_duplicates=skipped_duplicates if isinstance(skipped_duplicates, int) else None,
     )
 
 

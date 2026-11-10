@@ -41,15 +41,19 @@ function ImportScreen() {
   const selectedUserId: number | null =
     sel.selectedUserId ?? (users.some((u) => u.id === pickedUserId) ? pickedUserId : null);
 
+  // `mutateAsync`, not `mutate(vars, { onSuccess, onError })`: TanStack Query v5 fires per-call
+  // callbacks only for the *latest* `mutate` on a shared `useMutation`, so with several files in
+  // flight every earlier file would sit at "Uploading…" forever. Each promise settles for its own
+  // call regardless of how many others are running.
   const confirmImport = React.useCallback(
-    (item: ImportItem) => {
+    async (item: ImportItem) => {
       if (item.statementId === undefined || item.issuerId === null || item.extractorChoice === null) {
         return;
       }
       if (item.selectedPages?.length === 0) return;
       const choice = item.extractorChoice;
-      extractStatement.mutate(
-        {
+      try {
+        const response = await extractStatement.mutateAsync({
           statementId: item.statementId,
           body: {
             issuer_id: item.issuerId,
@@ -58,70 +62,60 @@ function ImportScreen() {
             remember: item.remember,
             pages: item.selectedPages ?? null,
           },
-        },
-        {
-          onSuccess: (response) => {
-            dispatch({ type: "extract_started", clientId: item.clientId, jobId: response.job_id });
-          },
-          onError: (error) => {
-            dispatch({
-              type: "extract_failed",
-              clientId: item.clientId,
-              message: error instanceof Error ? error.message : "Import failed",
-            });
-          },
-        },
-      );
+        });
+        dispatch({ type: "extract_started", clientId: item.clientId, jobId: response.job_id });
+      } catch (error) {
+        dispatch({
+          type: "extract_failed",
+          clientId: item.clientId,
+          message: error instanceof Error ? error.message : "Import failed",
+        });
+      }
     },
     [extractStatement, dispatch],
   );
 
   const uploadFile = React.useCallback(
-    (clientId: string, file: File, userId: number) => {
-      uploadStatement.mutate(
-        { file, userId },
-        {
-          onSuccess: (response) => {
-            dispatch({
-              type: "upload_succeeded",
-              clientId,
-              statement: response.statement,
-              proposal: response.proposal,
-              llmConfigured,
-            });
-            const updatedItem: ImportItem = {
-              clientId,
-              fileName: file.name,
-              userId,
-              status: "awaiting_extractor",
-              statementId: response.statement.id,
-              statement: response.statement,
-              proposal: response.proposal,
-              issuerId: response.proposal.issuer_id,
-              extractorChoice: extractorChoiceFromProposal(response.proposal),
-              remember: true,
-              selectedPages: response.statement.selected_pages ?? null,
-              // A re-uploaded statement whose built-in parse already failed must not auto-run it.
-              failure: response.statement.error_detail
-                ? { detail: response.statement.error_detail, llm: false, previous: true }
-                : undefined,
-            };
-            if (
-              response.statement.status === "awaiting_extractor" &&
-              shouldAutoConfirm(updatedItem)
-            ) {
-              confirmImport(updatedItem);
-            }
-          },
-          onError: (error) => {
-            dispatch({
-              type: "upload_failed",
-              clientId,
-              message: error instanceof Error ? error.message : "Upload failed",
-            });
-          },
-        },
-      );
+    async (clientId: string, file: File, userId: number) => {
+      let response: Awaited<ReturnType<typeof uploadStatement.mutateAsync>>;
+      try {
+        response = await uploadStatement.mutateAsync({ file, userId });
+      } catch (error) {
+        dispatch({
+          type: "upload_failed",
+          clientId,
+          message: error instanceof Error ? error.message : "Upload failed",
+        });
+        return;
+      }
+      dispatch({
+        type: "upload_succeeded",
+        clientId,
+        statement: response.statement,
+        proposal: response.proposal,
+        duplicate: response.duplicate,
+        llmConfigured,
+      });
+      const updatedItem: ImportItem = {
+        clientId,
+        fileName: file.name,
+        userId,
+        status: "awaiting_extractor",
+        statementId: response.statement.id,
+        statement: response.statement,
+        proposal: response.proposal,
+        issuerId: response.proposal.issuer_id,
+        extractorChoice: extractorChoiceFromProposal(response.proposal),
+        remember: true,
+        selectedPages: response.statement.selected_pages ?? null,
+        // A re-uploaded statement whose built-in parse already failed must not auto-run it.
+        failure: response.statement.error_detail
+          ? { detail: response.statement.error_detail, llm: false, previous: true }
+          : undefined,
+      };
+      if (response.statement.status === "awaiting_extractor" && shouldAutoConfirm(updatedItem)) {
+        await confirmImport(updatedItem);
+      }
     },
     [uploadStatement, dispatch, confirmImport, llmConfigured],
   );
@@ -132,7 +126,7 @@ function ImportScreen() {
       const clientIds = queueFiles(files, selectedUserId);
       files.forEach((file, index) => {
         const clientId = clientIds[index];
-        if (clientId !== undefined) uploadFile(clientId, file, selectedUserId);
+        if (clientId !== undefined) void uploadFile(clientId, file, selectedUserId);
       });
     },
     [selectedUserId, queueFiles, uploadFile],
@@ -212,7 +206,7 @@ function ImportScreen() {
               key={item.clientId}
               item={item}
               onJobEvent={handleJobEvent}
-              onConfirm={() => confirmImport(item)}
+              onConfirm={() => void confirmImport(item)}
               onRememberChange={(remember) =>
                 dispatch({ type: "remember_toggled", clientId: item.clientId, remember })
               }

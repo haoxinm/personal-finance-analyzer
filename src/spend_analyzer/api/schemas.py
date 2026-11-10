@@ -136,6 +136,9 @@ class ExtractorProposal(_Model):
 class StatementUploadResponse(_Model):
     statement: Statement
     proposal: ExtractorProposal
+    #: This exact file was already imported (`statement` is the earlier, parsed one): nothing
+    #: new will be added by importing it again.
+    duplicate: bool = False
 
 
 class ExtractRequest(_Model):
@@ -201,6 +204,10 @@ class Job(_Model):
     #: the statement this import job was for without polling the classify job separately.
     classified: int | None = None
     needs_review: int | None = None
+    #: On a finished `import` job: transactions newly added, and rows skipped because the same
+    #: transaction was already present (e.g. from an overlapping statement). `None` otherwise.
+    inserted: int | None = None
+    skipped_duplicates: int | None = None
 
 
 # --- Transactions ----------------------------------------------------------------------------------

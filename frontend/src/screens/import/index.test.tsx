@@ -240,6 +240,201 @@ describe("ImportScreen", () => {
     );
   });
 
+  it("carries every file of a multi-file drop through upload and auto-confirmed extraction, not just the last", async () => {
+    // "Don't ask again" for issuer 3 makes a confident proposal import with no click, so all
+    // three uploads and all three extracts are in flight on the screen's two shared mutations.
+    window.localStorage.setItem("spend-analyzer:import:skip-confirm-issuer-ids", JSON.stringify([3]));
+    let uploads = 0;
+    const extractedStatementIds: number[] = [];
+    const fetchMock = vi.fn<typeof fetch>(async (input) => {
+      const { url, method } = describeRequest(input);
+      if (url.includes("/api/users")) return jsonResponse([USER]);
+      if (url.includes("/api/issuers")) return jsonResponse([ISSUER]);
+      if (url.includes("/api/layout-specs")) return jsonResponse([]);
+      if (url.includes("/api/settings")) return jsonResponse({ llm: { mode: "none" } });
+      const extractMatch = /\/api\/statements\/(\d+)\/extract/.exec(url);
+      if (extractMatch && method === "POST") {
+        extractedStatementIds.push(Number(extractMatch[1]));
+        return jsonResponse({ job_id: `job-${extractMatch[1]}` }, 202);
+      }
+      if (url.endsWith("/api/statements") && method === "POST") {
+        const n = (uploads += 1);
+        // Stagger the replies so the three requests overlap on the one shared mutation.
+        await new Promise((resolve) => setTimeout(resolve, 40 - n * 10));
+        return jsonResponse(
+          {
+            statement: { ...STATEMENT_AWAITING, id: 100 + n },
+            proposal: {
+              issuer_id: 3,
+              parser_id: "layout_a_credit",
+              layout_spec_id: null,
+              confidence: 0.92,
+              auto_confirmed: false,
+            },
+          },
+          201,
+        );
+      }
+      return jsonResponse({ detail: `unhandled request: ${method} ${url}` }, 404);
+    });
+    await renderScreen(fetchMock);
+    await waitFor(() => expect(screen.getByTestId("import-target")).toBeInTheDocument());
+
+    const files = ["a.pdf", "b.pdf", "c.pdf"].map(
+      (name) => new File(["%PDF-1.4"], name, { type: "application/pdf" }),
+    );
+    await userEvent.upload(screen.getByLabelText("Choose statement PDFs"), files);
+
+    await waitFor(() => expect(screen.getAllByText("Importing…")).toHaveLength(3));
+    expect(screen.queryByText("Uploading…")).not.toBeInTheDocument();
+    expect(extractedStatementIds.sort()).toEqual([101, 102, 103]);
+  });
+
+  it("moves every file of a multi-file drop to its next state when each upload needs a click", async () => {
+    let uploads = 0;
+    const fetchMock = vi.fn<typeof fetch>(async (input) => {
+      const { url, method } = describeRequest(input);
+      if (url.includes("/api/users")) return jsonResponse([USER]);
+      if (url.includes("/api/issuers")) return jsonResponse([ISSUER]);
+      if (url.includes("/api/layout-specs")) return jsonResponse([]);
+      if (url.endsWith("/api/statements") && method === "POST") {
+        const n = (uploads += 1);
+        // The first upload is the slowest, so it settles after a later one started.
+        await new Promise((resolve) => setTimeout(resolve, 40 - n * 10));
+        return n === 2
+          ? jsonResponse({ detail: "boom" }, 500)
+          : jsonResponse(
+              {
+                statement: { ...STATEMENT_AWAITING, id: 100 + n },
+                proposal: {
+                  issuer_id: 3,
+                  parser_id: "layout_a_credit",
+                  layout_spec_id: null,
+                  confidence: 0.92,
+                  auto_confirmed: false,
+                },
+              },
+              201,
+            );
+      }
+      return jsonResponse({ detail: `unhandled request: ${method} ${url}` }, 404);
+    });
+    await renderScreen(fetchMock);
+    await waitFor(() => expect(screen.getByTestId("import-target")).toBeInTheDocument());
+
+    const files = ["a.pdf", "b.pdf", "c.pdf"].map(
+      (name) => new File(["%PDF-1.4"], name, { type: "application/pdf" }),
+    );
+    await userEvent.upload(screen.getByLabelText("Choose statement PDFs"), files);
+
+    await waitFor(() => expect(screen.getAllByText("Ready to import")).toHaveLength(2));
+    expect(screen.getByText("Upload failed")).toBeInTheDocument();
+    expect(screen.queryByText("Uploading…")).not.toBeInTheDocument();
+  });
+
+  it("reports a re-dropped, already imported PDF as 'Already imported' without offering to import it again", async () => {
+    const fetchMock = vi.fn<typeof fetch>(async (input) => {
+      await Promise.resolve();
+      const { url, method } = describeRequest(input);
+      if (url.includes("/api/users")) return jsonResponse([USER]);
+      if (url.includes("/api/issuers")) return jsonResponse([ISSUER]);
+      if (url.includes("/api/layout-specs")) return jsonResponse([]);
+      if (url.endsWith("/api/statements") && method === "POST") {
+        return jsonResponse(
+          {
+            statement: STATEMENT_PARSED,
+            proposal: {
+              issuer_id: 3,
+              parser_id: "layout_a_credit",
+              layout_spec_id: null,
+              confidence: 0.92,
+              auto_confirmed: false,
+            },
+            duplicate: true,
+          },
+          201,
+        );
+      }
+      return jsonResponse({ detail: `unhandled request: ${method} ${url}` }, 404);
+    });
+    await renderScreen(fetchMock);
+    await waitFor(() => expect(screen.getByTestId("import-target")).toBeInTheDocument());
+
+    await userEvent.upload(
+      screen.getByLabelText("Choose statement PDFs"),
+      new File(["%PDF-1.4"], "chase.pdf", { type: "application/pdf" }),
+    );
+
+    expect(await screen.findByText(/Already imported — 40 transactions on file/)).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("1 already imported");
+    expect(screen.queryByRole("button", { name: "Import" })).not.toBeInTheDocument();
+  });
+
+  it("splits an import's new rows from the ones an overlapping statement already had", async () => {
+    const fetchMock = vi.fn<typeof fetch>(async (input) => {
+      await Promise.resolve();
+      const { url, method } = describeRequest(input);
+      if (url.includes("/api/users")) return jsonResponse([USER]);
+      if (url.includes("/api/issuers")) return jsonResponse([ISSUER]);
+      if (url.includes("/api/layout-specs")) return jsonResponse([]);
+      if (url.includes("/api/statements/7/extract") && method === "POST") {
+        return jsonResponse({ job_id: "job-1" }, 202);
+      }
+      if (url.includes("/api/jobs/job-1")) {
+        return jsonResponse({
+          id: "job-1",
+          kind: "import",
+          status: "done",
+          progress: 1,
+          inserted: 31,
+          skipped_duplicates: 9,
+          classify_job_id: null,
+        });
+      }
+      if (url.includes("/api/statements/7") && method === "GET") {
+        return jsonResponse({ ...STATEMENT_PARSED, txn_count: 31 });
+      }
+      if (url.endsWith("/api/statements") && method === "POST") {
+        return jsonResponse(
+          {
+            statement: STATEMENT_AWAITING,
+            proposal: {
+              issuer_id: 3,
+              parser_id: "layout_a_credit",
+              layout_spec_id: null,
+              confidence: 0.92,
+              auto_confirmed: false,
+            },
+            duplicate: false,
+          },
+          201,
+        );
+      }
+      if (url.includes("/api/transactions")) return jsonResponse({ items: [], total: 5 });
+      return jsonResponse({ detail: `unhandled request: ${method} ${url}` }, 404);
+    });
+    await renderScreen(fetchMock);
+    await waitFor(() => expect(screen.getByTestId("import-target")).toBeInTheDocument());
+    await userEvent.upload(
+      screen.getByLabelText("Choose statement PDFs"),
+      new File(["%PDF-1.4"], "chase.pdf", { type: "application/pdf" }),
+    );
+    await waitFor(() => expect(screen.getByRole("button", { name: "Import" })).toBeEnabled());
+    await userEvent.click(screen.getByRole("button", { name: "Import" }));
+    await waitFor(() => expect(MockEventSource.instances).toHaveLength(1));
+    MockEventSource.instances[0]?.onmessage?.({ data: JSON.stringify({ status: "done", progress: 1 }) });
+
+    await waitFor(() =>
+      expect(screen.getByRole("status")).toHaveTextContent(
+        "1 statement imported · 31 new transactions · 9 already present · 5 need review",
+      ),
+    );
+    // One next-step link on the card, one on the summary.
+    const reviewLinks = screen.getAllByRole("link", { name: /Review 5/ });
+    expect(reviewLinks).toHaveLength(2);
+    expect(reviewLinks[0]).toHaveAttribute("href", "/spending/review");
+  });
+
   it("shows a failed built-in parse as a warning, keeps the picker, preselects the LLM, and retries with parser_id llm", async () => {
     const extractBodies: unknown[] = [];
     let statementGets = 0;

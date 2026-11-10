@@ -85,6 +85,7 @@ async def upload_statement(
             confidence=proposal.detect_score or 0.0,
             auto_confirmed=False,
         ),
+        duplicate=proposal.status == "duplicate",
     )
 
 

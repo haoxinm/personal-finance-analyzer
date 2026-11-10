@@ -56,6 +56,21 @@ function parseShapeWarnings(raw: string | null | undefined): string[] {
   }
 }
 
+/** The outcome line for a parsed item. A re-dropped file that was already imported says so
+ * (its statement's `txn_count` is the earlier import's, not new rows); otherwise "N new", plus
+ * how many rows an overlapping statement had already provided. */
+function parsedOutcomeText(item: ImportItem): string {
+  const count = item.statement?.txn_count ?? 0;
+  if (item.duplicate) {
+    return `Already imported — ${count} transaction${count === 1 ? "" : "s"} on file, nothing new`;
+  }
+  const inserted = item.insertedCount ?? count;
+  const parts = [`${inserted} new transaction${inserted === 1 ? "" : "s"}`];
+  if (item.skippedDuplicates) parts.push(`${item.skippedDuplicates} already present`);
+  if (item.needsReviewCount !== undefined) parts.push(`${item.needsReviewCount} need review`);
+  return parts.join(" · ");
+}
+
 /** One row of the Import screen's per-file list: status, live progress, the issuer/extractor
  * picker while `awaiting_extractor`, and the outcome (success with reconciliation, or one of
  * the four failure shapes the plan names) once the extract job finishes. */
@@ -199,11 +214,7 @@ export function StatementCard({
 
         {item.status === "parsed" ? (
           <div className="flex flex-col gap-1 text-sm">
-            <p className="text-foreground">
-              {item.statement?.txn_count ?? 0} new transaction
-              {item.statement?.txn_count === 1 ? "" : "s"}
-              {item.needsReviewCount !== undefined ? ` · ${item.needsReviewCount} need review` : ""}
-            </p>
+            <p className="text-foreground">{parsedOutcomeText(item)}</p>
             {reconciliationDelta !== null && reconciliationDelta !== 0 ? (
               <p className="flex items-center gap-1 text-xs text-destructive" role="alert">
                 Reconciliation delta: <Money minorUnits={reconciliationDelta} />
@@ -215,6 +226,18 @@ export function StatementCard({
                 spot-check before trusting the numbers ({shapeWarnings.join("; ")}).
               </p>
             ) : null}
+            <div className="flex flex-wrap items-center gap-2 pt-1">
+              {!item.duplicate && (item.needsReviewCount ?? 0) > 0 ? (
+                <Button asChild size="sm">
+                  <Link to="/spending/review">Review {item.needsReviewCount} &rarr;</Link>
+                </Button>
+              ) : null}
+              <Button asChild size="sm" variant="outline">
+                <Link to={`/spending/transactions?statement_id=${item.statementId ?? ""}`}>
+                  View transactions
+                </Link>
+              </Button>
+            </div>
           </div>
         ) : null}
       </CardContent>

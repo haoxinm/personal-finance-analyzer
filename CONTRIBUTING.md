@@ -8,6 +8,12 @@ $ uv sync --extra dev            # Python deps into .venv/
 $ cd frontend && npm ci           # frontend deps
 ```
 
+`pytest`, `ruff` and `mypy` live in the `dev` extra, so run `uv sync --extra dev` first. Without it
+`uv run pytest` finds no pytest in the project environment and falls back to one on your `PATH`,
+which then fails to import the project's own dependencies (`No module named 'sqlalchemy'`); a
+fresh worktree or clone is where this bites. `uv run --extra dev pytest -q` (or `--all-extras`)
+syncs and runs in one step.
+
 Development works on Windows, macOS and Linux (CI runs the Python tests on all three). The
 commands above are identical everywhere; on Windows use PowerShell or Git Bash, and
 `uv run <cmd>` rather than activating the virtualenv by hand (or run

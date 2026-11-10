@@ -1627,6 +1627,10 @@ export interface components {
             classified?: number | null;
             /** Needs Review */
             needs_review?: number | null;
+            /** Inserted */
+            inserted?: number | null;
+            /** Skipped Duplicates */
+            skipped_duplicates?: number | null;
         };
         /** JobIdResponse */
         JobIdResponse: {
@@ -2123,6 +2127,11 @@ export interface components {
         StatementUploadResponse: {
             statement: components["schemas"]["Statement"];
             proposal: components["schemas"]["ExtractorProposal"];
+            /**
+             * Duplicate
+             * @default false
+             */
+            duplicate: boolean;
         };
         /** Subcategory */
         Subcategory: {
