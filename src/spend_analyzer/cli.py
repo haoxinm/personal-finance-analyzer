@@ -46,9 +46,11 @@ app.add_typer(users_app, name="users")
 issuers_app = typer.Typer(help="Manage issuers (§3.12a, A23/A24), so later imports auto-confirm.")
 app.add_typer(issuers_app, name="issuers")
 
+from spend_analyzer.cli_backup import backup_app  # noqa: E402
 from spend_analyzer.cli_llm import llm_app  # noqa: E402
 
 app.add_typer(llm_app, name="llm")
+app.add_typer(backup_app, name="backup")
 
 tax_app = typer.Typer(help="Import and report W-2 / 1099 / 1040 tax forms (income & tax analysis).")
 app.add_typer(tax_app, name="tax")

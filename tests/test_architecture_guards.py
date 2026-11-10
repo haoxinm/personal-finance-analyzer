@@ -248,3 +248,27 @@ def test_net_worth_modules_import_no_llm_or_http() -> None:
         if hits:
             offenders[_rel(path)] = hits
     assert not offenders, f"net-worth modules import an LLM or network module: {offenders}"
+
+
+def test_backup_modules_import_no_llm_or_http() -> None:
+    """A backup holds everything the app knows and has no egress path: no LLM, no HTTP client."""
+    paths = [
+        *_iter_py_files(_SRC_ROOT / "backup"),
+        _SRC_ROOT / "api" / "routers" / "backup.py",
+        _SRC_ROOT / "api" / "restore_gate.py",
+        _SRC_ROOT / "cli_backup.py",
+    ]
+    assert any(p.name == "archive.py" for p in paths)
+    offenders: dict[str, set[str]] = {}
+    for path in paths:
+        tree = _parse(path)
+        hits = {
+            m
+            for m in _full_imported_modules(tree)
+            if m in ("spend_analyzer.llm", "spend_analyzer.classify.llm")
+            or m.startswith(("spend_analyzer.llm.", "spend_analyzer.classify.llm."))
+        }
+        hits |= _imports_http_client(tree)
+        if hits:
+            offenders[_rel(path)] = hits
+    assert not offenders, f"backup modules import an LLM or network module: {offenders}"

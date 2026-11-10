@@ -111,6 +111,11 @@ unless you set `[privacy] store_pdf_copies = false` in `config.toml`), `config.t
 `logs/app.log`. Nothing here is ever uploaded anywhere by Spend Analyzer itself — there is no
 telemetry, no analytics, and no update check.
 
+To move this data to another computer, use `spend-analyzer backup create` and `backup restore`
+(see [Moving to another machine](../README.md#moving-to-another-machine)) rather than copying the
+directory by hand: a backup is consistent while the app runs, and restore fixes up the stored PDF
+paths for the new location.
+
 Override the location for a second profile, a test, or a portable install:
 
 ```console

@@ -11,6 +11,7 @@ every `/api` request's `Host` header is consistent with `127.0.0.1`/`localhost`.
 
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
@@ -19,9 +20,11 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
+from spend_analyzer.api.restore_gate import RestoreGate, RestoreGateMiddleware
 from spend_analyzer.api.routers import (
     accounts,
     analytics,
+    backup,
     classify,
     export,
     forecast,
@@ -43,7 +46,9 @@ from spend_analyzer.api.routers import (
     settings as settings_router,
 )
 from spend_analyzer.api.security import LocalhostGuardMiddleware, generate_token
+from spend_analyzer.backup import archive as backup_archive
 from spend_analyzer.config import Settings
+from spend_analyzer.core.paths import get_home
 from spend_analyzer.db.session import make_engine, make_session_factory
 from spend_analyzer.ingest.tax import staging as tax_staging
 from spend_analyzer.jobs.runner import JobRunner
@@ -68,6 +73,9 @@ def create_app(
     session_factory: sessionmaker[Session] = make_session_factory(resolved_engine)
 
     tax_staging.purge_all()  # re-selected tax PDFs never outlive the process
+    # A backup export or restore that was killed leaves plaintext scratch files behind.
+    with contextlib.suppress(OSError):
+        backup_archive.sweep_stale_work_dirs(get_home())
     app = FastAPI(title="Spend Analyzer API", version="0.1.0")
     app.state.engine = resolved_engine
     app.state.session_factory = session_factory
@@ -75,7 +83,11 @@ def create_app(
     app.state.token = resolved_token
     app.state.job_runner = JobRunner(session_factory)
     app.state.job_runner.start()
+    app.state.restore_gate = RestoreGate()
 
+    # Added first so it sits inside the localhost guard: unauthenticated requests are rejected
+    # before a restore in progress can count (or turn away) them.
+    app.add_middleware(RestoreGateMiddleware, gate=app.state.restore_gate)
     app.add_middleware(
         LocalhostGuardMiddleware, token=resolved_token, port=resolved_settings.server.port
     )
@@ -98,6 +110,7 @@ def create_app(
         net_worth.router,
         forecast.router,
         tax.router,
+        backup.router,
     ):
         app.include_router(router, prefix="/api")
 

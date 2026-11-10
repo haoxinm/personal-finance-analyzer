@@ -55,10 +55,16 @@ def ensure_home() -> Path:
     """Return the data directory, creating it and its standard subdirectories (mode 0700) if
     absent. Safe to call repeatedly."""
     home = get_home()
+    create_home_layout(home)
+    return home
+
+
+def create_home_layout(home: Path) -> None:
+    """Create ``home`` and its standard subdirectories (mode 0700) if absent. Takes an explicit
+    path so a restore can lay out a staging directory that will later be renamed to the real one."""
     _mkdir_0700(home)
     for name in _SUBDIRS:
         _mkdir_0700(home / name)
-    return home
 
 
 def _mkdir_0700(path: Path) -> None:

@@ -44,6 +44,15 @@ Given that, the threats this project actually defends against are:
    database, logs or extract cache, and the uploaded PDF is deleted unless
    `[privacy] store_tax_pdf_copies` is turned on; balances are never exported or sent anywhere.
 
+6. **A backup file leaking.** `spend-analyzer backup create` and Settings -> Backup & restore bundle
+   the database, kept PDFs and settings into one file to carry to another machine, so the file holds
+   everything the app knows. It is encrypted with a passphrase by default (scrypt + AES-256-GCM,
+   authenticated, so tampering is detected), never contains the keychain API key or
+   `[llm] extra_headers`, and restore verifies the whole archive in a staging directory before it
+   touches anything and never deletes the previous data directory. Writing an unencrypted backup
+   needs an explicit opt-out. Keeping the file (and any `*.before-restore` directory) safe is the
+   user's job, like any other copy of their data.
+
 **Out of scope / accepted risk for v1** (see the design record's non-goals): database encryption
 at rest (the project relies on OS-level disk encryption, e.g. FileVault, BitLocker, or LUKS); multi-user
 authentication (there is none — this is a single-user local tool); protecting against an attacker

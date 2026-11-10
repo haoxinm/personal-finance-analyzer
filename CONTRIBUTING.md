@@ -194,6 +194,9 @@ net-worth feature (`analytics/net_worth_query.py`, `api/routers/net_worth.py`,
 `api/services/net_worth.py`, and the forecast's `analytics/forecast_baseline.py`,
 `api/routers/forecast.py`, `api/services/forecast.py`, `core/forecast.py`): they hold taxpayer identifiers and account balances, must not import an
 LLM or HTTP client (`tests/test_architecture_guards.py`), and must keep full identifiers out of the
-database, logs and extract cache — see [docs/SECURITY_REVIEW.md](docs/SECURITY_REVIEW.md) for the checklist
+database, logs and extract cache. Backup and restore (`backup/`, `api/routers/backup.py`,
+`api/restore_gate.py`) is sensitive for the opposite reason: it handles an archive of *all* the
+data, so it archives only an explicit allow-list (never the keychain key), validates before it
+touches the data directory, never deletes the old one, and imports no LLM or HTTP client — see [docs/SECURITY_REVIEW.md](docs/SECURITY_REVIEW.md) for the checklist
 those areas are held to, and [SECURITY.md](SECURITY.md) to report a vulnerability rather than
 opening a public issue.

@@ -1,6 +1,7 @@
 import { ErrorState, LoadingState } from "@/components/primitives/states";
 import { useToast } from "@/components/ui/use-toast";
 
+import { BackupSection } from "./components/backup-section";
 import { EgressPreviewSection } from "./components/egress-preview-section";
 import { LlmSettingsSection } from "./components/llm-settings-section";
 import { PrivacySection } from "./components/privacy-section";
@@ -10,7 +11,7 @@ import { type LlmSettings, type PrivacySettings, type Settings, useSettingsQuery
 /**
  * Settings screen (P3-E): users and accounts CRUD, the unified LLM endpoint with
  * its key/model/threshold/batch-size fields, privacy toggles, and the egress preview — "the
- * feature that earns user trust", per the plan.
+ * feature that earns user trust", per the plan — then backup & restore for moving to another machine.
  */
 function SettingsScreen() {
   const { toast } = useToast();
@@ -61,13 +62,14 @@ function SettingsScreen() {
       <div>
         <h1 className="text-xl font-semibold tracking-tight">Settings</h1>
         <p className="text-sm text-muted-foreground">
-          Users, accounts, the LLM provider, privacy, and exactly what would be sent to it.
+          Users, accounts, the LLM provider, privacy, exactly what would be sent to it, and backup & restore.
         </p>
       </div>
       <UsersAccountsSection />
       <LlmSettingsSection settings={settings} onSave={saveLlm} saving={updateSettings.isPending} />
       <PrivacySection settings={settings} onSave={savePrivacy} saving={updateSettings.isPending} />
       <EgressPreviewSection settings={settings} />
+      <BackupSection />
     </div>
   );
 }

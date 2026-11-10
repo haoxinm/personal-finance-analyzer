@@ -372,6 +372,45 @@ Exports transactions to CSV (default) or `--format json`, to a file or `-` for s
 `tests/api/test_export.py`, not only by the response schema. `--user-id` / `--all-users` narrow
 the export; with neither, everything is exported.
 
+## `backup`
+
+```console
+$ spend-analyzer backup create ~/Desktop/
+Passphrase (needed to restore; there is no recovery if you lose it):
+Repeat for confirmation:
+Backup written to /Users/you/Desktop/spend-analyzer-2026-10-30.spendbackup (48.2 MB)
+Contains: 3 users, 7 accounts, 41 statements, 1893 transactions, 6 tax documents; 49 files.
+Not included: your LLM API key (it stays in this machine's keychain; run `spend-analyzer llm set-key` on the new one), the extract cache and logs.
+
+$ spend-analyzer backup inspect spend-analyzer-2026-10-30.spendbackup
+$ spend-analyzer backup restore spend-analyzer-2026-10-30.spendbackup
+```
+
+Moves all your data to another machine: `create` on the old one, copy the one file, `restore` on
+the new one. See [Moving to another machine](../README.md#moving-to-another-machine).
+
+- **`backup create OUT`** writes the database (a consistent snapshot, so it is safe while `serve`
+  is running), the kept statement PDFs, layout specs and `config.toml`. `OUT` is a file, or a
+  directory to get a dated `spend-analyzer-YYYY-MM-DD.spendbackup` in. It is **encrypted with a
+  passphrase by default** (at least 8 characters; prompted twice, or read from the first line of
+  `--passphrase-file`). `--no-encrypt` is the explicit opt-out: the file then holds your statements
+  and tax forms in clear. An existing `OUT` is only replaced with `--force`. Never included: the
+  API key in your OS keychain, the extract cache, logs, and `[llm] extra_headers` / credentials in
+  the LLM URL (they can carry secrets).
+- **`backup inspect FILE`** prints the format, schema revision, creation time and counts
+  (users, accounts, statements, transactions, tax documents, PDFs) without extracting or restoring
+  anything. It shows no names, descriptions or amounts. An encrypted file needs its passphrase.
+- **`backup restore FILE`** makes the backup this machine's data directory. The whole archive is
+  verified (decryption, manifest, SHA-256 of every file, database integrity, schema revision)
+  before anything is touched. If the data directory already holds data it refuses unless you pass
+  `--replace`, which moves the current directory to `<name>.<timestamp>.before-restore` next to it
+  (never deleted). A backup from an older version is migrated; one from a newer version is refused
+  with a message to upgrade. Stop `spend-analyzer serve` first: a database still open in another
+  process stops the restore.
+
+All three exit 1 with a message on any problem (wrong passphrase, damaged or modified file, unknown
+format). The web UI has the same two actions under Settings -> Backup & restore.
+
 ## `doctor`
 
 ```console
