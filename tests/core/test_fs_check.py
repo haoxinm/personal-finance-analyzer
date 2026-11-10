@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -23,23 +24,33 @@ MOUNTINFO = r"""
 44 22 0:41 / /pfabackup rw - fuse.sshfs me@host:/ rw
 """
 
+# The mount table is a Linux file, and on Windows `Path("/pfa/x").resolve()` gains a drive letter
+# (`C:/pfa/x`), so a POSIX mount point can never be a prefix of it: these cases are Linux-only.
+needs_posix_paths = pytest.mark.skipif(
+    sys.platform == "win32", reason="mountinfo paths are POSIX; Windows resolves them to a drive"
+)
 
+
+@needs_posix_paths
 def test_longest_mount_point_wins(tmp_path: Path) -> None:
     assert filesystem_type(Path("/etc/hosts"), mountinfo=MOUNTINFO) == "ext4"
     assert filesystem_type(Path("/pfa/data"), mountinfo=MOUNTINFO) == "ext4"
     assert filesystem_type(Path("/pfa/documents/2025"), mountinfo=MOUNTINFO) == "nfs4"
 
 
+@needs_posix_paths
 def test_a_mount_point_is_not_a_prefix_of_a_sibling_name() -> None:
     # /pfabackup is sshfs; /pfa/x must not match it, and /pfabackup/x must not match /pfa.
     assert filesystem_type(Path("/pfabackup/x"), mountinfo=MOUNTINFO) == "fuse.sshfs"
     assert filesystem_type(Path("/pfa/x"), mountinfo=MOUNTINFO) == "ext4"
 
 
+@needs_posix_paths
 def test_octal_escapes_in_mount_points() -> None:
     assert filesystem_type(Path("/mnt/with space/db"), mountinfo=MOUNTINFO) == "cifs"
 
 
+@needs_posix_paths
 def test_network_classification() -> None:
     assert is_network_filesystem(Path("/pfa/documents"), mountinfo=MOUNTINFO)
     assert is_network_filesystem(Path("/mnt/with space"), mountinfo=MOUNTINFO)
