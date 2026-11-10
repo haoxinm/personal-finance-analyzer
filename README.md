@@ -119,6 +119,49 @@ Running from a source checkout? After `git pull`, rebuild the web UI with
 `cd frontend && npm ci && npm run build` (an editable install never does; `serve` warns when the
 build is missing or stale).
 
+### Run it on a NAS or home server (Docker)
+
+A multi-arch (amd64 and arm64) image runs the same app behind a password login, with your database
+and PDFs in plain folders on the host that survive `docker volume prune` and are readable without
+the app. **It is built for your home network only: it refuses connections from anywhere that is not
+a local (private) address, and you should never make it reachable from the internet.**
+
+```console
+$ mkdir pfa-app && cd pfa-app
+$ curl -O https://raw.githubusercontent.com/haoxinm/personal-finance-analyzer/main/docker-compose.yml
+$ mkdir -p pfa secrets                                    # pfa = your data, secrets = the password
+$ openssl rand -base64 24 > secrets/pfa_password.txt      # create the login password (see below)
+$ chmod 600 secrets/pfa_password.txt
+$ nano docker-compose.yml     # set PUID/PGID (run `id`), TZ, and PFA_ALLOWED_HOSTS to the name or IP you will browse to
+$ docker compose up -d
+$ cat secrets/pfa_password.txt                            # the password to type on the login page
+```
+
+Then open `http://<nas-name-or-ip>:8756` from a computer or phone on the same network and sign in.
+
+The login password works as described under [Creating the password](#creating-the-password) below:
+in the container the compose file already points `PFA_PASSWORD_FILE` at `secrets/pfa_password.txt`
+(make the file as the same NAS user whose ids you set in `PUID`/`PGID`, in the folder next to
+`docker-compose.yml`), and changing it means writing a new password into that file and running
+`docker compose up -d --force-recreate`. To keep only a hash, run the image's own helper
+(`docker run --rm -it --entrypoint pfa ghcr.io/haoxinm/personal-finance-analyzer:latest auth
+hash-password`) and see [docs/DOCKER.md](docs/DOCKER.md#option-2-store-only-a-hash) for the exact
+compose lines (every `$` of a hash given directly in `PFA_PASSWORD_HASH` must be doubled to `$$`
+in a compose file).
+
+The same rules as on any home server apply (see [Keeping it off the internet](#keeping-it-off-the-internet)),
+with two Docker specifics: bind the port to the NAS's LAN address in `docker-compose.yml`
+(`"192.168.1.10:8756:8756"`) so no other interface listens (the default, `"0.0.0.0:8756:8756"`, is
+IPv4 only on purpose: a bare `"8756:8756"` also listens on IPv6, where Docker hides who is
+connecting), and note that on some Docker setups (IPv6 connections to a published port, Docker
+Desktop, rootless Docker) the app cannot see the real address of the computer that connected, so the
+network check cannot tell the internet from your LAN; it logs a warning when it notices (requests
+from the container's default gateway). [docs/DOCKER.md](docs/DOCKER.md#keeping-it-off-the-internet)
+explains when that happens and how to test yours.
+
+See [docs/DOCKER.md](docs/DOCKER.md) for the storage layout, NAS specifics (Synology, Unraid,
+TrueNAS), HTTPS behind a reverse proxy, running with no network access, backups and upgrades.
+
 ### Serving it on your home network
 
 By default `pfa serve` listens on this computer only. To reach the app from other devices on your
@@ -327,9 +370,10 @@ This is the reason to run this instead of a hosted budgeting app.
 - **The local web server** binds `127.0.0.1` only, checks every request's `Host` header, and
   requires a random token minted fresh on every launch — so nothing else on your machine's network,
   let alone the internet, can reach it, and a malicious web page open in your browser can't either.
-  (Serving it on your home network with `--host` is the one deliberate exception: it refuses to
-  start without a login password and answers only clients on your local network; see
-  [Serving it on your home network](#serving-it-on-your-home-network).)
+  (Serving it on your home network with `--host`, which is what the Docker image does, is the one
+  deliberate exception: it refuses to start without a login password and answers only clients on
+  your local network; see [Serving it on your home network](#serving-it-on-your-home-network) and
+  [docs/DOCKER.md](docs/DOCKER.md#authentication).)
 
 See [docs/SECURITY_REVIEW.md](docs/SECURITY_REVIEW.md) for the full, code-verified security
 checklist, and [SECURITY.md](SECURITY.md) for the threat model and how to report a vulnerability.
@@ -526,6 +570,7 @@ Run `pfa --help` or `pfa <command> --help` for full options; see
 ## Documentation
 
 - [docs/INSTALL.md](docs/INSTALL.md) — installing (Windows/macOS/Linux), upgrading, uninstalling, troubleshooting
+- [docs/DOCKER.md](docs/DOCKER.md) — the Docker image for a NAS or home server: compose file, storage, login, HTTPS, offline use
 - [docs/CLI.md](docs/CLI.md) — full CLI command reference
 - [docs/LAYOUTS.md](docs/LAYOUTS.md) — the four built-in layout specifications and how to add one
 - [docs/TAX.md](docs/TAX.md) — income and tax analysis: supported forms, boxes, rates, the estimate and its limits

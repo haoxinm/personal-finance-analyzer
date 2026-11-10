@@ -5,3 +5,7 @@
 *.yml text eol=lf
 *.toml text eol=lf
 *.csv text eol=lf
+
+# Container scripts run under /bin/sh in Linux: CRLF from a Windows checkout would break them.
+docker/* text eol=lf
+Dockerfile text eol=lf

@@ -8,18 +8,20 @@ database, one local web server. There is no multi-tenant deployment, no authenti
 user's own computer (see the non-goals in the design record — hosted/multi-tenant deployment and
 authentication are explicitly out of scope for v1).
 
-The one supported exception is serving the app on a home network (`pfa serve --host`; see the
-README's "Serving it on your home network"): there the server listens on the network, so it refuses
+The one supported exception is serving the app on a home network (`pfa serve --host`, or the Docker
+image for a NAS or home server, [docs/DOCKER.md](docs/DOCKER.md); see the README's "Serving it on
+your home network"): there the server listens on the network, so it refuses
 to start without a single shared login password (`src/personal_finance_analyzer/api/auth.py`:
 scrypt-hashed, in-memory sessions in an `HttpOnly`, `SameSite=Strict` cookie, rate-limited), keeps
 the `Host` allowlist (widened only by `PFA_ALLOWED_HOSTS`) and the per-launch token underneath, and
 should sit behind an HTTPS reverse proxy. On top of the login it refuses, with `403` and before the
 login page, every client whose address is not on the local network
 (`src/personal_finance_analyzer/api/clients.py`: private, link-local and loopback ranges by default;
-`PFA_ALLOWED_CLIENTS` and `PFA_TRUSTED_PROXIES` adjust it). That check is defense in depth: behind
-some proxies and NAT layers the real client address is hidden, and the app logs a warning when it
-sees requests from a gateway address. The guarantee is not exposing the port: never forward it on
-your router. Login attempts are counted before the password is checked and at most two scrypt
+`PFA_ALLOWED_CLIENTS` and `PFA_TRUSTED_PROXIES` adjust it). That check is defense in depth: some
+Docker setups (IPv6 connections to a published port, Docker Desktop, rootless Docker) and some proxies
+hide the real client address, and the app logs a warning when it sees requests from the container's
+default gateway. The guarantee is not exposing the port: publish it on an IPv4 or LAN address only and
+never forward it on your router ([docs/DOCKER.md](docs/DOCKER.md#keeping-it-off-the-internet)). Login attempts are counted before the password is checked and at most two scrypt
 verifications run at once, so a burst of parallel guesses gets no extra tries and cannot exhaust a
 small host's memory. Failures are limited per client (an IPv4 address, or an IPv6 /64, so rotating
 addresses within a /64 buys nothing) and overall; once the overall limit is hit each client gets one

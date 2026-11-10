@@ -1,0 +1,13 @@
+# Keeps the pinned base-image digests in the Dockerfile and the Actions current. The actions in
+# docker.yml (which can push to GHCR) are pinned to full commit SHAs with a "# vX.Y.Z" comment;
+# Dependabot opens a PR that bumps both the SHA and the comment.
+version: 2
+updates:
+  - package-ecosystem: docker
+    directory: "/"
+    schedule:
+      interval: weekly
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly

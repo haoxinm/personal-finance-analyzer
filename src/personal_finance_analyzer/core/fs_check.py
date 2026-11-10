@@ -44,6 +44,7 @@ NETWORK_FS_TYPES = frozenset(
         "fuse.grpcfuse",
         "fuse.osxfs",
         "fuse.mergerfs",
+        "fuse.shfs",  # Unraid's /mnt/user union filesystem
     }
 )
 

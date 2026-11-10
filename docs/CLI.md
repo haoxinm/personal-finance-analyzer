@@ -41,7 +41,8 @@ and opens your browser to it automatically (`--no-open-browser` to skip that). S
 Anything but loopback **refuses to start without a login password** (`PFA_PASSWORD`,
 `PFA_PASSWORD_FILE`, `PFA_PASSWORD_HASH` or `PFA_PASSWORD_HASH_FILE`) unless
 `PFA_INSECURE_NO_AUTH=1` is set, and the names you browse by must be listed in
-`PFA_ALLOWED_HOSTS`. `serve` does not migrate the database itself: run `pfa migrate` first.
+`PFA_ALLOWED_HOSTS`. This is the mode the Docker image uses; see [DOCKER.md](DOCKER.md). `serve`
+does not migrate the database itself: run `pfa migrate` first (the container does).
 
 Beyond loopback the server is also **local-network only**: a client whose address is not private
 (loopback, `10/8`, `172.16/12`, `192.168/16`, link-local, IPv6 `fc00::/7`) gets `403` before the
@@ -49,7 +50,8 @@ login page. `PFA_ALLOWED_CLIENTS` (comma-separated CIDRs; `private` is the defau
 `private,100.64.0.0/10` adds Tailscale) changes the list, `PFA_TRUSTED_PROXIES` names reverse
 proxies whose `X-Forwarded-For` decides the client address, and `PFA_ALLOW_PUBLIC_CLIENTS=1` turns
 the check off with a loud warning. See the README's
-[Serving it on your home network](../README.md#serving-it-on-your-home-network).
+[Serving it on your home network](../README.md#serving-it-on-your-home-network) and
+[DOCKER.md](DOCKER.md#keeping-it-off-the-internet).
 
 ## `auth`
 
@@ -61,7 +63,7 @@ scrypt$15$8$1$...$...
 ```
 
 Prints a `PFA_PASSWORD_HASH` value (scrypt) for a login password, so the plaintext never has to be
-stored in an environment file or secret. `--stdin` reads the password from standard input instead.
+stored in a compose file or secret. `--stdin` reads the password from standard input instead.
 The prompts go to stderr, so `pfa auth hash-password > file` captures only the hash.
 
 ## `import`
