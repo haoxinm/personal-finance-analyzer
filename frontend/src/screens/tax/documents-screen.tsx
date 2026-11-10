@@ -5,7 +5,8 @@ import { Card, CardContent } from "@/components/ui/card";
 import { useSelectedUser } from "@/hooks/use-selected-user";
 
 import { DocumentsPanel } from "./components/documents-panel";
-import { useTaxDocuments, useTaxYearFilter } from "./hooks";
+import { useTaxDocuments, useTaxSummary, useTaxYearFilter } from "./hooks";
+import { supersededByDocument } from "./logic";
 
 export const screenMeta = { path: "/tax/documents", title: "Documents" };
 
@@ -18,6 +19,12 @@ export default function TaxDocumentsScreen() {
   const sel = useSelectedUser();
   const documentsQuery = useTaxDocuments(sel.selectedUserId, !sel.isLoading);
   const [year, setYear] = useTaxYearFilter();
+  // Only for the "replaced by corrected form" badges: a failed summary just shows no badges.
+  const summaryQuery = useTaxSummary(sel.userIds, !sel.isLoading);
+  const superseded = React.useMemo(
+    () => supersededByDocument(summaryQuery.data ?? []),
+    [summaryQuery.data],
+  );
   const documents = React.useMemo(() => documentsQuery.data ?? [], [documentsQuery.data]);
   const years = React.useMemo(
     () =>
@@ -81,6 +88,7 @@ export default function TaxDocumentsScreen() {
               users={sel.users}
               selectedUserId={sel.selectedUserId}
               year={year}
+              superseded={superseded}
             />
           )}
         </CardContent>

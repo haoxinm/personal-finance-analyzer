@@ -89,34 +89,61 @@ function amountOf(
   return row ? row.amount_minor : null;
 }
 
+export type HeadlineBasis = NonNullable<
+  TaxSummary["headline"]
+>["federal_basis"];
+
 export interface HeadlineTax {
-  /** Federal income tax: the return's total liability, else what was withheld. */
+  /** Federal income tax: the return's total tax, else the estimate, else what was withheld. */
   federalMinor: number;
-  federalKind: "liability" | "withheld";
+  /** Where `federalMinor` comes from. */
+  federalBasis: HeadlineBasis;
   ficaMinor: number;
   /** State (and local) income tax: liability when printed, else withheld. */
   stateMinor: number;
   totalMinor: number;
 }
 
-export function headlineTax(s: TaxSummary): HeadlineTax {
-  const liability = amountOf(s.liability, "total_federal_tax");
-  const federalKind = liability !== null ? "liability" : "withheld";
-  const federalMinor =
-    liability ?? amountOf(s.withheld, "federal_income_tax_withheld") ?? 0;
-  const ficaMinor = s.fica.reduce((sum, r) => sum + r.amount_minor, 0);
-  const stateLiability = amountOf(s.liability, "state_income_tax_liability");
-  const stateMinor =
-    stateLiability ??
-    (amountOf(s.withheld, "state_income_tax_withheld") ?? 0) +
-      (amountOf(s.withheld, "local_income_tax_withheld") ?? 0);
+/** The server's headline tax for a summary (`null` when no tax figure exists for the year). The
+ * rule (return, else estimate, else withholding) lives in the backend so the UI never repeats it. */
+export function headlineTax(s: TaxSummary): HeadlineTax | null {
+  const h = s.headline;
+  if (!h) return null;
   return {
-    federalMinor,
-    federalKind,
-    ficaMinor,
-    stateMinor,
-    totalMinor: federalMinor + ficaMinor + stateMinor,
+    federalMinor: h.federal_minor,
+    federalBasis: h.federal_basis,
+    ficaMinor: h.fica_minor,
+    stateMinor: h.state_minor,
+    totalMinor: h.total_minor,
   };
+}
+
+/** Short label of a headline's federal basis, shown next to the figure. */
+export function headlineBasisLabel(basis: HeadlineBasis): string {
+  switch (basis) {
+    case "return":
+      return "from return";
+    case "estimate":
+      return "estimated";
+    case "withholding":
+      return "withholding only";
+    case "mixed":
+      return "mixed";
+  }
+}
+
+/** One sentence on what a headline basis means (tooltips and the chart note). */
+export function headlineBasisNote(basis: HeadlineBasis): string {
+  switch (basis) {
+    case "return":
+      return "Federal tax is the total tax printed on the Form 1040.";
+    case "estimate":
+      return "No Form 1040: federal tax is the estimate computed from your source forms.";
+    case "withholding":
+      return "No Form 1040 and no estimate: federal tax is only what was withheld.";
+    case "mixed":
+      return "The selected users differ: some have a return, others an estimate or withholding only.";
+  }
 }
 
 export interface RefundOrOwed {
@@ -294,18 +321,55 @@ export function taxBreakdownRows(s: TaxSummary): BreakdownGroup[] {
 export interface YearPoint {
   year: number;
   income: number;
+  /** Total tax of the year (the headline); 0 when the year has no tax figure. */
   tax: number;
+  /** Where the year's federal tax comes from; `null` when it has none. */
+  basis: HeadlineBasis | null;
 }
 
 /** Oldest-to-newest points for the year-over-year chart. */
 export function yearOverYear(summaries: readonly TaxSummary[]): YearPoint[] {
   return [...summaries]
     .sort((a, b) => a.tax_year - b.tax_year)
-    .map((s) => ({
-      year: s.tax_year,
-      income: s.total_income_minor,
-      tax: headlineTax(s).totalMinor,
-    }));
+    .map((s) => {
+      const h = headlineTax(s);
+      return {
+        year: s.tax_year,
+        income: s.total_income_minor,
+        tax: h?.totalMinor ?? 0,
+        basis: h?.federalBasis ?? null,
+      };
+    });
+}
+
+/** Documents holding a form that a corrected form replaced: document id -> the replaced forms'
+ * types (from the summaries' `superseded_forms`, which the server never counts in any total). */
+export function supersededByDocument(
+  summaries: readonly TaxSummary[],
+): Map<number, TaxFormType[]> {
+  const map = new Map<number, TaxFormType[]>();
+  for (const s of summaries) {
+    for (const f of s.superseded_forms ?? []) {
+      const forms = map.get(f.document_id) ?? [];
+      forms.push(f.form_type);
+      map.set(f.document_id, forms);
+    }
+  }
+  return map;
+}
+
+/** Year-over-year axis label: the year, plus a short mark when its tax is not from a return. */
+export function yearPointLabel(point: YearPoint): string {
+  switch (point.basis) {
+    case "estimate":
+      return `${point.year} (est.)`;
+    case "withholding":
+      return `${point.year} (w/h)`;
+    case "mixed":
+      return `${point.year} (mixed)`;
+    default:
+      return String(point.year);
+  }
 }
 
 export interface PayerRow {

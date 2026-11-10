@@ -174,7 +174,8 @@ With it on, the first tax estimate or summary opened in a calendar year makes on
 public file in the project's GitHub repository (no query string, cookies or user data), keeps a
 validated copy in `tax_params/` and does not ask again that year. It never blocks the page; a
 failure is ignored. Leave it off and the app only ever uses the figures bundled with it (2022 -
-2026); `spend-analyzer tax params update` checks on request. Details in
+2026); `spend-analyzer tax params update` (or **Check now** under Settings › Tax parameters, which
+also has this toggle) checks on request. Details in
 [TAX.md](TAX.md#where-the-parameters-come-from-and-the-opt-in-update).
 
 ## Upgrading

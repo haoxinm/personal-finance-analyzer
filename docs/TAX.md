@@ -347,7 +347,7 @@ same payer identifier last four and the same account last four (at least one of 
 present, so unrelated manual forms never match). The replaced original is left in the database
 (and in `tax list`) but is not counted in any total, summary, payer list or estimate; the year's
 warnings say how many forms were replaced and which documents, and `superseded_forms` in the summary
-API lists them. Import order does not matter between an original and its correction.
+API lists them (the Documents tab marks such a document **Replaced by corrected form**). Import order does not matter between an original and its correction.
 
 **Several corrections of one original.** A second correction replaces the first, but documents carry
 no issue or statement date, so "second" can only mean *imported later*: the correction imported last
@@ -413,7 +413,8 @@ planning aid, not tax advice and not a substitute for your return. Everything is
 $ spend-analyzer tax estimate --year 2024 --user-id 1
 ```
 
-or `GET /api/tax/estimate?user_id=&tax_year=` (the web UI's Estimate screen comes later).
+or **Income & Tax › Estimate** in the web UI (see [In the web UI](#in-the-web-ui)), or
+`GET /api/tax/estimate?user_id=&tax_year=`.
 
 ### Inputs
 
@@ -514,6 +515,50 @@ spouse imported it. A return filed with a different status than the estimate use
 A large delta usually means a credit, deduction or income that is not modeled (below) or a form
 that is missing; the return is never changed by it.
 
+### In the web UI
+
+**Income & Tax › Estimate** sits between Overview and Documents and follows the year picker
+(`?year=`) and the user bar.
+
+- **Inputs** (left): your tax profile for the year: filing status (and, for married filing jointly,
+  the spouse, chosen among the other users), standard or itemized deduction with the itemized
+  total, this person's age 65 / blind boxes (at most 2, whatever the filing status) and whether they are
+  65 or older (0 or 1; a spouse enters their own on their own profile), and the dollar amounts the
+  forms do not cover:
+  adjustments, other income, capital loss carryover, nonrefundable and refundable credits, other
+  taxes, estimated and other payments. Amounts are typed in dollars and saved in cents; **Save**
+  replaces the profile, **Reset** returns to the saved values, **Delete profile** (with a
+  confirmation) removes it. Do not enter 401(k) or HSA payroll deferrals as adjustments: W-2 box 1
+  already excludes them. Without a saved profile the form starts from what the estimate assumed.
+- **Result** (right and above): "Refund $X" or "Owe $X", the total tax, the effective rate and the
+  marginal rate (with the preferential rate under it when there are qualified dividends or
+  long-term gains), then the whole computation from wages to the result. Every input line is
+  marked **Documents**, **Profile** or **Computed**; zero optional lines are left out.
+- **Joint return**: the breakdown is the household's ("Household calculation"), and a card shows
+  this person's share, labelled "allocated by share of income" (an allocation, not a separate
+  liability), against their own payments. The first headline card is this person's allocated
+  result and the tax card is the household's.
+- **Cross-check**: when a Form 1040 exists, a card shows return, estimate and the difference
+  (estimate minus return) for total tax, withholding and the result. A joint return is compared
+  with the household totals.
+- **Warnings** (for example "No tax profile: ... assumed"), a collapsible **Not modeled** list and
+  the parameter source (the IRS revenue procedures, the parameter file's version and whether it is
+  bundled, a downloaded update or your own file) sit under the numbers.
+- **Problems are explained, not hidden.** A year without parameters (HTTP 422) says so and points to
+  Settings › Tax parameters; spouses' profiles that disagree (409) name the spouse and leave the
+  inputs editable so the conflict can be fixed there; a user with no imported forms sees a link to
+  **Import**.
+- **All users**: the estimate is per person, so with "All users" selected the screen shows one
+  summary card per person (tax, effective rate, result) with a button to open that person. Spouses
+  on a joint return each show their allocated share, never the household total twice.
+
+The **Overview** shows the server's headline tax (the `headline` of `/api/tax/summary`) with its
+basis next to the federal figure: *from return*, *estimated* (no return: the estimate),
+*withholding only* or *mixed* (an all-users view whose users differ). The year-over-year chart marks
+each year's basis (est., w/h, mixed) and draws years without a return lighter, so the bars are
+never silently a mix of filed and estimated tax. The effective-rate card is the return's tax over
+income and shows a dash without a return; its hint links to the estimate.
+
 ### Where the parameters come from, and the opt-in update
 
 Brackets, standard deductions (and the age 65 / blind amounts), the long-term gain breakpoints, the
@@ -548,8 +593,8 @@ The app makes no network request for this by default. Two optional files can sit
    other years alone, so no year can disappear;
 4. an invalid or unreadable optional file is ignored (the bundled data always loads).
 
-**The update check is opt-in and off by default** (`[tax] auto_update_params = false`, the Settings
-screen, or `SPEND_ANALYZER_TAX__AUTO_UPDATE_PARAMS=true`). When on, the first estimate or summary
+**The update check is opt-in and off by default** (`[tax] auto_update_params = false`, the toggle under
+**Settings › Tax parameters**, or `SPEND_ANALYZER_TAX__AUTO_UPDATE_PARAMS=true`). When on, the first estimate or summary
 request in a **calendar year** starts one check in a background thread (the page never waits, and a
 network error is ignored with an info log): a plain HTTPS `GET`, no query string, cookies,
 credentials, proxy or user data, of `federal_params.yaml` from this project's GitHub repository
@@ -558,9 +603,10 @@ It is accepted only if it passes the same schema validation and adds at least on
 not already known, every added year passing the checks above; it is then stored with mode 0600. The date of
 the attempt is recorded *before* the request (in `tax_params/state.json`), whatever the outcome, so
 a machine that is offline is not retried on every page view until the next calendar year.
-`spend-analyzer tax params update` (or `POST /api/tax/parameters/refresh`, the "Check for updates"
-action) runs one check on request whatever the setting says, because you asked for it, and records
-the date too. `tax params show` and `GET /api/tax/parameters` report the file in effect, its
+`spend-analyzer tax params update` (or `POST /api/tax/parameters/refresh`, the **Check now** button
+in Settings › Tax parameters) runs one check on request whatever the setting says, because you asked
+for it, and records the date too. That Settings card also shows the file in effect (source, version,
+last check and its outcome, the tax years covered) and says what the toggle sends: nothing about you. `tax params show` and `GET /api/tax/parameters` report the file in effect, its
 version, the last check and the setting. Only `api/services/tax_params_update.py` may make this
 request (`tests/test_architecture_guards.py`).
 

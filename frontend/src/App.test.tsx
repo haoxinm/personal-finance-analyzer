@@ -86,8 +86,18 @@ describe("App shell nav", () => {
     await renderApp("/tax/documents");
     expect(navLinkClassName("Income & Tax")).toContain("bg-muted");
     expect(navLinkClassName("Spending")).not.toContain("bg-muted");
-    expect(tabNames(sectionNav("Income & Tax"))).toEqual(["Overview", "Documents", "Import"]);
+    expect(tabNames(sectionNav("Income & Tax"))).toEqual(["Overview", "Estimate", "Documents", "Import"]);
     expect(activeTabs(sectionNav("Income & Tax"))).toEqual(["Documents"]);
+  });
+
+  it("puts Estimate between Overview and Documents and marks it active on its route", async () => {
+    await renderApp("/tax/estimate?year=2023");
+    expect(activeTabs(sectionNav("Income & Tax"))).toEqual(["Estimate"]);
+    expect(document.title).toBe("Estimate · Income & Tax · Spend Analyzer");
+    expect(within(sectionNav("Income & Tax")).getByRole("link", { name: "Overview" })).toHaveAttribute(
+      "href",
+      "/tax?year=2023",
+    );
   });
 
   it("has no sub-tab row for the single-page sections", async () => {
@@ -144,6 +154,7 @@ describe("App shell nav", () => {
   it("carries ?year= between the Income & Tax tabs, but not into other sections", async () => {
     await renderApp("/tax?year=2023");
     const tabs = sectionNav("Income & Tax");
+    expect(within(tabs).getByRole("link", { name: "Estimate" })).toHaveAttribute("href", "/tax/estimate?year=2023");
     expect(within(tabs).getByRole("link", { name: "Documents" })).toHaveAttribute("href", "/tax/documents?year=2023");
     expect(within(tabs).getByRole("link", { name: "Import" })).toHaveAttribute("href", "/tax/import?year=2023");
     expect(within(mainNav()).getByRole("link", { name: "Net worth" })).toHaveAttribute("href", "/net-worth");

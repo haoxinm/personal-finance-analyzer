@@ -9,6 +9,9 @@ export type LlmSettings = components["schemas"]["LlmSettings"];
 export type PrivacySettings = components["schemas"]["PrivacySettings"];
 export type IngestSettings = components["schemas"]["IngestSettings"];
 export type ServerSettings = components["schemas"]["ServerSettings"];
+export type TaxSettings = components["schemas"]["TaxSettings"];
+export type TaxParameters = components["schemas"]["TaxParameters"];
+export type TaxParametersRefresh = components["schemas"]["TaxParametersRefreshResponse"];
 export type User = components["schemas"]["User"];
 export type UserCreate = components["schemas"]["UserCreate"];
 export type UserUpdate = components["schemas"]["UserUpdate"];
@@ -47,6 +50,44 @@ export function useUpdateSettings() {
       queryClient.setQueryData(["settings"], data);
       // LLM and privacy settings change exactly what a preview would show.
       void queryClient.invalidateQueries({ queryKey: ["llm-preview"] });
+      // The tax parameter status reports the `auto_update_params` setting.
+      void queryClient.invalidateQueries({ queryKey: TAX_PARAMETERS_KEY });
+    },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Tax parameters — which IRS parameter file is in effect and the opt-in yearly update check.
+// ---------------------------------------------------------------------------
+
+const TAX_PARAMETERS_KEY = ["tax", "parameters"] as const;
+
+export function useTaxParametersQuery() {
+  return useQuery({
+    queryKey: TAX_PARAMETERS_KEY,
+    queryFn: async () => {
+      const { data, error } = await apiClient.GET("/tax/parameters");
+      throwIfError(error);
+      if (!data) throw new Error("The server returned no tax parameters.");
+      return data;
+    },
+  });
+}
+
+/** "Check now": one update check on request (works with the opt-in off, because the user asked). */
+export function useRefreshTaxParameters() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async () => {
+      const { data, error } = await apiClient.POST("/tax/parameters/refresh");
+      throwIfError(error);
+      if (!data) throw new Error("The server returned no result.");
+      return data;
+    },
+    onSuccess: (data) => {
+      queryClient.setQueryData(TAX_PARAMETERS_KEY, data.parameters);
+      // A newer file changes every estimate and summary headline.
+      void queryClient.invalidateQueries({ queryKey: ["tax"] });
     },
   });
 }
