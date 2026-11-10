@@ -123,7 +123,7 @@ jobs:
           kill "$server_pid" 2>/dev/null || true
           trap - EXIT
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: dist
           path: dist/*
