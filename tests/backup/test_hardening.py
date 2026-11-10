@@ -215,7 +215,8 @@ def test_work_dir_is_private_and_cleaned_up_on_error(tmp_path: Path) -> None:
     home.mkdir()
     with pytest.raises(RuntimeError), archive.work_dir(home, "x") as work:
         assert work.parent == home / archive.WORK_DIRNAME
-        assert (work.parent.stat().st_mode & 0o077) == 0
+        if os.name != "nt":  # Windows has no POSIX permission bits (directories report 0o777)
+            assert (work.parent.stat().st_mode & 0o077) == 0
         (work / "plain.zip").write_bytes(b"data")
         raise RuntimeError("boom")
     assert not (home / archive.WORK_DIRNAME).exists()
@@ -235,7 +236,8 @@ def test_sibling_work_dir_is_private_and_beside_the_home(tmp_path: Path) -> None
     work = archive.make_sibling_work_dir(home, "restore-upload")
     try:
         assert work.parent == tmp_path
-        assert (work.stat().st_mode & 0o077) == 0
+        if os.name != "nt":  # Windows has no POSIX permission bits (directories report 0o777)
+            assert (work.stat().st_mode & 0o077) == 0
         assert not any(home.iterdir())  # nothing inside the directory a restore moves aside
     finally:
         archive.remove_work_dir(work)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import io
+import os
 import tempfile
 import threading
 import zipfile
@@ -278,7 +279,8 @@ def test_restore_streams_into_a_private_dir_never_system_temp(
     def spy(h: Path, prefix: str) -> Path:
         work = real(h, prefix)
         seen.append(work)
-        assert (work.stat().st_mode & 0o077) == 0  # owner only
+        if os.name != "nt":  # Windows has no POSIX permission bits (directories report 0o777)
+            assert (work.stat().st_mode & 0o077) == 0  # owner only
         return work
 
     monkeypatch.setattr(archive, "make_sibling_work_dir", spy)
