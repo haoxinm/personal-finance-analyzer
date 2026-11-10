@@ -1,4 +1,5 @@
 #!/bin/sh
+# shellcheck disable=SC2016  # the "$1" in inmount scripts is meant to expand inside the container
 # Smoke test for a built image (run by CI after the build; runnable by hand):
 #
 #   docker/smoke-test.sh [image]            # default image: personal-finance-analyzer:ci
@@ -109,9 +110,10 @@ check "upload accepted" "$(status -b "$JAR" -H "X-PFA-Token: $PAGE_TOKEN" -F "us
 inmount 'test -f /pfa/data/finance.db' || fail "finance.db is not on the bind mount"
 echo "ok   finance.db is on the bind mount"
 
-# The PDF is on the host under a readable path (not data/statements/<hash>.pdf).
-UNSORTED="$WORK/pfa/documents/Persisted/Statements/Unsorted"
-KEPT="$(find "$UNSORTED" -type f -name '*.pdf' 2>/dev/null)"
+# The PDF is on the host under a readable path (not data/statements/<hash>.pdf). Looked at from
+# inside the mount (paths below are the container's): the documents folder is 0700 PUID:PGID.
+UNSORTED=/pfa/documents/Persisted/Statements/Unsorted
+KEPT="$(inmount 'find "$1" -type f -name "*.pdf" 2>/dev/null' "$UNSORTED")" || KEPT=""
 [ -n "$KEPT" ] && [ "$(printf '%s\n' "$KEPT" | wc -l | tr -d ' ')" = 1 ] \
   || fail "the uploaded PDF is not at $UNSORTED/<date> Statement <hash>.pdf"
 case "$(basename "$KEPT")" in
@@ -119,23 +121,23 @@ case "$(basename "$KEPT")" in
   *) fail "unexpected document name: $(basename "$KEPT")" ;;
 esac
 echo "ok   uploaded PDF is on the host at documents/Persisted/Statements/Unsorted/$(basename "$KEPT")"
-[ -f "$WORK/pfa/documents/README.txt" ] || fail "documents/README.txt is missing"
+inmount 'test -f /pfa/documents/README.txt' || fail "documents/README.txt is missing"
 echo "ok   documents/README.txt explains the layout"
-[ ! -e "$WORK/pfa/data/statements" ] || fail "data/statements/ exists: PDFs must not be kept by hash there any more"
-[ -z "$(find "$WORK/pfa/data/incoming" -name '*.pdf' 2>/dev/null)" ] || fail "an upload was left in data/incoming"
+inmount 'test ! -e /pfa/data/statements' || fail "data/statements/ exists: PDFs must not be kept by hash there any more"
+[ -z "$(inmount 'find /pfa/data/incoming -name "*.pdf" 2>/dev/null')" ] || fail "an upload was left in data/incoming"
 echo "ok   no hash-named copies under data/"
 if [ "${PFA_SMOKE_CHECK_OWNER:-}" = 1 ]; then
   check "files are owned by PUID:PGID" "$(inmount 'stat -c %u:%g /pfa/data/finance.db')" "$PUID_:$PGID_"
-  check "documents folder is owned by PUID:PGID" "$(stat -c '%u:%g' "$WORK/pfa/documents")" "$PUID_:$PGID_"
-  check "kept PDF is owned by PUID:PGID" "$(stat -c '%u:%g' "$KEPT")" "$PUID_:$PGID_"
-  check "kept PDF is private by default (UMASK 077)" "$(stat -c '%a' "$KEPT")" 600
+  check "documents folder is owned by PUID:PGID" "$(inmount 'stat -c %u:%g /pfa/documents')" "$PUID_:$PGID_"
+  check "kept PDF is owned by PUID:PGID" "$(inmount 'stat -c %u:%g "$1"' "$KEPT")" "$PUID_:$PGID_"
+  check "kept PDF is private by default (UMASK 077)" "$(inmount 'stat -c %a "$1"' "$KEPT")" 600
 fi
 
 docker rm -f "$NAME" >/dev/null
 start
 login
 check "data survives recreating the container" "$(api "$URL/api/users" | grep -c Persisted)" 1
-[ -f "$KEPT" ] || fail "the kept PDF disappeared after recreating the container"
+inmount 'test -f "$1"' "$KEPT" || fail "the kept PDF disappeared after recreating the container"
 echo "ok   the kept PDF is still on the host"
 
 echo "SMOKE TEST PASSED"
