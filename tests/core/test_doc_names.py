@@ -13,6 +13,7 @@ from personal_finance_analyzer.core.doc_names import (
     clean_component,
     collision_suffix,
     file_name,
+    kept_name,
     person_folder,
     scrub_digits,
     statement_path,
@@ -247,3 +248,23 @@ def test_whole_paths_are_valid_on_every_platform() -> None:
             assert not bad.search(part), part
             assert part == part.strip() and not part.endswith(".")
             assert len(part) <= doc_names.MAX_COMPONENT_CHARS
+
+
+def test_kept_name_keeps_the_stem_and_the_extension_case() -> None:
+    assert kept_name("Scan.PDF") == "Scan.PDF"
+    assert kept_name("Mixed.Pdf", collision_suffix(2)) == "Mixed (2).Pdf"
+    assert kept_name("lower.pdf", collision_suffix(1)) == "lower.pdf"
+    long = "q" * 150 + ".PDF"  # longer than `file_name` allows, still a legal file name
+    assert kept_name(long) == long
+
+
+def test_kept_name_trims_only_to_fit_the_marker_in_a_file_name() -> None:
+    name = "é" * 120 + ".PDF"  # 240 bytes + 4
+    numbered = kept_name(name, collision_suffix(12))
+    assert numbered.endswith(" (12).PDF") and len(numbered.encode()) <= 255
+    assert numbered.startswith("é" * 100)
+
+
+def test_kept_name_still_defuses_a_windows_device_name() -> None:
+    assert kept_name("CON.PDF") == "CON_.PDF"
+    assert kept_name("nul.pdf", collision_suffix(2)) == "nul_ (2).pdf"

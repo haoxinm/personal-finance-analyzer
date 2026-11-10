@@ -978,10 +978,12 @@ def _plan_document_moves(
             listing = {}
         folder = PurePosixPath(rel).parent.as_posix()
         folder = "" if folder == "." else folder
-        stem = PurePosixPath(rel).name[: -len(doc_names.PDF_SUFFIX)]
+        original = PurePosixPath(rel).name
         digest = docs.file_sha256(staged)
         for attempt in itertools.count(1):
-            name = doc_names.file_name(stem, doc_names.collision_suffix(attempt))
+            # The member's own name, extension case included (a restore gives back the relative
+            # path the export read); only a collision adds `` (2)``.
+            name = doc_names.kept_name(original, doc_names.collision_suffix(attempt))
             final = f"{folder}/{name}" if folder else name
             existing = listing.get(name.casefold())
             if existing is not None:

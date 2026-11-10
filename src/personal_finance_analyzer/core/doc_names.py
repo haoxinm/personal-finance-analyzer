@@ -131,6 +131,20 @@ def file_name(stem: str, suffix: str = "") -> str:
     return _unreserved(_cap(stem, chars, bytes_).rstrip(". ")) + suffix + PDF_SUFFIX
 
 
+def kept_name(filename: str, suffix: str = "") -> str:
+    """``filename`` (a ``*.pdf`` name from outside: a backup member, a file the user dropped in)
+    with only the collision marker ``suffix`` added before its extension. Unlike `file_name` it
+    keeps the stem and the *letter case of the extension* as they are (``Scan.PDF`` stays
+    ``Scan.PDF``; a case-insensitive disk would not show the difference, a case-sensitive one
+    does), trimming the stem only when the marker would push the name past the filesystem's
+    255 bytes. Only a Windows device name (``CON``) is made harmless."""
+    stem, ext = filename[: -len(PDF_SUFFIX)], filename[-len(PDF_SUFFIX) :]
+    if not suffix:
+        return _unreserved(stem) + ext
+    budget = 255 - len((suffix + ext).encode("utf-8"))
+    return _unreserved(_cap(stem, len(stem), budget).rstrip(". ")) + suffix + ext
+
+
 def person_folder(name: str | None) -> str:
     """The top-level folder of a person (``Shared`` when the row has none)."""
     return clean_component(name, fallback=SHARED)

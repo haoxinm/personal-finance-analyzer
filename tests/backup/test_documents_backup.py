@@ -571,7 +571,77 @@ def test_a_large_upper_case_pdf_round_trips(
 
     home_b = _target(tmp_path)
     archive.restore_backup(backup, passphrase=None, home=home_b)
+    # `listdir` gives the stored case even on a case-insensitive disk, where `read_bytes` on
+    # `Scan.PDF` would also succeed for a file restored as `Scan.pdf`.
+    assert "Scan.PDF" in os.listdir(home_b / "documents" / USER_NAME)
+    assert "Scan.pdf" not in os.listdir(home_b / "documents" / USER_NAME)
     assert (home_b / "documents" / USER_NAME / "Scan.PDF").read_bytes() == payload
+
+
+def test_restore_gives_back_exactly_the_names_that_were_exported(
+    source: tuple[Path, dict[str, str]], tmp_path: Path
+) -> None:
+    """Names a person chose (the extension's letter case, a long name, spacing) are not
+    normalised on the way back: the folder listing is what it was, byte for byte."""
+    home_a, _ = source
+    folder = home_a / "documents" / USER_NAME / "Scans"
+    folder.mkdir(parents=True)
+    names = ["Scan.PDF", "Mixed.Pdf", "two  spaces.pdf", "q" * 150 + ".pdf"]
+    for index, name in enumerate(names):
+        (folder / name).write_bytes(pdf_bytes(f"scan {index}"))
+    backup = tmp_path / "b.pfabackup"
+    manifest = archive.create_backup(backup, passphrase=None)
+    assert manifest.skipped == ()
+
+    home_b = _target(tmp_path)
+    archive.restore_backup(backup, passphrase=None, home=home_b)
+
+    restored = home_b / "documents" / USER_NAME / "Scans"
+    assert set(os.listdir(restored)) == set(names)
+    for index, name in enumerate(names):
+        assert (restored / name).read_bytes() == pdf_bytes(f"scan {index}")
+
+
+def test_a_taken_name_keeps_the_extension_case_when_it_is_numbered(
+    source: tuple[Path, dict[str, str]], tmp_path: Path
+) -> None:
+    home_a, _ = source
+    (home_a / "documents" / USER_NAME / "Scan.PDF").write_bytes(pdf_bytes("mine"))
+    backup = tmp_path / "b.pfabackup"
+    archive.create_backup(backup, passphrase=None)
+
+    home_b = _target(tmp_path)
+    nas = tmp_path / "nas"
+    (nas / USER_NAME).mkdir(parents=True)
+    # Same name but for the letter case: taken on a case-insensitive disk, so taken everywhere.
+    (nas / USER_NAME / "scan.pdf").write_bytes(pdf_bytes("somebody else's"))
+
+    archive.restore_backup(backup, passphrase=None, home=home_b, documents=nas)
+
+    listing = set(os.listdir(nas / USER_NAME))
+    assert {"scan.pdf", "Scan (2).PDF"} <= listing
+    assert "Scan.PDF" not in listing and "Scan (2).pdf" not in listing
+    assert (nas / USER_NAME / "scan.pdf").read_bytes() == pdf_bytes("somebody else's")
+    assert (nas / USER_NAME / "Scan (2).PDF").read_bytes() == pdf_bytes("mine")
+
+
+def test_a_same_content_file_with_another_letter_case_is_reused(
+    source: tuple[Path, dict[str, str]], tmp_path: Path
+) -> None:
+    home_a, _ = source
+    (home_a / "documents" / USER_NAME / "Scan.PDF").write_bytes(pdf_bytes("mine"))
+    backup = tmp_path / "b.pfabackup"
+    archive.create_backup(backup, passphrase=None)
+
+    home_b = _target(tmp_path)
+    nas = tmp_path / "nas"
+    (nas / USER_NAME).mkdir(parents=True)
+    (nas / USER_NAME / "SCAN.pdf").write_bytes(pdf_bytes("mine"))
+
+    result = archive.restore_backup(backup, passphrase=None, home=home_b, documents=nas)
+
+    assert result.documents_already_present == 1
+    assert {n for n in os.listdir(nas / USER_NAME) if n.casefold() == "scan.pdf"} == {"SCAN.pdf"}
 
 
 def test_a_large_database_in_a_pre_rename_archive_restores(
