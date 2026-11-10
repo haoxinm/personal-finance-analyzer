@@ -31,7 +31,7 @@ from spend_analyzer.analytics import tax_query
 from spend_analyzer.analytics.tax_query import TaxQuery
 from spend_analyzer.api import schemas
 from spend_analyzer.api.deps import SessionDep, SettingsDep
-from spend_analyzer.api.services import crud, gateway, statement_preview, tax_llm
+from spend_analyzer.api.services import crud, gateway, statement_preview, tax_llm, tax_params_update
 from spend_analyzer.api.services.uploads import (
     read_pdf_upload,
     sanitize_original_name,
@@ -521,12 +521,14 @@ def _summary(s: tax_query.TaxYearSummary) -> schemas.TaxYearSummary:
 @router.get("/tax/summary", response_model=list[schemas.TaxYearSummary])
 def tax_summary(
     session: SessionDep,
+    settings: SettingsDep,
     user_ids: Annotated[list[int] | None, Query()] = None,
     tax_years: Annotated[list[int] | None, Query()] = None,
     currency: str = "USD",
     per_user: bool = False,
 ) -> list[schemas.TaxYearSummary]:
     """One summary per tax year (newest first); with `per_user`, one per (year, user)."""
+    tax_params_update.maybe_check_in_background(settings)  # opt-in, once a year, never blocks
     query = TaxQuery(user_ids=user_ids, tax_years=tax_years, currency=currency, per_user=per_user)
     try:
         rows = tax_query.run_tax_summary(session, query)

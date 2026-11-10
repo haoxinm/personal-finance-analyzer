@@ -34,6 +34,13 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return data_home
 
 
+@pytest.fixture(autouse=True)
+def _isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every test gets its own data directory, so code that reads optional local files (the
+    tax-parameter cache and override) never sees a real user's data. `home` replaces it."""
+    monkeypatch.setenv(SPEND_ANALYZER_HOME_ENV, str(tmp_path / "auto_home"))
+
+
 @pytest.fixture
 def engine(home: Path) -> Iterator[Engine]:
     """A migrated temporary SQLite database (taxonomy not yet synced)."""

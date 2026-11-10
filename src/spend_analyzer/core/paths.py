@@ -94,6 +94,12 @@ def tax_staging_dir() -> Path:
     return get_home() / "tax_staging"
 
 
+def tax_params_dir() -> Path:
+    """Downloaded and user-imported federal tax parameter files and the once-a-year check state
+    (not created by `ensure_home`; see `core/tax_params.py`)."""
+    return get_home() / "tax_params"
+
+
 def extract_cache_dir() -> Path:
     return get_home() / "extract_cache"
 

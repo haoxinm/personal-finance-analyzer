@@ -22,6 +22,7 @@ from spend_analyzer.config import (
     PrivacyConfig,
     ServerConfig,
     Settings,
+    TaxConfig,
     delete_api_key,
     get_llm_api_key,
     save_settings,
@@ -101,6 +102,7 @@ def _settings_schema(settings: Settings) -> schemas.Settings:
             default_currency=settings.ingest.default_currency,
         ),
         server=schemas.ServerSettings(port=settings.server.port),
+        tax=schemas.TaxSettings(auto_update_params=settings.tax.auto_update_params),
     )
 
 
@@ -128,6 +130,11 @@ def put_settings(body: schemas.Settings, current: SettingsDep) -> schemas.Settin
             default_currency=body.ingest.default_currency,
         ),
         server=ServerConfig(port=body.server.port),
+        tax=(
+            TaxConfig(auto_update_params=body.tax.auto_update_params)
+            if "tax" in body.model_fields_set
+            else current.tax
+        ),
     )
     new_settings = without_stale_tax_consent(new_settings)
     save_settings(new_settings)

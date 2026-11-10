@@ -1,0 +1,174 @@
+# Federal income tax parameters per tax year, used by core/tax_calc.py (the per-user estimate and
+# the 1040 line-16 ordinary/preferential split).
+#
+# Sources: the IRS inflation-adjustment revenue procedures named under each year's `sources`
+# (section 3 of Rev. Proc. 2021-45 / 2022-38 / 2023-34 / 2024-40, section 4 of Rev. Proc. 2025-32),
+# the Social Security Administration contribution and benefit base, and the IRS announcements of the
+# 401(k) elective deferral limit (IR-2021-216, IR-2022-188, IR-2023-203, Notice 2024-80, Notice 2025-67)
+# and, for the 2025-2028 senior deduction, IRC section 151(d)(5)(C) as added by P.L. 119-21 section
+# 70103 (see https://www.irs.gov/newsroom/one-big-beautiful-bill-act-tax-deductions-for-working-americans-and-seniors).
+# Treasury Fiscal Data does not publish brackets or deductions, so the figures were read from the
+# revenue procedures' own text. Verify against the IRS publication when adding a year, and add a
+# year only from its revenue procedure.
+#
+# Network: the app makes no network call by default. Only if the user opts in (`[tax]
+# auto_update_params`, or presses "Check for updates" / runs `tax params update`) does it download
+# this same file from the project's GitHub repository, at most once a year. A downloaded file can
+# only ADD tax years that this file lacks (a bundled year always comes from this file; corrections
+# ship with an app update), and only after every figure passes range, structure and
+# year-over-year checks (core/tax_params.py, `added_years`); otherwise it is ignored as a whole.
+#
+# Layout: params_version (integer, raised whenever any figure in the file changes; informational)
+# and `years`:
+#   year -> {sources, standard_deduction, additional_standard_deduction, capital_loss_limit,
+#   ss_wage_base, elective_deferral_limit, niit_threshold, additional_medicare_threshold, brackets,
+#   ltcg, senior_deduction (optional)}. All money is whole dollars (the loader converts to cents).
+#   standard_deduction            by filing status; qss uses the joint amount
+#   additional_standard_deduction per aged / blind box: `unmarried` (single, hoh) and `married`
+#                                 (mfj, mfs, qss)
+#   capital_loss_limit            annual limit on a net capital loss against other income
+#                                 (IRC 1211(b), not indexed): 3,000, married filing separately 1,500
+#   ss_wage_base                  Social Security wage base (OASDI taxable maximum)
+#   elective_deferral_limit       401(k)/403(b)/TSP employee elective deferral limit (no catch-up)
+#   niit_threshold / additional_medicare_threshold  statutory MAGI / wage thresholds (IRC 1411,
+#                                 3101(b)(2); not indexed). NIIT: 250,000 for a joint return and a
+#                                 qualifying surviving spouse. Additional Medicare Tax: 250,000 for a
+#                                 joint return only; a surviving spouse uses 200,000 (Form 8959)
+#   senior_deduction              only for taxable years 2025-2028 (IRC 151(d)(5)(C)): `amount` per
+#                                 qualifying person aged 65 or over (a joint return counts both
+#                                 spouses), reduced, for each person, by `phaseout_rate_percent` of MAGI over
+#                                 `phaseout_threshold` (by status; married filing separately cannot
+#                                 claim it). Omit the key for every other year.
+#   brackets  [[lower threshold in dollars of taxable income, rate in percent], ...]; strictly
+#             increasing thresholds and rates, first threshold 0, top rate applies above the last
+#   ltcg      [top of the 0% band, top of the 15% band] in dollars of taxable income (the 20% rate
+#             applies above); the thresholds are from section 1(j)(5)(B) / section 3.03 (4.03 for 2026)
+# Filing statuses: single, mfj, mfs, hoh; qss (qualifying surviving spouse) uses the mfj tables.
+
+params_version: 2
+years:
+  2022:
+    sources:
+      - "Rev. Proc. 2021-45 (sections 3.01, 3.03, 3.15)"
+    standard_deduction: {single: 12950, mfj: 25900, mfs: 12950, hoh: 19400, qss: 25900}
+    additional_standard_deduction: {unmarried: 1750, married: 1400}
+    capital_loss_limit: {default: 3000, mfs: 1500}
+    ss_wage_base: 147000
+    elective_deferral_limit: 20500
+    niit_threshold: {single: 200000, mfj: 250000, mfs: 125000, hoh: 200000, qss: 250000}
+    additional_medicare_threshold: {single: 200000, mfj: 250000, mfs: 125000, hoh: 200000, qss: 200000}
+    brackets:
+      single: [[0, 10], [10275, 12], [41775, 22], [89075, 24], [170050, 32], [215950, 35], [539900, 37]]
+      mfj: [[0, 10], [20550, 12], [83550, 22], [178150, 24], [340100, 32], [431900, 35], [647850, 37]]
+      mfs: [[0, 10], [10275, 12], [41775, 22], [89075, 24], [170050, 32], [215950, 35], [323925, 37]]
+      hoh: [[0, 10], [14650, 12], [55900, 22], [89050, 24], [170050, 32], [215950, 35], [539900, 37]]
+      qss: [[0, 10], [20550, 12], [83550, 22], [178150, 24], [340100, 32], [431900, 35], [647850, 37]]
+    ltcg:
+      single: [41675, 459750]
+      mfj: [83350, 517200]
+      mfs: [41675, 258600]
+      hoh: [55800, 488500]
+      qss: [83350, 517200]
+
+  2023:
+    sources:
+      - "Rev. Proc. 2022-38 (sections 3.01, 3.03, 3.15)"
+    standard_deduction: {single: 13850, mfj: 27700, mfs: 13850, hoh: 20800, qss: 27700}
+    additional_standard_deduction: {unmarried: 1850, married: 1500}
+    capital_loss_limit: {default: 3000, mfs: 1500}
+    ss_wage_base: 160200
+    elective_deferral_limit: 22500
+    niit_threshold: {single: 200000, mfj: 250000, mfs: 125000, hoh: 200000, qss: 250000}
+    additional_medicare_threshold: {single: 200000, mfj: 250000, mfs: 125000, hoh: 200000, qss: 200000}
+    brackets:
+      single: [[0, 10], [11000, 12], [44725, 22], [95375, 24], [182100, 32], [231250, 35], [578125, 37]]
+      mfj: [[0, 10], [22000, 12], [89450, 22], [190750, 24], [364200, 32], [462500, 35], [693750, 37]]
+      mfs: [[0, 10], [11000, 12], [44725, 22], [95375, 24], [182100, 32], [231250, 35], [346875, 37]]
+      hoh: [[0, 10], [15700, 12], [59850, 22], [95350, 24], [182100, 32], [231250, 35], [578100, 37]]
+      qss: [[0, 10], [22000, 12], [89450, 22], [190750, 24], [364200, 32], [462500, 35], [693750, 37]]
+    ltcg:
+      single: [44625, 492300]
+      mfj: [89250, 553850]
+      mfs: [44625, 276900]
+      hoh: [59750, 523050]
+      qss: [89250, 553850]
+
+  2024:
+    sources:
+      - "Rev. Proc. 2023-34 (sections 3.01, 3.03, 3.15)"
+    standard_deduction: {single: 14600, mfj: 29200, mfs: 14600, hoh: 21900, qss: 29200}
+    additional_standard_deduction: {unmarried: 1950, married: 1550}
+    capital_loss_limit: {default: 3000, mfs: 1500}
+    ss_wage_base: 168600
+    elective_deferral_limit: 23000
+    niit_threshold: {single: 200000, mfj: 250000, mfs: 125000, hoh: 200000, qss: 250000}
+    additional_medicare_threshold: {single: 200000, mfj: 250000, mfs: 125000, hoh: 200000, qss: 200000}
+    brackets:
+      single: [[0, 10], [11600, 12], [47150, 22], [100525, 24], [191950, 32], [243725, 35], [609350, 37]]
+      mfj: [[0, 10], [23200, 12], [94300, 22], [201050, 24], [383900, 32], [487450, 35], [731200, 37]]
+      mfs: [[0, 10], [11600, 12], [47150, 22], [100525, 24], [191950, 32], [243725, 35], [365600, 37]]
+      hoh: [[0, 10], [16550, 12], [63100, 22], [100500, 24], [191950, 32], [243700, 35], [609350, 37]]
+      qss: [[0, 10], [23200, 12], [94300, 22], [201050, 24], [383900, 32], [487450, 35], [731200, 37]]
+    ltcg:
+      single: [47025, 518900]
+      mfj: [94050, 583750]
+      mfs: [47025, 291850]
+      hoh: [63000, 551350]
+      qss: [94050, 583750]
+
+  2025:
+    sources:
+      - "Rev. Proc. 2024-40 (sections 3.01, 3.03, 3.15)"
+      - "Rev. Proc. 2025-32 section 3.01 (standard deduction raised by P.L. 119-21, the One Big Beautiful Bill Act)"
+      - "IRC 151(d)(5)(C), P.L. 119-21 section 70103 (senior deduction, taxable years 2025-2028)"
+    standard_deduction: {single: 15750, mfj: 31500, mfs: 15750, hoh: 23625, qss: 31500}
+    additional_standard_deduction: {unmarried: 2000, married: 1600}
+    capital_loss_limit: {default: 3000, mfs: 1500}
+    ss_wage_base: 176100
+    elective_deferral_limit: 23500
+    niit_threshold: {single: 200000, mfj: 250000, mfs: 125000, hoh: 200000, qss: 250000}
+    additional_medicare_threshold: {single: 200000, mfj: 250000, mfs: 125000, hoh: 200000, qss: 200000}
+    senior_deduction:
+      amount: 6000
+      phaseout_rate_percent: 6
+      phaseout_threshold: {single: 75000, mfj: 150000, hoh: 75000, qss: 75000}
+    brackets:
+      single: [[0, 10], [11925, 12], [48475, 22], [103350, 24], [197300, 32], [250525, 35], [626350, 37]]
+      mfj: [[0, 10], [23850, 12], [96950, 22], [206700, 24], [394600, 32], [501050, 35], [751600, 37]]
+      mfs: [[0, 10], [11925, 12], [48475, 22], [103350, 24], [197300, 32], [250525, 35], [375800, 37]]
+      hoh: [[0, 10], [17000, 12], [64850, 22], [103350, 24], [197300, 32], [250500, 35], [626350, 37]]
+      qss: [[0, 10], [23850, 12], [96950, 22], [206700, 24], [394600, 32], [501050, 35], [751600, 37]]
+    ltcg:
+      single: [48350, 533400]
+      mfj: [96700, 600050]
+      mfs: [48350, 300000]
+      hoh: [64750, 566700]
+      qss: [96700, 600050]
+
+  2026:
+    sources:
+      - "Rev. Proc. 2025-32 (sections 4.01, 4.03, 4.14)"
+      - "IRC 151(d)(5)(C), P.L. 119-21 section 70103 (senior deduction, taxable years 2025-2028)"
+    standard_deduction: {single: 16100, mfj: 32200, mfs: 16100, hoh: 24150, qss: 32200}
+    additional_standard_deduction: {unmarried: 2050, married: 1650}
+    capital_loss_limit: {default: 3000, mfs: 1500}
+    ss_wage_base: 184500
+    elective_deferral_limit: 24500
+    niit_threshold: {single: 200000, mfj: 250000, mfs: 125000, hoh: 200000, qss: 250000}
+    additional_medicare_threshold: {single: 200000, mfj: 250000, mfs: 125000, hoh: 200000, qss: 200000}
+    senior_deduction:
+      amount: 6000
+      phaseout_rate_percent: 6
+      phaseout_threshold: {single: 75000, mfj: 150000, hoh: 75000, qss: 75000}
+    brackets:
+      single: [[0, 10], [12400, 12], [50400, 22], [105700, 24], [201775, 32], [256225, 35], [640600, 37]]
+      mfj: [[0, 10], [24800, 12], [100800, 22], [211400, 24], [403550, 32], [512450, 35], [768700, 37]]
+      mfs: [[0, 10], [12400, 12], [50400, 22], [105700, 24], [201775, 32], [256225, 35], [384350, 37]]
+      hoh: [[0, 10], [17700, 12], [67450, 22], [105700, 24], [201750, 32], [256200, 35], [640600, 37]]
+      qss: [[0, 10], [24800, 12], [100800, 22], [211400, 24], [403550, 32], [512450, 35], [768700, 37]]
+    ltcg:
+      single: [49450, 545500]
+      mfj: [98900, 613700]
+      mfs: [49450, 306850]
+      hoh: [66200, 579600]
+      qss: [98900, 613700]

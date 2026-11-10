@@ -1,17 +1,16 @@
-"""Tests for `ingest.tax.estimate` (plan 2.6): worksheet-based ordinary/preferential split."""
+"""Tests for `core.tax_calc` (plan 2.6): worksheet-based ordinary/preferential split, and the
+bracket data in `core/tax_data/federal_params.yaml` (schema tests are in `test_tax_params.py`)."""
 
 from __future__ import annotations
 
 import random
-from importlib import resources
 from itertools import pairwise
 from typing import Any
 
 import pytest
-import yaml
 
-from spend_analyzer.ingest.tax import estimate
-from spend_analyzer.ingest.tax.estimate import (
+from spend_analyzer.core import tax_calc
+from spend_analyzer.core.tax_calc import (
     bracket_tax,
     estimate_tax_split,
     has_table,
@@ -19,20 +18,15 @@ from spend_analyzer.ingest.tax.estimate import (
     supported_years,
     worksheet_tax,
 )
+from spend_analyzer.core.tax_params import Table, load_bundled
 
 D = 100  # cents per dollar
 STATUSES = ("single", "mfj", "mfs", "hoh", "qss")
 RATES_BP = (1000, 1200, 2200, 2400, 3200, 3500, 3700)
 
 
-def _raw() -> dict[int, dict[str, Any]]:
-    text = (
-        resources.files("spend_analyzer.ingest.tax")
-        .joinpath("data", "federal_brackets.yaml")
-        .read_text(encoding="utf-8")
-    )
-    raw: dict[int, dict[str, Any]] = yaml.safe_load(text)
-    return raw
+def _raw() -> dict[int, dict[str, Table]]:
+    return {year: dict(p.tables) for year, p in load_bundled().years.items()}
 
 
 # --------------------------------------------------------------------------------------------
@@ -41,7 +35,7 @@ def _raw() -> dict[int, dict[str, Any]]:
 
 
 def test_ships_expected_years_and_statuses() -> None:
-    assert supported_years() == (2022, 2023, 2024, 2025)
+    assert supported_years() == (2022, 2023, 2024, 2025, 2026)
     for year in supported_years():
         for status in STATUSES:
             assert has_table(year, status)
@@ -52,19 +46,15 @@ def test_data_file_structure() -> None:
     for year, statuses in raw.items():
         assert set(statuses) == set(STATUSES), year
         for status, table in statuses.items():
-            brackets = table["brackets"]
-            thresholds = [t for t, _ in brackets]
-            rates = [r for _, r in brackets]
+            thresholds = [t for t, _ in table.brackets]
+            rates = [r for _, r in table.brackets]
             assert thresholds[0] == 0
             assert thresholds == sorted(set(thresholds)), (year, status)
-            assert rates == sorted(set(rates)), (year, status)
             assert tuple(rates) == RATES_BP
-            assert all(isinstance(r, int) and 0 < r < 10_000 for r in rates)
             assert all(t % D == 0 for t in thresholds)  # whole dollars, stored as cents
-            assert 0 < table["ltcg_0_to"] < table["ltcg_15_to"]
-            assert table["ltcg_0_to"] % D == 0 and table["ltcg_15_to"] % D == 0
+            assert 0 < table.ltcg_0_to < table.ltcg_15_to
             # the 0% LTCG band ends within the 12% bracket (or the 10% one) for every status
-            assert thresholds[1] < table["ltcg_0_to"] < thresholds[3]
+            assert thresholds[1] < table.ltcg_0_to < thresholds[3]
 
 
 def test_qss_uses_mfj_tables() -> None:
@@ -78,10 +68,10 @@ def test_thresholds_grow_year_over_year() -> None:
     years = sorted(raw)
     for status in ("single", "mfj", "hoh"):
         for a, b in pairwise(years):
-            assert raw[b][status]["ltcg_0_to"] > raw[a][status]["ltcg_0_to"]
-            assert raw[b][status]["ltcg_15_to"] > raw[a][status]["ltcg_15_to"]
+            assert raw[b][status].ltcg_0_to > raw[a][status].ltcg_0_to
+            assert raw[b][status].ltcg_15_to > raw[a][status].ltcg_15_to
             for (ta, _), (tb, _) in zip(
-                raw[a][status]["brackets"], raw[b][status]["brackets"], strict=True
+                raw[a][status].brackets, raw[b][status].brackets, strict=True
             ):
                 assert tb >= ta
 
@@ -96,15 +86,19 @@ def test_thresholds_grow_year_over_year() -> None:
         (2024, "mfs", 47_025, 291_850, 365_600),
         (2025, "mfj", 96_700, 600_050, 751_600),
         (2025, "hoh", 64_750, 566_700, 626_350),
+        (2026, "single", 49_450, 545_500, 640_600),  # Rev. Proc. 2025-32 sections 4.01, 4.03
+        (2026, "mfj", 98_900, 613_700, 768_700),
+        (2026, "mfs", 49_450, 306_850, 384_350),
+        (2026, "hoh", 66_200, 579_600, 640_600),
     ],
 )
 def test_spot_check_published_figures(
     year: int, status: str, ltcg_0: int, ltcg_15: int, top_bracket: int
 ) -> None:
     table = _raw()[year][status]
-    assert table["ltcg_0_to"] == ltcg_0 * D
-    assert table["ltcg_15_to"] == ltcg_15 * D
-    assert table["brackets"][-1][0] == top_bracket * D
+    assert table.ltcg_0_to == ltcg_0 * D
+    assert table.ltcg_15_to == ltcg_15 * D
+    assert table.brackets[-1][0] == top_bracket * D
 
 
 # --------------------------------------------------------------------------------------------
@@ -300,7 +294,7 @@ def test_within_two_dollars_is_not_approximate() -> None:
 
 @pytest.mark.parametrize(
     ("year", "status"),
-    [(2021, "single"), (2026, "single"), (2024, "bogus"), (2024, ""), (2024, "MFJ")],
+    [(2021, "single"), (2027, "single"), (2024, "bogus"), (2024, ""), (2024, "MFJ")],
 )
 def test_missing_year_or_status_returns_none(year: int, status: str) -> None:
     assert not has_table(year, status)
@@ -342,11 +336,24 @@ def test_negative_inputs_return_none() -> None:
         assert estimate_tax_split(**{**kwargs, key: -1}) is None
 
 
-def test_data_file_is_loaded_once() -> None:
-    estimate.supported_years()
-    info_before = estimate._load.cache_info()
-    estimate.supported_years()
-    assert estimate._load.cache_info().misses == info_before.misses
+def test_2026_worksheet_matches_published_rate_table() -> None:
+    # Rev. Proc. 2025-32 Table 3: $192,979.25 + 37% of the excess over $640,600; exact above $100k
+    assert bracket_tax(2026, "single", 640_600 * D) == 19_297_925
+    assert bracket_tax(2026, "single", 700_000 * D) == 19_297_925 + 59_400 * 37
+    assert regular_tax(2026, "single", 105_700 * D) == 17_966 * D  # table: $17,966 at the 24% start
+    assert regular_tax(2026, "mfj", 100_800 * D) == 11_600 * D  # table: $11,600 at the 22% start
+    assert regular_tax(2026, "hoh", 105_700 * D) == 16_155 * D
+
+
+def test_rate_lookups() -> None:
+    assert tax_calc.marginal_rate_bp(2025, "single", 0) == 1000
+    assert tax_calc.marginal_rate_bp(2025, "single", 48_475 * D) == 2200  # boundary is "over"
+    assert tax_calc.marginal_rate_bp(2025, "single", 48_474 * D) == 1200
+    assert tax_calc.marginal_rate_bp(2025, "single", 10_000_000 * D) == 3700
+    assert tax_calc.preferential_rate_bp(2025, "single", 48_350 * D) == 0
+    assert tax_calc.preferential_rate_bp(2025, "single", 48_350 * D + 1) == 1500
+    assert tax_calc.preferential_rate_bp(2025, "single", 600_000 * D) == 2000
+    assert tax_calc.marginal_rate_bp(2021, "single", 0) is None
 
 
 # --------------------------------------------------------------------------------------------

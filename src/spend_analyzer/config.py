@@ -176,6 +176,15 @@ class IngestConfig(BaseModel):
     default_currency: str = "USD"
 
 
+class TaxConfig(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    #: Opt-in: once per calendar year, fetch the federal tax parameter file from the project's
+    #: GitHub repository (a plain GET with no user data; `api/services/tax_params_update.py`).
+    #: Off by default: the app makes no network request unless this or an LLM is switched on.
+    auto_update_params: bool = False
+
+
 class ServerConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -190,6 +199,7 @@ class Settings(BaseModel):
     llm: LLMConfig = LLMConfig()
     privacy: PrivacyConfig = PrivacyConfig()
     ingest: IngestConfig = IngestConfig()
+    tax: TaxConfig = TaxConfig()
     server: ServerConfig = ServerConfig()
 
 
@@ -232,7 +242,7 @@ def _apply_env_overrides(settings: Settings) -> Settings:
         section, _, field_name = key[len(prefix) :].partition("__")
         section = section.lower()
         field_name = field_name.lower()
-        if section not in ("llm", "privacy", "ingest", "server"):
+        if section not in ("llm", "privacy", "ingest", "tax", "server"):
             continue
         overrides.setdefault(section, {})[field_name] = value
 

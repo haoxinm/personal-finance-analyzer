@@ -278,8 +278,8 @@ def test_mfj_2025_layout() -> None:
 def test_unsupported_year_warns_and_skips_estimate() -> None:
     parsed = _parse_fixture("unsupported_year")
     (form,) = parsed.forms
-    assert form.tax_year == 2026
-    assert "form layout for tax year 2026 not verified" in form.warnings
+    assert form.tax_year == 2027
+    assert "form layout for tax year 2027 not verified" in form.warnings
     assert not any(t.is_estimate for t in form.taxes)
     assert any("no federal bracket table" in w for w in form.warnings)
     # the latest layout is used as a fallback, so the lines are still read
