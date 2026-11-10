@@ -48,6 +48,7 @@ export interface AcceptBody {
   subcategory_key: string;
   create_rule: boolean;
   similar_ids: number[];
+  kind?: string;
 }
 
 export function createApiFetchMock(state: {

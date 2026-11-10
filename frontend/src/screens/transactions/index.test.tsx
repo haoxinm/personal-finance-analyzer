@@ -487,4 +487,273 @@ describe("TransactionsScreen", () => {
     expect(params.get("needs_review")).toBe("true");
     expect(screen.getByRole("button", { name: "Remove filter: statement 9" })).toBeInTheDocument();
   });
+  describe("conflicting suggestions", () => {
+    const CONFLICT_CANDIDATES = {
+      transaction_id: 1,
+      conflict: true,
+      candidates: [
+        {
+          source: "user_rule",
+          category_key: "groceries",
+          subcategory_key: "supermarket",
+          kind: null,
+          label: "corner",
+          rule_id: 2,
+          is_current: true,
+        },
+        {
+          source: "builtin_rule",
+          category_key: "fuel",
+          subcategory_key: "gasoline",
+          kind: "refund",
+          label: "CORNER",
+          rule_id: 7,
+          is_current: false,
+        },
+      ],
+    };
+    const CATEGORIES_WITH_FUEL: Category[] = [
+      ...CATEGORIES,
+      {
+        key: "fuel",
+        name: "Fuel",
+        subcategories: [{ id: 2, key: "gasoline", name: "Gasoline", pending: false }],
+      },
+    ];
+    const FLAGGED = [
+      { ...TRANSACTIONS[1], category_key: "groceries", subcategory_key: "supermarket", conflict: true },
+      { ...TRANSACTIONS[0], category_key: "groceries", subcategory_key: "supermarket", conflict: false },
+    ];
+
+    function routes(fetchLog?: string[]) {
+      return (request: Request) => {
+        const url = new URL(request.url);
+        fetchLog?.push(`${request.method} ${url.pathname}${url.search}`);
+        if (url.pathname === "/api/taxonomy") return jsonResponse(CATEGORIES_WITH_FUEL);
+        if (url.pathname === "/api/transactions/1/candidates") {
+          return jsonResponse(CONFLICT_CANDIDATES);
+        }
+        if (request.method === "GET" && url.pathname === "/api/transactions") {
+          return jsonResponse({ items: FLAGGED, total: 2 });
+        }
+        if (request.method === "POST" && url.pathname === "/api/review/accept") {
+          return jsonResponse({
+            transaction: { ...FLAGGED[1], category_key: "fuel", subcategory_key: "gasoline" },
+            similar_ids: [],
+            undo: { transactions: [], rule: null },
+          });
+        }
+        if (request.method === "POST" && url.pathname === "/api/review/undo") {
+          return jsonResponse({ restored: 1, skipped: [], rule_skipped: false });
+        }
+        throw new Error(`unexpected fetch: ${request.method} ${request.url}`);
+      };
+    }
+
+    it("marks only rows whose sources disagree, and asks the list for the flags", async () => {
+      const fetchMock = await mountWithFetch(routes());
+      await screen.findByText("Big Mart");
+
+      expect(screen.getAllByRole("img", { name: "Conflicting suggestions" })).toHaveLength(1);
+      const list = callsTo(fetchMock, "GET", "/api/transactions").at(-1)!;
+      expect(new URL(list.url).searchParams.get("include_conflict")).toBe("true");
+    });
+
+    it("filters to conflicting rows through the API and the URL", async () => {
+      const user = userEvent.setup();
+      const fetchMock = await mountWithFetch(routes());
+      await screen.findByText("Big Mart");
+
+      await user.click(screen.getByRole("button", { name: "Conflicting suggestions" }));
+
+      await waitFor(() => {
+        const last = new URL(callsTo(fetchMock, "GET", "/api/transactions").at(-1)!.url);
+        expect(last.searchParams.get("conflict")).toBe("true");
+      });
+      expect(screen.getByRole("button", { name: "Conflicting suggestions" })).toHaveAttribute(
+        "aria-pressed",
+        "true",
+      );
+    });
+
+    it("opens on conflicting rows from ?conflict=true", async () => {
+      const fetchMock = await mountWithFetch(routes(), "/spending/transactions?conflict=true");
+      await screen.findByText("Big Mart");
+      const params = new URL(callsTo(fetchMock, "GET", "/api/transactions").at(-1)!.url).searchParams;
+      expect(params.get("conflict")).toBe("true");
+    });
+
+    it("shows the chips for the edited row and applies one as a one-time edit", async () => {
+      const user = userEvent.setup();
+      const fetchMock = await mountWithFetch(routes());
+      await screen.findByText("Corner Store");
+
+      await user.click(screen.getByRole("button", { name: "Edit Corner Store" }));
+      const dialog = await screen.findByRole("dialog", { name: "Edit transaction 1" });
+      const group = await within(dialog).findByRole("group", { name: "Suggested categories" });
+      expect(within(group).getByRole("note")).toHaveTextContent("Sources disagree");
+
+      await user.click(
+        within(group).getByRole("button", { name: "Fuel › Gasoline, built-in" }),
+      );
+
+      // One click: the dialog closes and the edit goes out as an accept (a one-time edit with an
+      // undo token) for that row only, with no rule and the candidate's kind.
+      await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+      const accepts = callsTo(fetchMock, "POST", "/api/review/accept");
+      expect(accepts).toHaveLength(1);
+      expect(await accepts[0]!.clone().json()).toEqual({
+        transaction_id: 1,
+        category_key: "fuel",
+        subcategory_key: "gasoline",
+        create_rule: false,
+        similar_ids: [],
+        kind: "refund",
+      });
+      expect(callsTo(fetchMock, "PATCH", "/api/transactions")).toHaveLength(0);
+
+      expect(await screen.findByText("Set to Fuel › Gasoline")).toBeInTheDocument();
+      await user.click(screen.getByRole("button", { name: "Undo" }));
+      await waitFor(() => expect(callsTo(fetchMock, "POST", "/api/review/undo")).toHaveLength(1));
+      expect(await screen.findByText("Undone")).toBeInTheDocument();
+    });
+  });
+
+  describe("reverting to automatic", () => {
+    const EDITED_CANDIDATES = {
+      transaction_id: 1,
+      conflict: false,
+      candidates: [
+        {
+          source: "one_time_edit",
+          category_key: "fuel",
+          subcategory_key: "gasoline",
+          kind: null,
+          label: "your one-time edit",
+          rule_id: null,
+          is_current: true,
+          is_automatic: false,
+        },
+        {
+          source: "user_rule",
+          category_key: "groceries",
+          subcategory_key: "supermarket",
+          kind: null,
+          label: "corner",
+          rule_id: 2,
+          is_current: false,
+          is_automatic: true,
+        },
+      ],
+    };
+    const CATEGORIES_WITH_FUEL: Category[] = [
+      ...CATEGORIES,
+      {
+        key: "fuel",
+        name: "Fuel",
+        subcategories: [{ id: 2, key: "gasoline", name: "Gasoline", pending: false }],
+      },
+    ];
+    const TOKEN_STATE = {
+      confidence: 1,
+      needs_review: false,
+      kind: "purchase",
+      is_spend: true,
+      merchant_canonical: null,
+    };
+    const TOKEN = {
+      transactions: [
+        {
+          transaction_id: 1,
+          before: { ...TOKEN_STATE, category_id: 2, subcategory_id: 2, classified_by: "user" },
+          after: { ...TOKEN_STATE, category_id: 3, subcategory_id: 3, classified_by: "user_rule" },
+        },
+      ],
+      rule: null,
+    };
+
+    function routes(undoResponse: object = { restored: 1, skipped: [], rule_skipped: false }) {
+      return (request: Request) => {
+        const url = new URL(request.url);
+        if (url.pathname === "/api/taxonomy") return jsonResponse(CATEGORIES_WITH_FUEL);
+        if (url.pathname === "/api/transactions/1/candidates") {
+          return jsonResponse(EDITED_CANDIDATES);
+        }
+        if (request.method === "GET" && url.pathname === "/api/transactions") {
+          return jsonResponse({ items: TRANSACTIONS, total: 2 });
+        }
+        if (request.method === "POST" && url.pathname === "/api/transactions/1/revert-to-automatic") {
+          return jsonResponse({ transaction: TRANSACTIONS[0], undo: TOKEN });
+        }
+        if (request.method === "POST" && url.pathname === "/api/transactions/bulk-revert-to-automatic") {
+          return jsonResponse({ reverted: 1, skipped: 1, undo: TOKEN });
+        }
+        if (request.method === "POST" && url.pathname === "/api/review/undo") {
+          return jsonResponse(undoResponse);
+        }
+        throw new Error(`unexpected fetch: ${request.method} ${request.url}`);
+      };
+    }
+
+    it("reverts an edited row from the edit dialog, and Undo restores the edit", async () => {
+      const user = userEvent.setup();
+      const fetchMock = await mountWithFetch(routes());
+      await screen.findByText("Corner Store");
+
+      await user.click(screen.getByRole("button", { name: "Edit Corner Store" }));
+      const dialog = await screen.findByRole("dialog", { name: "Edit transaction 1" });
+      await user.click(await within(dialog).findByRole("button", { name: "Revert to automatic" }));
+
+      await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+      expect(callsTo(fetchMock, "POST", "/api/transactions/1/revert-to-automatic")).toHaveLength(1);
+      expect(callsTo(fetchMock, "POST", "/api/review/accept")).toHaveLength(0);
+      expect(await screen.findByText("Reverted to automatic")).toBeInTheDocument();
+
+      await user.click(screen.getByRole("button", { name: "Undo" }));
+      await waitFor(() => expect(callsTo(fetchMock, "POST", "/api/review/undo")).toHaveLength(1));
+      const undoBody = (await callsTo(fetchMock, "POST", "/api/review/undo")[0]!.clone().json()) as unknown;
+      expect(undoBody).toEqual(TOKEN);
+      expect(await screen.findByText("Undone")).toBeInTheDocument();
+    });
+
+    it("tells when Undo left a row alone because it was edited again since", async () => {
+      const user = userEvent.setup();
+      await mountWithFetch(routes({ restored: 0, skipped: [1], rule_skipped: false }));
+      await screen.findByText("Corner Store");
+
+      await user.click(screen.getByRole("button", { name: "Edit Corner Store" }));
+      const dialog = await screen.findByRole("dialog", { name: "Edit transaction 1" });
+      await user.click(await within(dialog).findByRole("button", { name: "Revert to automatic" }));
+      await user.click(await screen.findByRole("button", { name: "Undo" }));
+
+      expect(await screen.findByText("Nothing to undo")).toBeInTheDocument();
+      expect(
+        screen.getByText("1 transaction was edited since, so it was left as you set it."),
+      ).toBeInTheDocument();
+    });
+
+    it("reverts the selected rows from the bulk bar and reports the skipped ones", async () => {
+      const user = userEvent.setup();
+      const fetchMock = await mountWithFetch(routes());
+      await screen.findByText("Corner Store");
+
+      await user.click(screen.getByRole("checkbox", { name: "Select transaction 1" }));
+      await user.click(screen.getByRole("checkbox", { name: "Select transaction 2" }));
+      await user.click(screen.getByRole("button", { name: "Revert to automatic" }));
+
+      await waitFor(() =>
+        expect(callsTo(fetchMock, "POST", "/api/transactions/bulk-revert-to-automatic")).toHaveLength(1),
+      );
+      const body = (await callsTo(fetchMock, "POST", "/api/transactions/bulk-revert-to-automatic")[0]!
+        .clone()
+        .json()) as unknown;
+      expect(body).toEqual({ transaction_ids: [1, 2] });
+      // Radix mounts a visually hidden copy of every toast in a live region for a second (it is
+      // what screen readers announce), so the same sentence is in the document twice for a while
+      // and an unscoped query is flaky. Read the description off the visible toast itself.
+      const toastBody = (await screen.findByText("Reverted to automatic")).parentElement!;
+      expect(within(toastBody).getByText(/1 had no one-time edit and was left as is/)).toBeInTheDocument();
+      await waitFor(() => expect(screen.queryByText("2 selected")).not.toBeInTheDocument());
+    });
+  });
 });

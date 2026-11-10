@@ -40,6 +40,55 @@ function Bar(
   );
 }
 
+describe("FiltersBar conflicting-suggestions filter", () => {
+  it("toggles the filter, reflecting its state in aria-pressed", async () => {
+    const onGridChange = vi.fn();
+    const { rerender } = render(
+      <Bar filters={baseFilters()} onChange={vi.fn()} onGridChange={onGridChange} />,
+    );
+    const toggle = screen.getByRole("button", { name: "Conflicting suggestions" });
+    expect(toggle).toHaveAttribute("aria-pressed", "false");
+
+    await userEvent.click(toggle);
+    expect(onGridChange).toHaveBeenLastCalledWith({ conflict: true });
+
+    rerender(
+      <FiltersBar
+        filters={baseFilters()}
+        categories={CATEGORIES}
+        onChange={vi.fn()}
+        grid={{ sort: DEFAULT_SORT, conflict: true }}
+        onGridChange={onGridChange}
+        accounts={ACCOUNTS}
+      />,
+    );
+    expect(screen.getByRole("button", { name: "Conflicting suggestions" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Conflicting suggestions" }));
+    expect(onGridChange).toHaveBeenLastCalledWith({ conflict: undefined });
+  });
+
+  it("is cleared by Clear filters", async () => {
+    const onGridChange = vi.fn();
+    render(
+      <FiltersBar
+        filters={baseFilters()}
+        categories={CATEGORIES}
+        onChange={vi.fn()}
+        grid={{ sort: DEFAULT_SORT, conflict: true }}
+        onGridChange={onGridChange}
+        accounts={ACCOUNTS}
+      />,
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "Clear filters" }));
+
+    expect(onGridChange).toHaveBeenCalledWith(expect.objectContaining({ conflict: undefined }));
+  });
+});
+
 describe("FiltersBar", () => {
   it("toggles a kind filter immediately (no debounce)", async () => {
     const onChange = vi.fn();

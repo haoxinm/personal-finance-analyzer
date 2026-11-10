@@ -3,6 +3,7 @@ import type { ColumnDef } from "@tanstack/react-table";
 import { CategoryBadge } from "@/components/primitives/category-badge";
 import { Money } from "@/components/primitives/money";
 
+import { ConflictMarker } from "./conflict-marker";
 import type { Category, Transaction } from "./types";
 
 declare module "@tanstack/react-table" {
@@ -120,6 +121,7 @@ export function createColumns(context: ColumnsContext): ColumnDef<Transaction>[]
               }}
             >
               Uncategorized
+              {txn.conflict ? <ConflictMarker /> : null}
             </button>
           );
         }
@@ -132,16 +134,19 @@ export function createColumns(context: ColumnsContext): ColumnDef<Transaction>[]
               context.onEdit(txn);
             }}
           >
-            <CategoryBadge
-              categoryKey={txn.category_key}
-              label={categoryLabel(context.categories, txn.category_key)}
-              subcategoryLabel={subcategoryLabel(
-                context.categories,
-                txn.category_key,
-                txn.subcategory_key,
-              )}
-              needsReview={txn.needs_review}
-            />
+            <span className="flex min-w-0 items-center gap-1.5">
+              <CategoryBadge
+                categoryKey={txn.category_key}
+                label={categoryLabel(context.categories, txn.category_key)}
+                subcategoryLabel={subcategoryLabel(
+                  context.categories,
+                  txn.category_key,
+                  txn.subcategory_key,
+                )}
+                needsReview={txn.needs_review}
+              />
+              {txn.conflict ? <ConflictMarker /> : null}
+            </span>
           </button>
         );
       },

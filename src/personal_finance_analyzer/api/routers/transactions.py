@@ -10,6 +10,17 @@ way"), which saves an exact user rule in addition to patching the transaction.
 A category/subcategory change goes through `classify.cascade.apply_user_correction` (§3.12a,
 P2-B) via `api/services/gateway.py`; a kind-only change goes through
 `crud.update_transaction_fields`, which marks the row the same way; notes never lock a row.
+
+**Suggestions.** `GET /transactions/{id}/candidates` (and the opt-in `candidates` / `conflict`
+fields of the list, plus its `?conflict=` filter) expose what *each* classification layer would
+say about a row (`classify.candidates`), read-only and without any LLM call. Applying one is just
+a `PATCH` with that category: a one-time edit, undoable like any other.
+
+**Back to automatic.** A one-time edit is final for every automated pass, so it has an explicit
+way out: `POST /transactions/{id}/revert-to-automatic` (and `/transactions/bulk-revert-to-automatic`
+for many) drops the edit and re-runs the deterministic cascade for those rows, never the LLM
+(`classify.cascade.revert_to_automatic`). The response carries the same undo token as an accept;
+`POST /review/undo` puts the edit back.
 """
 
 from __future__ import annotations
@@ -22,14 +33,40 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from personal_finance_analyzer.api import schemas
-from personal_finance_analyzer.api.deps import SessionDep
+from personal_finance_analyzer.api.deps import SessionDep, SettingsDep
 from personal_finance_analyzer.api.services import crud, gateway
+from personal_finance_analyzer.classify import candidates as suggestions
+from personal_finance_analyzer.classify import cascade
 from personal_finance_analyzer.db.models import Transaction
 
 router = APIRouter(tags=["transactions"])
 
 
-def _transaction_response(session: Session, txn: Transaction) -> schemas.Transaction:
+def _candidates_response(
+    candidate_set: suggestions.CandidateSet,
+) -> list[schemas.TransactionCandidate]:
+    return [
+        schemas.TransactionCandidate(
+            source=c.source,
+            category_key=c.category_key,
+            subcategory_key=c.subcategory_key,
+            kind=c.kind,
+            label=c.label,
+            rule_id=c.rule_id,
+            is_current=c.is_current,
+            is_automatic=c.is_automatic,
+        )
+        for c in candidate_set.candidates
+    ]
+
+
+def _transaction_response(
+    session: Session,
+    txn: Transaction,
+    candidate_set: suggestions.CandidateSet | None = None,
+    *,
+    with_candidates: bool = False,
+) -> schemas.Transaction:
     return schemas.Transaction(
         id=txn.id,
         statement_id=txn.statement_id,
@@ -46,6 +83,10 @@ def _transaction_response(session: Session, txn: Transaction) -> schemas.Transac
         merchant_key=txn.merchant_key,
         notes=txn.notes,
         needs_review=txn.needs_review,
+        candidates=_candidates_response(candidate_set)
+        if candidate_set is not None and with_candidates
+        else None,
+        conflict=candidate_set.conflict if candidate_set is not None else None,
     )
 
 
@@ -72,6 +113,7 @@ def _filters_dependency(
         uncategorized: bool | None = None,
         search: str | None = None,
         currency: str | None = currency_default,
+        conflict: bool | None = None,
     ) -> crud.TransactionFilters:
         return crud.TransactionFilters(
             user_ids=user_ids,
@@ -89,6 +131,7 @@ def _filters_dependency(
             uncategorized=uncategorized,
             search=search,
             currency=currency,
+            conflict=conflict,
         )
 
     return dependency
@@ -113,12 +156,29 @@ def list_transactions(
     page: int = 1,
     page_size: int = 50,
     sort: str | None = None,
+    include_candidates: bool = False,
+    include_conflict: bool = False,
 ) -> schemas.TransactionList:
+    """One page of transactions. `include_candidates` adds each row's per-layer suggestions
+    (`candidates`) and `conflict`; `include_conflict` adds just the `conflict` flag (the grid's
+    marker). Both are batch-computed for this page only. `conflict=true|false` (a filter)
+    narrows the whole result set to rows with, or without, conflicting suggestions."""
     items, total = crud.list_transactions(
         session, filters, page=page, page_size=page_size, sort=sort
     )
+    candidate_sets = (
+        suggestions.candidates_for_transactions(session, items)
+        if include_candidates or include_conflict
+        else {}
+    )
     return schemas.TransactionList(
-        items=[_transaction_response(session, t) for t in items], total=total
+        items=[
+            _transaction_response(
+                session, t, candidate_sets.get(t.id), with_candidates=include_candidates
+            )
+            for t in items
+        ],
+        total=total,
     )
 
 
@@ -130,6 +190,26 @@ def list_transaction_ids(
     cap), for "select all N matching" in the grid."""
     ids = crud.transaction_ids(session, filters, sort=sort)
     return schemas.TransactionIds(ids=ids, total=len(ids))
+
+
+@router.get("/transactions/{id}/candidates", response_model=schemas.TransactionCandidates)
+def get_transaction_candidates(
+    id: int,  # keep the name "id": the generated frontend path key derives from it
+    session: SessionDep,
+) -> schemas.TransactionCandidates:
+    """What each classification layer (your rules, built-in rules, the issuer's label, the learned
+    cache / saved LLM answer) would say about this transaction, highest priority first, and
+    whether they disagree. Read-only; never calls the LLM. Click-to-apply is `PATCH
+    /transactions/{id}` with the chosen category."""
+    txn = crud.get_transaction(session, id)
+    if txn is None:
+        raise HTTPException(status_code=404, detail="transaction not found")
+    candidate_set = suggestions.candidates_for_transaction(session, txn)
+    return schemas.TransactionCandidates(
+        transaction_id=txn.id,
+        candidates=_candidates_response(candidate_set),
+        conflict=candidate_set.conflict,
+    )
 
 
 @router.patch("/transactions/{id}", response_model=schemas.Transaction)
@@ -171,6 +251,54 @@ def patch_transaction(
         session.commit()
 
     return _transaction_response(session, txn)
+
+
+@router.post(
+    "/transactions/{id}/revert-to-automatic", response_model=schemas.RevertToAutomaticResponse
+)
+def revert_transaction_to_automatic(
+    id: int,  # keep the name "id": the generated frontend path key derives from it
+    session: SessionDep,
+    settings: SettingsDep,
+) -> schemas.RevertToAutomaticResponse:
+    """Drop this transaction's one-time edit and re-run the deterministic cascade for it (your
+    rules, built-in rules, the issuer's label, the learned cache; uncategorized and flagged for
+    review if none answers). Never calls the LLM. 409 if the row is not currently edited by hand.
+    The undo token goes to `POST /review/undo` to restore the edit."""
+    txn = crud.get_transaction(session, id)
+    if txn is None:
+        raise HTTPException(status_code=404, detail="transaction not found")
+    result = cascade.revert_to_automatic(
+        session, [id], confidence_threshold=settings.llm.confidence_threshold
+    )
+    if not result.reverted_ids:
+        session.rollback()
+        raise HTTPException(status_code=409, detail="transaction has no one-time edit to revert")
+    session.commit()
+    session.refresh(txn)
+    return schemas.RevertToAutomaticResponse(
+        transaction=_transaction_response(session, txn),
+        undo=schemas.AcceptUndo.model_validate(result.undo, from_attributes=True),
+    )
+
+
+@router.post("/transactions/bulk-revert-to-automatic", response_model=schemas.BulkRevertResponse)
+def bulk_revert_to_automatic(
+    body: schemas.BulkRevertRequest, session: SessionDep, settings: SettingsDep
+) -> schemas.BulkRevertResponse:
+    """`revert-to-automatic` for many rows. Rows that are not edited by hand, or no longer exist,
+    are skipped and counted; the rest go back to automatic classification (no LLM call)."""
+    result = cascade.revert_to_automatic(
+        session,
+        body.transaction_ids,
+        confidence_threshold=settings.llm.confidence_threshold,
+    )
+    session.commit()
+    return schemas.BulkRevertResponse(
+        reverted=len(result.reverted_ids),
+        skipped=len(result.skipped_ids),
+        undo=schemas.AcceptUndo.model_validate(result.undo, from_attributes=True),
+    )
 
 
 @router.post("/transactions/bulk-update", response_model=schemas.BulkUpdateResponse)

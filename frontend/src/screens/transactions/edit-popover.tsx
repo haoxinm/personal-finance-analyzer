@@ -1,5 +1,7 @@
 import * as React from "react";
 
+import { SuggestionChips } from "@/components/primitives/suggestion-chips";
+import type { SuggestionCandidate } from "@/components/primitives/suggestion-labels";
 import { Button } from "@/components/ui/button";
 
 import { KINDS, type Category, type Kind, type Transaction } from "./types";
@@ -18,6 +20,16 @@ export interface EditPopoverProps {
   }) => void;
   onClose: () => void;
   saving?: boolean;
+  /** What each classification layer would say about this transaction (the candidates endpoint),
+   * once loaded; the chips render only when given. */
+  candidates?: SuggestionCandidate[];
+  /** The candidates disagree: the chips explain it. */
+  conflict?: boolean;
+  /** One click on a chip: apply that candidate as a one-time edit (the caller closes the dialog). */
+  onApplySuggestion?: (candidate: SuggestionCandidate) => void;
+  /** Hand an edited row back to automatic classification (the caller closes the dialog). Offered
+   * only when the row carries a one-time edit, which the candidates say. */
+  onRevert?: () => void;
 }
 
 /**
@@ -29,8 +41,23 @@ export interface EditPopoverProps {
  * it always wins over rules and re-runs, and nothing is remembered about the merchant. The
  * optional "Also create a rule" checkbox (off by default) is the explicit merchant-level action:
  * it sends `create_rule`, which saves an exact rule for the merchant's future transactions.
+ *
+ * Above the form, when the transaction has them, one-click suggestion chips show what each
+ * classification layer would say (`SuggestionChips`): the higher-priority answer is already
+ * applied, and a chip applies a lower-priority one as a one-time edit. A row that was edited by
+ * hand also offers "Revert to automatic" (`onRevert`), the one way to let rules reach it again.
  */
-export function EditPopover({ transaction, categories, onSave, onClose, saving }: EditPopoverProps) {
+export function EditPopover({
+  transaction,
+  categories,
+  onSave,
+  onClose,
+  saving,
+  candidates,
+  conflict = false,
+  onApplySuggestion,
+  onRevert,
+}: EditPopoverProps) {
   const [categoryKey, setCategoryKey] = React.useState(transaction.category_key ?? "");
   const [subcategoryKey, setSubcategoryKey] = React.useState(transaction.subcategory_key ?? "");
   const [kind, setKind] = React.useState<Kind>(transaction.kind);
@@ -113,6 +140,16 @@ export function EditPopover({ transaction, categories, onSave, onClose, saving }
       }}
       className="flex w-80 flex-col gap-3 rounded-md border border-border bg-background p-4 shadow-lg"
     >
+      {candidates && onApplySuggestion ? (
+        <SuggestionChips
+          candidates={candidates}
+          conflict={conflict}
+          categories={categories}
+          onApply={onApplySuggestion}
+          onRevert={onRevert}
+          disabled={saving}
+        />
+      ) : null}
       <label className="flex flex-col gap-1 text-xs text-muted-foreground">
         Category
         <select

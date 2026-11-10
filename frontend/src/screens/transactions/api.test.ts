@@ -52,6 +52,13 @@ describe("toTransactionsQuery grid filters", () => {
     expect(query).not.toHaveProperty("sort");
     expect(toTransactionsQuery({})).not.toHaveProperty("needs_review");
   });
+
+  it("carries the conflicting-suggestions filter as ?conflict=", () => {
+    expect(toTransactionsQuery({}, { conflict: true, sort: "-posted_date" })).toMatchObject({
+      conflict: true,
+    });
+    expect(toTransactionsQuery({}, { sort: "-posted_date" }).conflict).toBeUndefined();
+  });
 });
 
 describe("downloadTransactionsExport", () => {

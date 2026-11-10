@@ -35,6 +35,8 @@ export async function fetchNeedsReviewQueue(userIds?: number[]): Promise<Transac
           include_non_spend: true,
           needs_review: true,
           user_ids: userIds,
+          // Each row's per-layer suggestions, for the card's one-click chips.
+          include_candidates: true,
         },
       },
     });
@@ -60,6 +62,8 @@ export async function acceptReview(body: {
   subcategoryKey: string;
   createRule: boolean;
   similarIds: number[];
+  /** A suggestion from a rule with a kind override also sets this row's kind. */
+  kind?: Transaction["kind"];
 }): Promise<ReviewAcceptResponse> {
   const { data, error } = await apiClient.POST("/review/accept", {
     body: {
@@ -68,6 +72,7 @@ export async function acceptReview(body: {
       subcategory_key: body.subcategoryKey,
       create_rule: body.createRule,
       similar_ids: body.similarIds,
+      ...(body.kind ? { kind: body.kind } : {}),
     },
   });
   throwIfError(error);

@@ -20,6 +20,9 @@ from personal_finance_analyzer.api.services import crud
 
 router = APIRouter(tags=["export"])
 
+#: `schemas.Transaction` fields that are list-view extras (one-click suggestions), not exported.
+_NOT_EXPORTED = {"candidates", "conflict"}
+
 _FIELDS = (
     "id",
     "statement_id",
@@ -92,12 +95,14 @@ def export_transactions(
     ]
 
     if format == "json":
-        body = "[" + ",".join(row.model_dump_json() for row in rows) + "]"
+        body = "[" + ",".join(row.model_dump_json(exclude=_NOT_EXPORTED) for row in rows) + "]"
         return PlainTextResponse(body, media_type="application/json")
 
     buffer = io.StringIO()
     writer = csv.DictWriter(buffer, fieldnames=_FIELDS)
     writer.writeheader()
     for row in rows:
-        writer.writerow({k: _csv_safe(v) for k, v in row.model_dump(mode="json").items()})
+        writer.writerow(
+            {k: _csv_safe(v) for k, v in row.model_dump(mode="json", exclude=_NOT_EXPORTED).items()}
+        )
     return PlainTextResponse(buffer.getvalue(), media_type="text/csv")

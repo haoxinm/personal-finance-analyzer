@@ -21,6 +21,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from personal_finance_analyzer.api.services import gateway
+from personal_finance_analyzer.classify.candidates import conflict_flags
 from personal_finance_analyzer.core.paths import kept_pdf, statements_dir
 from personal_finance_analyzer.core.types import USER_CLASSIFIED, Kind
 from personal_finance_analyzer.db.models import (
@@ -258,7 +259,8 @@ class TransactionFilters:
 
     `kinds` wins over `include_non_spend`; with neither, only spend-relevant kinds are listed.
     `uncategorized` selects rows with no category or the `others/uncategorized` fallback
-    (`True`) or everything else (`False`). `currency=None` means every currency.
+    (`True`) or everything else (`False`). `currency=None` means every currency. `conflict` is
+    the "Conflicting suggestions" filter.
     """
 
     user_ids: list[int] | None = None
@@ -276,6 +278,10 @@ class TransactionFilters:
     uncategorized: bool | None = None
     search: str | None = None
     currency: str | None = "USD"
+    #: `True` keeps only rows whose cascade layers disagree (see `classify.candidates`); `False`
+    #: keeps the rest. Evaluated in Python over the rows every other filter matched
+    #: (`_matching_ids`), so it is the one filter that is not part of `_transaction_conditions`.
+    conflict: bool | None = None
 
 
 def uncategorized_clause() -> ColumnElement[bool]:
@@ -356,6 +362,39 @@ def _transaction_order(sort: str | None) -> list[ColumnElement[Any]]:
     return [column.asc(), Transaction.id.asc()]
 
 
+def _matching_ids(
+    session: Session, filters: TransactionFilters, order_by: Sequence[ColumnElement[Any]]
+) -> list[int]:
+    """Ids of the rows `filters` select, in `order_by` order. The `conflict` filter, when set, is
+    applied here: SQL narrows the rows by every other filter, then `classify.candidates` decides
+    per row (batched: one rule scan per distinct merchant) which of them have conflicting
+    suggestions."""
+    conditions = _transaction_conditions(filters)
+    ids = list(
+        session.execute(select(Transaction.id).where(*conditions).order_by(*order_by)).scalars()
+    )
+    if filters.conflict is None:
+        return ids
+    flags = conflict_flags(session, conditions)
+    return [i for i in ids if flags.get(i, False) is filters.conflict]
+
+
+_IN_CHUNK = 500
+
+
+def _by_ids(session: Session, ids: Sequence[int]) -> list[Transaction]:
+    """The transactions for `ids`, in `ids` order (ids that vanished are dropped)."""
+    if not ids:
+        return []
+    found: dict[int, Transaction] = {}
+    # Chunked: an unfiltered export can match more ids than SQLite's bound-variable limit.
+    for start in range(0, len(ids), _IN_CHUNK):
+        chunk = ids[start : start + _IN_CHUNK]
+        for t in session.execute(select(Transaction).where(Transaction.id.in_(chunk))).scalars():
+            found[t.id] = t
+    return [found[i] for i in ids if i in found]
+
+
 def list_transactions(
     session: Session,
     filters: TransactionFilters,
@@ -364,13 +403,18 @@ def list_transactions(
     page_size: int,
     sort: str | None,
 ) -> tuple[list[Transaction], int]:
+    page = max(page, 1)
+    page_size = max(min(page_size, 500), 1)
+    if filters.conflict is not None:
+        # The conflict filter cannot be expressed in SQL, so page over the matching ids.
+        ids = _matching_ids(session, filters, _transaction_order(sort))
+        start = (page - 1) * page_size
+        return _by_ids(session, ids[start : start + page_size]), len(ids)
+
     conditions = _transaction_conditions(filters)
     total = session.execute(
         select(func.count()).select_from(Transaction).where(*conditions)
     ).scalar_one()
-
-    page = max(page, 1)
-    page_size = max(min(page_size, 500), 1)
     stmt = (
         select(Transaction)
         .where(*conditions)
@@ -386,16 +430,14 @@ def transaction_ids(
 ) -> list[int]:
     """Every id `list_transactions` would page through for `filters`, in the same order (no page
     cap, so "select all N matching" really selects N)."""
-    stmt = (
-        select(Transaction.id)
-        .where(*_transaction_conditions(filters))
-        .order_by(*_transaction_order(sort))
-    )
-    return list(session.execute(stmt).scalars().all())
+    return _matching_ids(session, filters, _transaction_order(sort))
 
 
 def export_transactions(session: Session, filters: TransactionFilters) -> list[Transaction]:
     """Every transaction matching `filters`, oldest first (the export's order)."""
+    if filters.conflict is not None:
+        ids = _matching_ids(session, filters, [Transaction.posted_date.asc(), Transaction.id.asc()])
+        return _by_ids(session, ids)
     stmt = (
         select(Transaction)
         .where(*_transaction_conditions(filters))

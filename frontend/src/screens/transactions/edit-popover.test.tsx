@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
@@ -145,5 +145,130 @@ describe("EditPopover scope", () => {
   it("hides the rule checkbox for a transaction with no merchant to match", () => {
     setup(makeTransaction({ merchant_key: "" }));
     expect(screen.queryByRole("checkbox", { name: /Also create a rule/ })).not.toBeInTheDocument();
+  });
+});
+
+describe("EditPopover suggestions", () => {
+  const CATS: Category[] = [
+    ...CATEGORIES,
+    {
+      key: "fuel",
+      name: "Fuel",
+      subcategories: [{ id: 2, key: "gasoline", name: "Gasoline", pending: false }],
+    },
+  ];
+  const CANDIDATES = [
+    {
+      source: "user_rule" as const,
+      category_key: "groceries",
+      subcategory_key: "supermarket",
+      kind: null,
+      label: "acme",
+      rule_id: 1,
+      is_current: true,
+      is_automatic: true,
+    },
+    {
+      source: "builtin_rule" as const,
+      category_key: "fuel",
+      subcategory_key: "gasoline",
+      kind: null,
+      label: "ACME",
+      rule_id: 2,
+      is_current: false,
+      is_automatic: false,
+    },
+  ];
+
+  it("shows the chips above the form and applies the clicked candidate", async () => {
+    const onApplySuggestion = vi.fn();
+    const onSave = vi.fn();
+    render(
+      <EditPopover
+        transaction={makeTransaction()}
+        categories={CATS}
+        onSave={onSave}
+        onClose={vi.fn()}
+        candidates={CANDIDATES}
+        conflict
+        onApplySuggestion={onApplySuggestion}
+      />,
+    );
+
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByRole("note")).toHaveTextContent("Sources disagree");
+    // The applied answer is shown but is not a control: a click would only freeze it.
+    expect(within(dialog).getByTestId("current-chip")).toHaveTextContent(
+      "Groceries › Supermarket · your rule 'acme'",
+    );
+    expect(within(dialog).queryByRole("button", { name: /Supermarket/ })).not.toBeInTheDocument();
+
+    await userEvent.click(within(dialog).getByRole("button", { name: "Fuel › Gasoline, built-in" }));
+
+    expect(onApplySuggestion).toHaveBeenCalledWith(CANDIDATES[1]);
+    expect(onSave).not.toHaveBeenCalled(); // a chip is not the form's Save
+  });
+
+  it("renders no chips until candidates are given", () => {
+    render(
+      <EditPopover
+        transaction={makeTransaction()}
+        categories={CATS}
+        onSave={vi.fn()}
+        onClose={vi.fn()}
+        onApplySuggestion={vi.fn()}
+      />,
+    );
+    expect(screen.queryByRole("group", { name: "Suggested categories" })).not.toBeInTheDocument();
+  });
+
+  it("offers Revert to automatic on an edited row, and none on an automatic one", async () => {
+    const onRevert = vi.fn();
+    const edited = [
+      {
+        source: "one_time_edit" as const,
+        category_key: "fuel",
+        subcategory_key: "gasoline",
+        kind: null,
+        label: "your one-time edit",
+        rule_id: null,
+        is_current: true,
+        is_automatic: false,
+      },
+      { ...CANDIDATES[0]!, is_current: false, is_automatic: true },
+    ];
+    const { rerender } = render(
+      <EditPopover
+        transaction={makeTransaction()}
+        categories={CATS}
+        onSave={vi.fn()}
+        onClose={vi.fn()}
+        candidates={edited}
+        conflict={false}
+        onApplySuggestion={vi.fn()}
+        onRevert={onRevert}
+      />,
+    );
+
+    const dialog = screen.getByRole("dialog");
+    expect(
+      within(dialog).getByRole("button", { name: /^Automatic: Groceries › Supermarket/ }),
+    ).toBeInTheDocument();
+    await userEvent.click(within(dialog).getByRole("button", { name: "Revert to automatic" }));
+    expect(onRevert).toHaveBeenCalledTimes(1);
+
+    rerender(
+      <EditPopover
+        transaction={makeTransaction()}
+        categories={CATS}
+        onSave={vi.fn()}
+        onClose={vi.fn()}
+        candidates={CANDIDATES}
+        conflict
+        onApplySuggestion={vi.fn()}
+        onRevert={onRevert}
+      />,
+    );
+    expect(screen.queryByRole("button", { name: "Revert to automatic" })).not.toBeInTheDocument();
   });
 });

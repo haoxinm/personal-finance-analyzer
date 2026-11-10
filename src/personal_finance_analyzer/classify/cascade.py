@@ -44,6 +44,10 @@ Precedence, highest first: one-time edit > your rules > built-in rules > merchan
    provider configured at all, D2) lands in `others/uncategorized` with `needs_review=True` —
    step 8's fallback is already built into that result, so there is no separate step here.
 
+A one-time edit (`classified_by='user'`) sits above all of these and is final for every pass of
+`classify_transactions`. The one way out is `revert_to_automatic`: it clears the edit and runs steps
+1-6 (never the LLM) for that row.
+
 "Always categorize this merchant this way" (`create_rule`) updates the merchant's own exact rule
 instead of stacking a second one, so the newest choice wins; it also patches the transaction it
 was chosen on.
@@ -70,6 +74,7 @@ from personal_finance_analyzer.classify.llm.batching import classify_all
 from personal_finance_analyzer.classify.llm.egress import BatchResult, preview_payload
 from personal_finance_analyzer.classify.llm.schema import Item
 from personal_finance_analyzer.classify.rules import (
+    IssuerCategoryMatch,
     resolve_issuer_category,
     rule_matches,
     sync_builtin_rules,
@@ -808,6 +813,7 @@ def accept_review(
     subcategory_key: str,
     create_rule: bool,
     similar_ids: Sequence[int] = (),
+    kind: Kind | None = None,
 ) -> AcceptResult:
     """Accept one Review-queue transaction as `category_key/subcategory_key`.
 
@@ -821,6 +827,11 @@ def accept_review(
     A `similar_ids` entry is skipped unless it exists, has the accepted row's non-empty
     `merchant_key`, is still `needs_review`, and was not already edited by hand. Returns the ids
     actually applied and an `AcceptUndo` that `undo_accept` can replay. Does not commit.
+
+    `kind` (optional) is also set on the accepted transaction itself, as a one-time edit, so a
+    one-click suggestion from a rule with a kind override does what that rule would; it never
+    reaches `similar_ids`. Accepting is also how a suggestion (`classify.candidates`) is applied
+    with an undo token: it is the same one-time patch as `PATCH /transactions/{id}`.
 
     Raises:
         ConfigError: the transaction or taxonomy pair does not exist (see `apply_user_correction`).
@@ -853,7 +864,7 @@ def accept_review(
         transaction_id,
         category_key=category_key,
         subcategory_key=subcategory_key,
-        kind=None,
+        kind=kind,
         create_rule=create_rule,
     )
     snapshots = [TransactionSnapshot(txn.id, before_main, _state_of(txn), txn.dedupe_hash)]
@@ -893,6 +904,82 @@ def accept_review(
         transaction_id=transaction_id,
         similar_ids=tuple(applied),
         undo=AcceptUndo(transactions=tuple(snapshots), rule=rule_snapshot),
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class RevertResult:
+    """The outcome of `revert_to_automatic`: which rows went back to automatic classification,
+    which were left alone, and the token (`AcceptUndo`, so `undo_accept` replays it) that puts
+    every reverted row back as the one-time edit it was (only if it still equals what the revert
+    left: an edit made afterwards is never overwritten)."""
+
+    reverted_ids: tuple[int, ...]
+    skipped_ids: tuple[int, ...]
+    undo: AcceptUndo
+
+
+def revert_to_automatic(
+    session: Session, transaction_ids: Sequence[int], *, confidence_threshold: float
+) -> RevertResult:
+    """Hand one-time-edited rows back to automatic classification. Does not commit.
+
+    A one-time edit (`classified_by='user'`) is otherwise final: no rule change, re-classify or
+    re-import ever reconsiders the row. This is the one explicit way out. For each listed row that
+    carries an edit, the edit is dropped and the **deterministic** cascade (steps 1-6: kind,
+    your rules, legacy pins, built-in rules, issuer label, learned merchant cache / saved LLM
+    answer) is run for that row alone and its answer written with the usual provenance
+    (`user_rule`, `builtin_rule`, ..., `cache`). If no deterministic layer has an answer, the row
+    gets what the LLM phase writes for a row it could not place: `others/uncategorized`,
+    confidence 0, `needs_review=True` (a later "Re-classify" may still ask the model, because
+    that is a separate, explicit action). **This never calls the LLM or any network service**,
+    and it writes no `merchant_map` row and no hit count (`dry_run`), so the undo token is exact.
+
+    `kind` is not reverted: the parser's original kind is not stored, so a kind you changed by
+    hand stays; a rule's kind override still applies, as it would in a normal run. Ids that do
+    not exist, or are not currently edited by hand, are skipped (reported in `skipped_ids`).
+    `confidence_threshold` is the LLM setting `needs_review` is judged against.
+    """
+    user_rules, builtin_rules = _load_rule_sets(session)
+    reverted: list[int] = []
+    skipped: list[int] = []
+    snapshots: list[TransactionSnapshot] = []
+    for transaction_id in dict.fromkeys(transaction_ids):
+        txn = session.get(Transaction, transaction_id)
+        if txn is None or txn.classified_by != USER_CLASSIFIED:
+            skipped.append(transaction_id)
+            continue
+        before = _state_of(txn)
+        outcome = _classify_deterministic(
+            session, txn, user_rules=user_rules, builtin_rules=builtin_rules, dry_run=True
+        )
+        if outcome is None:
+            outcome = _Outcome(
+                category_key=_UNCATEGORIZED_CATEGORY,
+                subcategory_key=_UNCATEGORIZED_SUBCATEGORY,
+                confidence=0.0,
+                classified_by="llm",
+                needs_review_override=True,
+            )
+        below_threshold = (
+            outcome.confidence is not None and outcome.confidence < confidence_threshold
+        )
+        # The edit is dropped first so the row is an ordinary automatic one even if the write
+        # below raises half-way (the caller rolls the session back in that case).
+        txn.classified_by = None
+        _write_outcome(
+            session,
+            txn,
+            outcome,
+            needs_review=outcome.needs_review_override or below_threshold,
+        )
+        snapshots.append(TransactionSnapshot(txn.id, before, _state_of(txn), txn.dedupe_hash))
+        reverted.append(txn.id)
+    session.flush()
+    return RevertResult(
+        reverted_ids=tuple(reverted),
+        skipped_ids=tuple(skipped),
+        undo=AcceptUndo(transactions=tuple(snapshots), rule=None),
     )
 
 
@@ -1082,6 +1169,36 @@ def _load_rule_sets(session: Session) -> tuple[list[Rule], list[Rule]]:
     return user_rules, builtin_rules
 
 
+#: `merchant_map.source` values the cascade reads at each step, shared with
+#: `classify.candidates` so the one-click suggestions can never read a different set of rows.
+USER_PIN_SOURCES: tuple[str, ...] = ("user",)
+CACHE_SOURCES: tuple[str, ...] = ("llm", "issuer")
+
+
+def first_matching_rule(
+    rules: Sequence[Rule],
+    *,
+    user_id: int,
+    merchant_key: str,
+    matches: Callable[[Rule, str], bool] = rule_matches,
+) -> Rule | None:
+    """The first rule of `rules` (already in priority order) that applies to `user_id` and whose
+    pattern matches `merchant_key`: cascade steps 2 and 4 (and their suggestions). `matches` lets
+    a read-only caller swap in a matcher that treats a stored regex that no longer compiles as a
+    non-match instead of raising."""
+    for rule in rules:
+        if _rule_applies_to_user(rule, user_id) and matches(rule, merchant_key):
+            return rule
+    return None
+
+
+def issuer_match(parser_id: str | None, issuer_category: str | None) -> IssuerCategoryMatch | None:
+    """Cascade step 5's lookup: the category an issuer's own label implies, or `None`."""
+    if not issuer_category:
+        return None
+    return resolve_issuer_category(parser_id, issuer_category)
+
+
 def _classify_deterministic(
     session: Session,
     txn: Transaction,
@@ -1095,6 +1212,9 @@ def _classify_deterministic(
     `dry_run=True` (used by `preview_egress`) performs every read but skips every write
     (`merchant_map.hit_count` increments, the issuer-category `merchant_map` write), so nothing
     persists from a preview.
+
+    The per-layer matching goes through `first_matching_rule`, `issuer_match` and the
+    `USER_PIN_SOURCES` / `CACHE_SOURCES` constants, which `classify.candidates` reuses.
     """
     if txn.kind in _NON_SPEND_KINDS:
         return _Outcome(
@@ -1104,14 +1224,15 @@ def _classify_deterministic(
             classified_by="kind",
         )
 
-    for rule in user_rules:
-        if _rule_applies_to_user(rule, txn.user_id) and rule_matches(rule, txn.merchant_key):
-            return _outcome_from_rule(session, rule, classified_by="user_rule")
+    user_rule = first_matching_rule(user_rules, user_id=txn.user_id, merchant_key=txn.merchant_key)
+    if user_rule is not None:
+        return _outcome_from_rule(session, user_rule, classified_by="user_rule")
 
     if txn.merchant_key:
         user_map = session.execute(
             select(MerchantMap).where(
-                MerchantMap.merchant_key == txn.merchant_key, MerchantMap.source == "user"
+                MerchantMap.merchant_key == txn.merchant_key,
+                MerchantMap.source.in_(USER_PIN_SOURCES),
             )
         ).scalar_one_or_none()
         if user_map is not None:
@@ -1120,35 +1241,36 @@ def _classify_deterministic(
             # Recorded as a rule result, never as a one-time edit (`classified_by='user'`).
             return _outcome_from_map(session, user_map, classified_by="user_rule")
 
-    for rule in builtin_rules:
-        if rule_matches(rule, txn.merchant_key):
-            return _outcome_from_rule(session, rule, classified_by="builtin_rule")
+    builtin_rule = first_matching_rule(
+        builtin_rules, user_id=txn.user_id, merchant_key=txn.merchant_key
+    )
+    if builtin_rule is not None:
+        return _outcome_from_rule(session, builtin_rule, classified_by="builtin_rule")
 
-    if txn.issuer_category:
-        parser_id = txn.statement.parser_id if txn.statement is not None else None
-        match = resolve_issuer_category(parser_id, txn.issuer_category)
-        if match is not None:
-            outcome = _Outcome(
-                category_key=match.category_key,
-                subcategory_key=match.subcategory_key,
-                confidence=0.9,
-                classified_by="issuer",
+    parser_id = txn.statement.parser_id if txn.statement is not None else None
+    match = issuer_match(parser_id, txn.issuer_category)
+    if match is not None:
+        outcome = _Outcome(
+            category_key=match.category_key,
+            subcategory_key=match.subcategory_key,
+            confidence=0.9,
+            classified_by="issuer",
+        )
+        if txn.merchant_key and not dry_run:
+            _write_merchant_map(
+                session,
+                txn.merchant_key,
+                outcome,
+                source="issuer",
+                canonical=txn.merchant_canonical,
             )
-            if txn.merchant_key and not dry_run:
-                _write_merchant_map(
-                    session,
-                    txn.merchant_key,
-                    outcome,
-                    source="issuer",
-                    canonical=txn.merchant_canonical,
-                )
-            return outcome
+        return outcome
 
     if txn.merchant_key:
         cache_map = session.execute(
             select(MerchantMap).where(
                 MerchantMap.merchant_key == txn.merchant_key,
-                MerchantMap.source.in_(("llm", "issuer")),
+                MerchantMap.source.in_(CACHE_SOURCES),
             )
         ).scalar_one_or_none()
         if cache_map is not None:
@@ -1409,6 +1531,8 @@ def _persist_llm_run(session: Session, result: BatchResult, *, group_id: str) ->
 
 
 __all__ = [
+    "CACHE_SOURCES",
+    "USER_PIN_SOURCES",
     "AcceptResult",
     "AcceptUndo",
     "ClassifyResult",
@@ -1420,6 +1544,8 @@ __all__ = [
     "apply_user_correction",
     "approve_subcategory",
     "classify_transactions",
+    "first_matching_rule",
+    "issuer_match",
     "merge_subcategory",
     "preview_egress",
     "rule_target_ids",

@@ -224,6 +224,43 @@ class Job(_Model):
 # --- Transactions ----------------------------------------------------------------------------------
 
 
+#: Where a one-click category suggestion comes from (`classify/candidates.py`), in precedence
+#: order: a one-time edit you made, a payment/transfer's fixed filing, your rules (and legacy
+#: pins), built-in rules, the issuer's own label, the learned merchant cache, and the saved
+#: answer of an earlier LLM run.
+CandidateSource = Literal[
+    "one_time_edit", "kind", "user_rule", "builtin_rule", "issuer", "merchant_cache", "llm"
+]
+
+
+class TransactionCandidate(_Model):
+    """One cascade layer's answer for one transaction. Clicking it is an ordinary one-time edit
+    (`PATCH /transactions/{id}` with this category, subcategory and `kind` when set)."""
+
+    source: CandidateSource
+    category_key: str
+    subcategory_key: str
+    #: A rule's kind override; send it with the category so the click does what the rule does.
+    kind: Kind | None = None
+    #: The rule's pattern, the issuer's own label, or where the cached answer was learned.
+    label: str
+    rule_id: int | None = None
+    #: This is the answer the row is filed under now (the one-time edit, for an edited row).
+    is_current: bool
+    #: This is what the row gets (or, for an edited row, would get) with no one-time edit: the
+    #: winning layer. "Revert to automatic" files an edited row under it.
+    is_automatic: bool = False
+
+
+class TransactionCandidates(_Model):
+    """`GET /api/transactions/{id}/candidates`: what each layer would say, in precedence order."""
+
+    transaction_id: int
+    candidates: list[TransactionCandidate]
+    #: At least two layers name different categories, and the row has no one-time edit.
+    conflict: bool
+
+
 class Transaction(_Model):
     id: int
     statement_id: int
@@ -240,6 +277,9 @@ class Transaction(_Model):
     merchant_key: str | None
     notes: str | None
     needs_review: bool
+    #: Only present when the list was asked for it (`include_candidates` / `include_conflict`).
+    candidates: list[TransactionCandidate] | None = None
+    conflict: bool | None = None
 
 
 class TransactionList(_Model):
@@ -331,6 +371,9 @@ class ReviewAcceptRequest(_Model):
     #: Other pending rows of the same merchant to categorize the same way; ids that do not
     #: qualify (different merchant, no longer pending, hand-corrected) are skipped.
     similar_ids: list[int] = Field(default_factory=list)
+    #: Also set this transaction's kind (a suggestion from a rule with a kind override carries
+    #: one). Applies to `transaction_id` only, never to `similar_ids`.
+    kind: Kind | None = None
 
 
 class ReviewAcceptResponse(_Model):
@@ -360,6 +403,28 @@ class BulkUpdateRequest(_Model):
 
 class BulkUpdateResponse(_Model):
     updated: int
+
+
+class RevertToAutomaticResponse(_Model):
+    """`POST /transactions/{id}/revert-to-automatic`: the row, handed back to automatic
+    classification (never an LLM call), and the same undo token an accept carries
+    (`POST /review/undo` puts the one-time edit back)."""
+
+    transaction: Transaction
+    undo: AcceptUndo
+
+
+class BulkRevertRequest(_Model):
+    transaction_ids: list[int]
+
+
+class BulkRevertResponse(_Model):
+    """`reverted` rows had an edit and went back to automatic; `skipped` were not edited by hand
+    (or no longer exist) and are untouched. `undo` restores every reverted row."""
+
+    reverted: int
+    skipped: int
+    undo: AcceptUndo
 
 
 # --- Classify --------------------------------------------------------------------------------------

@@ -243,7 +243,13 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List Transactions */
+        /**
+         * List Transactions
+         * @description One page of transactions. `include_candidates` adds each row's per-layer suggestions
+         *     (`candidates`) and `conflict`; `include_conflict` adds just the `conflict` flag (the grid's
+         *     marker). Both are batch-computed for this page only. `conflict=true|false` (a filter)
+         *     narrows the whole result set to rows with, or without, conflicting suggestions.
+         */
         get: operations["list_transactions_api_transactions_get"];
         put?: never;
         post?: never;
@@ -274,6 +280,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/transactions/{id}/candidates": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Transaction Candidates
+         * @description What each classification layer (your rules, built-in rules, the issuer's label, the learned
+         *     cache / saved LLM answer) would say about this transaction, highest priority first, and
+         *     whether they disagree. Read-only; never calls the LLM. Click-to-apply is `PATCH
+         *     /transactions/{id}` with the chosen category.
+         */
+        get: operations["get_transaction_candidates_api_transactions__id__candidates_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/transactions/{id}": {
         parameters: {
             query?: never;
@@ -289,6 +318,50 @@ export interface paths {
         head?: never;
         /** Patch Transaction */
         patch: operations["patch_transaction_api_transactions__id__patch"];
+        trace?: never;
+    };
+    "/transactions/{id}/revert-to-automatic": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Revert Transaction To Automatic
+         * @description Drop this transaction's one-time edit and re-run the deterministic cascade for it (your
+         *     rules, built-in rules, the issuer's label, the learned cache; uncategorized and flagged for
+         *     review if none answers). Never calls the LLM. 409 if the row is not currently edited by hand.
+         *     The undo token goes to `POST /review/undo` to restore the edit.
+         */
+        post: operations["revert_transaction_to_automatic_api_transactions__id__revert_to_automatic_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/transactions/bulk-revert-to-automatic": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Bulk Revert To Automatic
+         * @description `revert-to-automatic` for many rows. Rows that are not edited by hand, or no longer exist,
+         *     are skipped and counted; the rest go back to automatic classification (no LLM call).
+         */
+        post: operations["bulk_revert_to_automatic_api_transactions_bulk_revert_to_automatic_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/transactions/bulk-update": {
@@ -1789,6 +1862,23 @@ export interface components {
             description: string;
             params: components["schemas"]["ForecastParams"];
         };
+        /** BulkRevertRequest */
+        BulkRevertRequest: {
+            /** Transaction Ids */
+            transaction_ids: number[];
+        };
+        /**
+         * BulkRevertResponse
+         * @description `reverted` rows had an edit and went back to automatic; `skipped` were not edited by hand
+         *     (or no longer exist) and are untouched. `undo` restores every reverted row.
+         */
+        BulkRevertResponse: {
+            /** Reverted */
+            reverted: number;
+            /** Skipped */
+            skipped: number;
+            undo: components["schemas"]["AcceptUndo"];
+        };
         /**
          * BulkUpdateRequest
          * @description Edit every listed transaction one time each (no rule, no merchant memory).
@@ -2657,6 +2747,16 @@ export interface components {
             /** Pii Terms */
             pii_terms: string[];
         };
+        /**
+         * RevertToAutomaticResponse
+         * @description `POST /transactions/{id}/revert-to-automatic`: the row, handed back to automatic
+         *     classification (never an LLM call), and the same undo token an accept carries
+         *     (`POST /review/undo` puts the one-time edit back).
+         */
+        RevertToAutomaticResponse: {
+            transaction: components["schemas"]["Transaction"];
+            undo: components["schemas"]["AcceptUndo"];
+        };
         /** ReviewAcceptRequest */
         ReviewAcceptRequest: {
             /** Transaction Id */
@@ -2672,6 +2772,7 @@ export interface components {
             create_rule: boolean;
             /** Similar Ids */
             similar_ids?: number[];
+            kind?: components["schemas"]["Kind"] | null;
         };
         /** ReviewAcceptResponse */
         ReviewAcceptResponse: {
@@ -3994,6 +4095,50 @@ export interface components {
             notes: string | null;
             /** Needs Review */
             needs_review: boolean;
+            /** Candidates */
+            candidates?: components["schemas"]["TransactionCandidate"][] | null;
+            /** Conflict */
+            conflict?: boolean | null;
+        };
+        /**
+         * TransactionCandidate
+         * @description One cascade layer's answer for one transaction. Clicking it is an ordinary one-time edit
+         *     (`PATCH /transactions/{id}` with this category, subcategory and `kind` when set).
+         */
+        TransactionCandidate: {
+            /**
+             * Source
+             * @enum {string}
+             */
+            source: "one_time_edit" | "kind" | "user_rule" | "builtin_rule" | "issuer" | "merchant_cache" | "llm";
+            /** Category Key */
+            category_key: string;
+            /** Subcategory Key */
+            subcategory_key: string;
+            kind?: components["schemas"]["Kind"] | null;
+            /** Label */
+            label: string;
+            /** Rule Id */
+            rule_id?: number | null;
+            /** Is Current */
+            is_current: boolean;
+            /**
+             * Is Automatic
+             * @default false
+             */
+            is_automatic: boolean;
+        };
+        /**
+         * TransactionCandidates
+         * @description `GET /api/transactions/{id}/candidates`: what each layer would say, in precedence order.
+         */
+        TransactionCandidates: {
+            /** Transaction Id */
+            transaction_id: number;
+            /** Candidates */
+            candidates: components["schemas"]["TransactionCandidate"][];
+            /** Conflict */
+            conflict: boolean;
         };
         /**
          * TransactionIds
@@ -4687,6 +4832,8 @@ export interface operations {
                 page?: number;
                 page_size?: number;
                 sort?: string | null;
+                include_candidates?: boolean;
+                include_conflict?: boolean;
                 user_ids?: number[] | null;
                 account_ids?: number[] | null;
                 statement_id?: number | null;
@@ -4702,6 +4849,7 @@ export interface operations {
                 uncategorized?: boolean | null;
                 search?: string | null;
                 currency?: string | null;
+                conflict?: boolean | null;
             };
             header?: never;
             path?: never;
@@ -4748,6 +4896,7 @@ export interface operations {
                 uncategorized?: boolean | null;
                 search?: string | null;
                 currency?: string | null;
+                conflict?: boolean | null;
             };
             header?: never;
             path?: never;
@@ -4762,6 +4911,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["TransactionIds"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_transaction_candidates_api_transactions__id__candidates_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TransactionCandidates"];
                 };
             };
             /** @description Validation Error */
@@ -4797,6 +4977,70 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Transaction"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    revert_transaction_to_automatic_api_transactions__id__revert_to_automatic_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RevertToAutomaticResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    bulk_revert_to_automatic_api_transactions_bulk_revert_to_automatic_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BulkRevertRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BulkRevertResponse"];
                 };
             };
             /** @description Validation Error */
@@ -6080,6 +6324,7 @@ export interface operations {
                 uncategorized?: boolean | null;
                 search?: string | null;
                 currency?: string | null;
+                conflict?: boolean | null;
             };
             header?: never;
             path?: never;
