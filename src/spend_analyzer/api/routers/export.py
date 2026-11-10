@@ -7,16 +7,16 @@ from __future__ import annotations
 
 import csv
 import io
+from dataclasses import replace
 from typing import Literal
 
 from fastapi import APIRouter
-from sqlalchemy import select
 from starlette.responses import PlainTextResponse
 
 from spend_analyzer.api import schemas
 from spend_analyzer.api.deps import SessionDep
+from spend_analyzer.api.routers.transactions import ExportFiltersDep
 from spend_analyzer.api.services import crud
-from spend_analyzer.db.models import Transaction
 
 router = APIRouter(tags=["export"])
 
@@ -39,19 +39,37 @@ _FIELDS = (
 )
 
 
+#: A spreadsheet treats a cell starting with one of these as a formula (CSV injection): a
+#: description like `=HYPERLINK(...)` copied from a statement would run when the export is opened.
+#: `|` starts a DDE-style command in some spreadsheets. Leading whitespace is skipped first, since
+#: spreadsheets ignore it (` =1+1` is still a formula).
+_FORMULA_PREFIXES = ("=", "+", "-", "@", "|")
+
+
+def _csv_safe(value: object) -> object:
+    """Neutralize a text cell that a spreadsheet would read as a formula by prefixing `'`, which
+    the spreadsheet hides. Numbers are left alone (a negative `amount_minor` must stay numeric)."""
+    if not isinstance(value, str) or not value:
+        return value
+    if value[0] in "\t\r\n" or value.lstrip().startswith(_FORMULA_PREFIXES):
+        return "'" + value
+    return value
+
+
 @router.get("/export")
 def export_transactions(
     session: SessionDep,
+    filters: ExportFiltersDep,
     format: Literal["csv", "json"] = "csv",
     user_id: int | None = None,
 ) -> PlainTextResponse:
-    """Export every transaction, or (with `user_id`) just one user's, oldest first. The CLI's
-    `export --user-id`/`--all-users` call this directly with a resolved id or `None`; the HTTP
-    route itself leaves `user_id` unset by default (exports everything)."""
-    stmt = select(Transaction).order_by(Transaction.posted_date)
+    """Export the transactions matching `filters` (the same filters as `GET /transactions`;
+    unfiltered, everything), oldest first. `user_id` is shorthand for `user_ids=[user_id]`: the
+    CLI's `export --user-id`/`--all-users` call this directly with a resolved id or `None`. The
+    CLI passes `filters=crud.TransactionFilters(currency=None, include_non_spend=True)`."""
     if user_id is not None:
-        stmt = stmt.where(Transaction.user_id == user_id)
-    transactions = session.execute(stmt).scalars().all()
+        filters = replace(filters, user_ids=[user_id])
+    transactions = crud.export_transactions(session, filters)
     rows = [
         schemas.Transaction(
             id=t.id,
@@ -81,5 +99,5 @@ def export_transactions(
     writer = csv.DictWriter(buffer, fieldnames=_FIELDS)
     writer.writeheader()
     for row in rows:
-        writer.writerow(row.model_dump(mode="json"))
+        writer.writerow({k: _csv_safe(v) for k, v in row.model_dump(mode="json").items()})
     return PlainTextResponse(buffer.getvalue(), media_type="text/csv")

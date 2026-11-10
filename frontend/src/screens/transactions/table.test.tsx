@@ -1,5 +1,6 @@
 import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import userEvent from "@testing-library/user-event";
+import { describe, expect, it, vi } from "vitest";
 
 import type { Category, Transaction } from "./types";
 import { TransactionsTable } from "./table";
@@ -79,5 +80,30 @@ describe("TransactionsTable column layout", () => {
 
     const descriptionCell = screen.getByTitle("GARDEN CENTER");
     expect(descriptionCell.className).toContain("truncate");
+  });
+
+  it("makes the date and amount headers sort controls that flip direction and show it", async () => {
+    const onSortChange = vi.fn();
+    const context = { categories: CATEGORIES, selectedIds: new Set<number>(), onToggleRow: noop, onEdit: noop };
+    const { rerender } = render(
+      <TransactionsTable rows={TRANSACTIONS} context={context} sort="-posted_date" onSortChange={onSortChange} />,
+    );
+
+    const dateHeader = screen.getByRole("columnheader", { name: /Date/ });
+    expect(dateHeader).toHaveAttribute("aria-sort", "descending");
+    expect(screen.getByRole("columnheader", { name: /Amount/ })).toHaveAttribute("aria-sort", "none");
+    // Description is not sortable: no `sort` API for it.
+    expect(screen.getByRole("columnheader", { name: "Description" })).not.toHaveAttribute("aria-sort");
+
+    await userEvent.click(dateHeader);
+    expect(onSortChange).toHaveBeenLastCalledWith("posted_date");
+    await userEvent.click(screen.getByRole("columnheader", { name: /Amount/ }));
+    expect(onSortChange).toHaveBeenLastCalledWith("-amount_minor");
+
+    rerender(
+      <TransactionsTable rows={TRANSACTIONS} context={context} sort="-amount_minor" onSortChange={onSortChange} />,
+    );
+    await userEvent.click(screen.getByRole("columnheader", { name: /Amount/ }));
+    expect(onSortChange).toHaveBeenLastCalledWith("amount_minor");
   });
 });

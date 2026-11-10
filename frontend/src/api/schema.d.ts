@@ -253,6 +253,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/transactions/ids": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Transaction Ids
+         * @description Ids of *every* transaction matching the same filters as `GET /transactions` (no page
+         *     cap), for "select all N matching" in the grid.
+         */
+        get: operations["list_transaction_ids_api_transactions_ids_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/transactions/{id}": {
         parameters: {
             query?: never;
@@ -279,7 +300,12 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Bulk Update Transactions */
+        /**
+         * Bulk Update Transactions
+         * @description Apply one label and/or kind to `transaction_ids`. `updated` counts only rows actually
+         *     changed: ids that no longer exist, and a request with nothing to apply, count for nothing —
+         *     compare it with `len(transaction_ids)` to spot a partial update.
+         */
         post: operations["bulk_update_transactions_api_transactions_bulk_update_post"];
         delete?: never;
         options?: never;
@@ -755,9 +781,10 @@ export interface paths {
         };
         /**
          * Export Transactions
-         * @description Export every transaction, or (with `user_id`) just one user's, oldest first. The CLI's
-         *     `export --user-id`/`--all-users` call this directly with a resolved id or `None`; the HTTP
-         *     route itself leaves `user_id` unset by default (exports everything).
+         * @description Export the transactions matching `filters` (the same filters as `GET /transactions`;
+         *     unfiltered, everything), oldest first. `user_id` is shorthand for `user_ids=[user_id]`: the
+         *     CLI's `export --user-id`/`--all-users` call this directly with a resolved id or `None`. The
+         *     CLI passes `filters=crud.TransactionFilters(currency=None, include_non_spend=True)`.
          */
         get: operations["export_transactions_api_export_get"];
         put?: never;
@@ -2636,6 +2663,16 @@ export interface components {
             /** Needs Review */
             needs_review: boolean;
         };
+        /**
+         * TransactionIds
+         * @description `GET /api/transactions/ids`: every id matching the filters (not one page of them).
+         */
+        TransactionIds: {
+            /** Ids */
+            ids: number[];
+            /** Total */
+            total: number;
+        };
         /** TransactionList */
         TransactionList: {
             /** Items */
@@ -3274,6 +3311,9 @@ export interface operations {
     list_transactions_api_transactions_get: {
         parameters: {
             query?: {
+                page?: number;
+                page_size?: number;
+                sort?: string | null;
                 user_ids?: number[] | null;
                 account_ids?: number[] | null;
                 statement_id?: number | null;
@@ -3286,11 +3326,9 @@ export interface operations {
                 kinds?: components["schemas"]["Kind"][] | null;
                 include_non_spend?: boolean;
                 needs_review?: boolean | null;
+                uncategorized?: boolean | null;
                 search?: string | null;
-                currency?: string;
-                page?: number;
-                page_size?: number;
-                sort?: string | null;
+                currency?: string | null;
             };
             header?: never;
             path?: never;
@@ -3305,6 +3343,52 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["TransactionList"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_transaction_ids_api_transactions_ids_get: {
+        parameters: {
+            query?: {
+                sort?: string | null;
+                user_ids?: number[] | null;
+                account_ids?: number[] | null;
+                statement_id?: number | null;
+                date_from?: string | null;
+                date_to?: string | null;
+                category_keys?: string[] | null;
+                subcategory_keys?: string[] | null;
+                amount_min_minor?: number | null;
+                amount_max_minor?: number | null;
+                kinds?: components["schemas"]["Kind"][] | null;
+                include_non_spend?: boolean;
+                needs_review?: boolean | null;
+                uncategorized?: boolean | null;
+                search?: string | null;
+                currency?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TransactionIds"];
                 };
             };
             /** @description Validation Error */
@@ -4415,6 +4499,21 @@ export interface operations {
             query?: {
                 format?: "csv" | "json";
                 user_id?: number | null;
+                user_ids?: number[] | null;
+                account_ids?: number[] | null;
+                statement_id?: number | null;
+                date_from?: string | null;
+                date_to?: string | null;
+                category_keys?: string[] | null;
+                subcategory_keys?: string[] | null;
+                amount_min_minor?: number | null;
+                amount_max_minor?: number | null;
+                kinds?: components["schemas"]["Kind"][] | null;
+                include_non_spend?: boolean;
+                needs_review?: boolean | null;
+                uncategorized?: boolean | null;
+                search?: string | null;
+                currency?: string | null;
             };
             header?: never;
             path?: never;

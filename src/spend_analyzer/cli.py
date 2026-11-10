@@ -552,12 +552,14 @@ def export(
         raise typer.Exit(code=2)
 
     from spend_analyzer.api.routers.export import export_transactions
+    from spend_analyzer.api.services.crud import TransactionFilters
 
     with _open_engine() as engine, _open_session(engine) as session:
         resolved_user_id = _resolve_user_filter(session, user_id, all_users=all_users)
         response = export_transactions(
             format=format,  # type: ignore[arg-type]
             session=session,
+            filters=TransactionFilters(include_non_spend=True, currency=None),
             user_id=resolved_user_id,
         )
         body = (

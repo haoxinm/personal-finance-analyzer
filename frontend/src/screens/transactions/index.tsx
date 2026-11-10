@@ -7,23 +7,32 @@ import { useToast } from "@/components/ui/use-toast";
 import { useSelectedUser } from "@/hooks/use-selected-user";
 import { useSpendQueryParams } from "@/hooks/use-spend-query-params";
 
-import { downloadTransactionsExport, useAllMatchingIds, useBulkUpdateTransactions, useTransactionsGrid } from "./api";
+import {
+  downloadTransactionsExport,
+  useAccountOptions,
+  useAllMatchingIds,
+  useBulkUpdateTransactions,
+  useTransactionsGrid,
+} from "./api";
 import { BulkBar } from "./bulk-bar";
 import type { ColumnsContext } from "./columns";
 import { EditPopover } from "./edit-popover";
 import { FiltersBar } from "./filters";
 import { TransactionsTable } from "./table";
 import type { Transaction } from "./types";
+import { useGridParams } from "./use-grid-params";
 
 /**
  * The Transactions screen (P3-C): a virtualized grid of every transaction matching the URL's
- * `SpendQuery`-shaped filters, with inline single-row edit, bulk relabel over the filtered
- * selection, and a full CSV/JSON export. See `use-virtual-rows.ts` for why the "virtualized"
+ * `SpendQuery`-shaped filters (plus needs-review / uncategorized / one statement, see
+ * `use-grid-params.ts`), sortable by date or amount, with inline single-row edit, bulk relabel over
+ * the filtered selection, and a CSV/JSON export of exactly what the filters show. See `use-virtual-rows.ts` for why the "virtualized"
  * part is a hand-rolled windowing hook rather than `@tanstack/react-virtual` (not yet a
  * dependency — flagged in the P3-C report).
  */
 export default function TransactionsScreen() {
   const [urlFilters, setFilters] = useSpendQueryParams();
+  const [gridParams, setGridParams] = useGridParams();
   const sel = useSelectedUser();
   const { toast } = useToast();
 
@@ -33,7 +42,15 @@ export default function TransactionsScreen() {
     [urlFilters, sel.userIds],
   );
 
-  const grid = useTransactionsGrid(filters, !sel.isLoading);
+  const grid = useTransactionsGrid(filters, gridParams, !sel.isLoading);
+  const accountOptions = useAccountOptions();
+  const accounts = React.useMemo(
+    () =>
+      (accountOptions.data ?? []).filter(
+        (account) => sel.userIds === undefined || sel.userIds.includes(account.userId),
+      ),
+    [accountOptions.data, sel.userIds],
+  );
   const taxonomy = useTaxonomy();
   const categories = React.useMemo(() => taxonomy.data ?? [], [taxonomy.data]);
 
@@ -42,13 +59,26 @@ export default function TransactionsScreen() {
   const allMatchingIds = useAllMatchingIds();
 
   const [selectedIds, setSelectedIds] = React.useState<Set<number>>(new Set());
+  // The selection is "everything the filters match" (from `handleSelectAllMatching`), not rows
+  // the user ticked: bulk apply then asks for confirmation. Any manual change ends it.
+  const [allMatchingSelected, setAllMatchingSelected] = React.useState(false);
   const [editing, setEditing] = React.useState<Transaction | null>(null);
   const [exporting, setExporting] = React.useState(false);
 
   // A selection made under one user view must not carry into another.
   React.useEffect(() => {
     setSelectedIds(new Set());
+    setAllMatchingSelected(false);
   }, [sel.selectedUserId]);
+
+  // A selection (ticked rows, or "all matching") describes the rows one particular filter set
+  // matched; once the filters change it would silently target rows the user can no longer see.
+  // Sort does not change the matched set, so it is left out of the key.
+  const filterKey = JSON.stringify({ filters, grid: { ...gridParams, sort: undefined } });
+  React.useEffect(() => {
+    setSelectedIds(new Set());
+    setAllMatchingSelected(false);
+  }, [filterKey]);
 
   const rows = React.useMemo(
     () => grid.data?.pages.flatMap((page) => page.items) ?? [],
@@ -57,6 +87,7 @@ export default function TransactionsScreen() {
   const total = grid.data?.pages.at(-1)?.total ?? 0;
 
   const toggleRow = React.useCallback((id: number) => {
+    setAllMatchingSelected(false);
     setSelectedIds((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
@@ -77,8 +108,16 @@ export default function TransactionsScreen() {
 
   async function handleSelectAllMatching() {
     try {
-      const ids = await allMatchingIds.mutateAsync({ filters, total });
+      const ids = await allMatchingIds.mutateAsync({ filters, grid: gridParams });
       setSelectedIds(new Set(ids));
+      setAllMatchingSelected(true);
+      if (ids.length !== total) {
+        // The list moved under us (an import finished, a row was relabelled): say what was selected.
+        toast({
+          title: `Selected ${ids.length.toLocaleString()} transactions`,
+          description: `The filters matched ${total.toLocaleString()} a moment ago.`,
+        });
+      }
     } catch (error) {
       toast({
         title: "Could not select all matching transactions",
@@ -89,14 +128,25 @@ export default function TransactionsScreen() {
   }
 
   async function handleBulkApply(patch: { categoryKey: string; subcategoryKey: string }) {
+    const requested = selectedIds.size;
     try {
       const result = await bulkUpdate.mutateAsync({
         transactionIds: Array.from(selectedIds),
         categoryKey: patch.categoryKey,
         subcategoryKey: patch.subcategoryKey,
       });
-      toast({ title: `Updated ${result.updated} transaction${result.updated === 1 ? "" : "s"}` });
+      if (result.updated < requested) {
+        // Never report a partial update as a success: some ids no longer exist.
+        toast({
+          title: `Updated ${result.updated.toLocaleString()} of ${requested.toLocaleString()} transactions`,
+          description: `${(requested - result.updated).toLocaleString()} could not be updated (they may have been deleted). Reload to see the current list.`,
+          variant: "destructive",
+        });
+      } else {
+        toast({ title: `Updated ${result.updated} transaction${result.updated === 1 ? "" : "s"}` });
+      }
       setSelectedIds(new Set());
+      setAllMatchingSelected(false);
     } catch (error) {
       toast({
         title: "Bulk update failed",
@@ -106,7 +156,12 @@ export default function TransactionsScreen() {
     }
   }
 
-  async function handleSaveEdit(patch: { categoryKey: string; subcategoryKey: string; kind: Transaction["kind"] }) {
+  async function handleSaveEdit(patch: {
+    categoryKey?: string;
+    subcategoryKey?: string;
+    kind?: Transaction["kind"];
+    notes?: string;
+  }) {
     if (!editing) return;
     try {
       await patchTransaction.mutateAsync({
@@ -115,6 +170,7 @@ export default function TransactionsScreen() {
           category_key: patch.categoryKey,
           subcategory_key: patch.subcategoryKey,
           kind: patch.kind,
+          notes: patch.notes,
           create_rule: false,
         },
       });
@@ -131,7 +187,7 @@ export default function TransactionsScreen() {
   async function handleExport(format: "csv" | "json") {
     setExporting(true);
     try {
-      await downloadTransactionsExport(format);
+      await downloadTransactionsExport(format, filters, gridParams);
     } catch (error) {
       toast({
         title: "Export failed",
@@ -153,16 +209,37 @@ export default function TransactionsScreen() {
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <Button type="button" variant="outline" size="sm" disabled={exporting} onClick={() => void handleExport("csv")}>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={exporting}
+            title="Exports the transactions matching the current filters and user view"
+            onClick={() => void handleExport("csv")}
+          >
             Export CSV
           </Button>
-          <Button type="button" variant="outline" size="sm" disabled={exporting} onClick={() => void handleExport("json")}>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={exporting}
+            title="Exports the transactions matching the current filters and user view"
+            onClick={() => void handleExport("json")}
+          >
             Export JSON
           </Button>
         </div>
       </div>
 
-      <FiltersBar filters={filters} categories={categories} onChange={setFilters} />
+      <FiltersBar
+        filters={filters}
+        categories={categories}
+        onChange={setFilters}
+        grid={gridParams}
+        onGridChange={setGridParams}
+        accounts={accounts}
+      />
 
       <BulkBar
         selectedCount={selectedIds.size}
@@ -170,10 +247,14 @@ export default function TransactionsScreen() {
         loadedCount={rows.length}
         categories={categories}
         onSelectAllMatching={() => void handleSelectAllMatching()}
-        onClear={() => setSelectedIds(new Set())}
+        onClear={() => {
+          setSelectedIds(new Set());
+          setAllMatchingSelected(false);
+        }}
         onApply={(patch) => void handleBulkApply(patch)}
         applying={bulkUpdate.isPending}
         selectingAll={allMatchingIds.isPending}
+        allMatchingSelected={allMatchingSelected}
       />
 
       {grid.isLoading || sel.isLoading ? (
@@ -194,6 +275,8 @@ export default function TransactionsScreen() {
             rows={rows}
             context={columnsContext}
             onRowClick={setEditing}
+            sort={gridParams.sort}
+            onSortChange={(sort) => setGridParams({ sort })}
             onNearEnd={() => {
               if (grid.hasNextPage && !grid.isFetchingNextPage) void grid.fetchNextPage();
             }}

@@ -236,6 +236,13 @@ class TransactionList(_Model):
     total: int
 
 
+class TransactionIds(_Model):
+    """`GET /api/transactions/ids`: every id matching the filters (not one page of them)."""
+
+    ids: list[int]
+    total: int
+
+
 class TransactionPatch(_Model):
     category_key: str | None = None
     subcategory_key: str | None = None

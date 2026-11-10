@@ -7,7 +7,13 @@ import { KINDS, type Category, type Kind, type Transaction } from "./types";
 export interface EditPopoverProps {
   transaction: Transaction;
   categories: Category[];
-  onSave: (patch: { categoryKey: string; subcategoryKey: string; kind: Kind }) => void;
+  /** Only the fields the user actually changed are present. */
+  onSave: (patch: {
+    categoryKey?: string;
+    subcategoryKey?: string;
+    kind?: Kind;
+    notes?: string;
+  }) => void;
   onClose: () => void;
   saving?: boolean;
 }
@@ -24,6 +30,7 @@ export function EditPopover({ transaction, categories, onSave, onClose, saving }
   const [categoryKey, setCategoryKey] = React.useState(transaction.category_key ?? "");
   const [subcategoryKey, setSubcategoryKey] = React.useState(transaction.subcategory_key ?? "");
   const [kind, setKind] = React.useState<Kind>(transaction.kind);
+  const [notes, setNotes] = React.useState(transaction.notes ?? "");
 
   const selectedCategory = categories.find((c) => c.key === categoryKey);
 
@@ -35,7 +42,17 @@ export function EditPopover({ transaction, categories, onSave, onClose, saving }
     }
   }, [selectedCategory, subcategoryKey]);
 
-  const canSave = categoryKey !== "" && subcategoryKey !== "";
+  // Each field saves on its own: a kind-only or notes-only edit needs no category, but a category
+  // change needs both halves of the pair.
+  const categoryChanged =
+    categoryKey !== (transaction.category_key ?? "") ||
+    subcategoryKey !== (transaction.subcategory_key ?? "");
+  const categoryComplete = categoryKey !== "" && subcategoryKey !== "";
+  const kindChanged = kind !== transaction.kind;
+  const notesChanged = notes !== (transaction.notes ?? "");
+  const canSave =
+    (categoryChanged ? categoryComplete : true) &&
+    ((categoryChanged && categoryComplete) || kindChanged || notesChanged);
 
   return (
     <div
@@ -93,6 +110,14 @@ export function EditPopover({ transaction, categories, onSave, onClose, saving }
           ))}
         </select>
       </label>
+      <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+        Notes
+        <textarea
+          className="min-h-16 rounded-md border border-input bg-transparent px-2 py-1.5 text-sm text-foreground"
+          value={notes}
+          onChange={(e) => setNotes(e.target.value)}
+        />
+      </label>
       <div className="flex justify-end gap-2">
         <Button type="button" variant="outline" size="sm" onClick={onClose}>
           Cancel
@@ -101,7 +126,13 @@ export function EditPopover({ transaction, categories, onSave, onClose, saving }
           type="button"
           size="sm"
           disabled={!canSave || saving}
-          onClick={() => onSave({ categoryKey, subcategoryKey, kind })}
+          onClick={() =>
+            onSave({
+              ...(categoryChanged && categoryComplete ? { categoryKey, subcategoryKey } : {}),
+              ...(kindChanged ? { kind } : {}),
+              ...(notesChanged ? { notes } : {}),
+            })
+          }
         >
           {saving ? "Saving…" : "Save"}
         </Button>

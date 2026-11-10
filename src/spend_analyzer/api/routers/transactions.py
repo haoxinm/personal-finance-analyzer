@@ -7,10 +7,11 @@ correction always writes `merchant_map(source='user')` and wins forever (I6).
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import date
 from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from spend_analyzer.api import schemas
@@ -41,50 +42,87 @@ def _transaction_response(session: Session, txn: Transaction) -> schemas.Transac
     )
 
 
+def _filters_dependency(
+    *, include_non_spend_default: bool, currency_default: str | None
+) -> Callable[..., crud.TransactionFilters]:
+    """Build the FastAPI dependency that parses the shared transaction filter query parameters.
+    The list and ids endpoints use the spend-relevant defaults; the export defaults to
+    everything (all kinds, all currencies) unless a filter narrows it."""
+
+    def dependency(
+        user_ids: Annotated[list[int] | None, Query()] = None,
+        account_ids: Annotated[list[int] | None, Query()] = None,
+        statement_id: int | None = None,
+        date_from: date | None = None,
+        date_to: date | None = None,
+        category_keys: Annotated[list[str] | None, Query()] = None,
+        subcategory_keys: Annotated[list[str] | None, Query()] = None,
+        amount_min_minor: int | None = None,
+        amount_max_minor: int | None = None,
+        kinds: Annotated[list[schemas.Kind] | None, Query()] = None,
+        include_non_spend: bool = include_non_spend_default,
+        needs_review: bool | None = None,
+        uncategorized: bool | None = None,
+        search: str | None = None,
+        currency: str | None = currency_default,
+    ) -> crud.TransactionFilters:
+        return crud.TransactionFilters(
+            user_ids=user_ids,
+            account_ids=account_ids,
+            statement_id=statement_id,
+            date_from=date_from,
+            date_to=date_to,
+            category_keys=category_keys,
+            subcategory_keys=subcategory_keys,
+            amount_min_minor=amount_min_minor,
+            amount_max_minor=amount_max_minor,
+            kinds=[k.value for k in kinds] if kinds is not None else None,
+            include_non_spend=include_non_spend,
+            needs_review=needs_review,
+            uncategorized=uncategorized,
+            search=search,
+            currency=currency,
+        )
+
+    return dependency
+
+
+#: `GET /transactions` and `GET /transactions/ids` parse their filters the same way.
+TransactionFiltersDep = Annotated[
+    crud.TransactionFilters,
+    Depends(_filters_dependency(include_non_spend_default=False, currency_default="USD")),
+]
+#: `GET /export`: same parameters, but unfiltered means *everything*.
+ExportFiltersDep = Annotated[
+    crud.TransactionFilters,
+    Depends(_filters_dependency(include_non_spend_default=True, currency_default=None)),
+]
+
+
 @router.get("/transactions", response_model=schemas.TransactionList)
 def list_transactions(
     session: SessionDep,
-    user_ids: Annotated[list[int] | None, Query()] = None,
-    account_ids: Annotated[list[int] | None, Query()] = None,
-    statement_id: int | None = None,
-    date_from: date | None = None,
-    date_to: date | None = None,
-    category_keys: Annotated[list[str] | None, Query()] = None,
-    subcategory_keys: Annotated[list[str] | None, Query()] = None,
-    amount_min_minor: int | None = None,
-    amount_max_minor: int | None = None,
-    kinds: Annotated[list[schemas.Kind] | None, Query()] = None,
-    include_non_spend: bool = False,
-    needs_review: bool | None = None,
-    search: str | None = None,
-    currency: str = "USD",
+    filters: TransactionFiltersDep,
     page: int = 1,
     page_size: int = 50,
     sort: str | None = None,
 ) -> schemas.TransactionList:
     items, total = crud.list_transactions(
-        session,
-        user_ids=user_ids,
-        account_ids=account_ids,
-        statement_id=statement_id,
-        date_from=date_from,
-        date_to=date_to,
-        category_keys=category_keys,
-        subcategory_keys=subcategory_keys,
-        amount_min_minor=amount_min_minor,
-        amount_max_minor=amount_max_minor,
-        kinds=list(kinds) if kinds is not None else None,
-        include_non_spend=include_non_spend,
-        needs_review=needs_review,
-        search=search,
-        currency=currency,
-        page=page,
-        page_size=page_size,
-        sort=sort,
+        session, filters, page=page, page_size=page_size, sort=sort
     )
     return schemas.TransactionList(
         items=[_transaction_response(session, t) for t in items], total=total
     )
+
+
+@router.get("/transactions/ids", response_model=schemas.TransactionIds)
+def list_transaction_ids(
+    session: SessionDep, filters: TransactionFiltersDep, sort: str | None = None
+) -> schemas.TransactionIds:
+    """Ids of *every* transaction matching the same filters as `GET /transactions` (no page
+    cap), for "select all N matching" in the grid."""
+    ids = crud.transaction_ids(session, filters, sort=sort)
+    return schemas.TransactionIds(ids=ids, total=len(ids))
 
 
 @router.patch("/transactions/{id}", response_model=schemas.Transaction)
@@ -132,6 +170,22 @@ def patch_transaction(
 def bulk_update_transactions(
     body: schemas.BulkUpdateRequest, session: SessionDep
 ) -> schemas.BulkUpdateResponse:
+    """Apply one label and/or kind to `transaction_ids`. `updated` counts only rows actually
+    changed: ids that no longer exist, and a request with nothing to apply, count for nothing —
+    compare it with `len(transaction_ids)` to spot a partial update."""
+    if (body.category_key is None) != (body.subcategory_key is None):
+        raise HTTPException(
+            status_code=400, detail="category_key and subcategory_key must be given together"
+        )
+    if body.category_key is not None and body.subcategory_key is not None:
+        category = crud.category_by_key(session, body.category_key)
+        if category is None:
+            raise HTTPException(status_code=400, detail=f"unknown category {body.category_key!r}")
+        if crud.subcategory_by_key(session, category.id, body.subcategory_key) is None:
+            raise HTTPException(
+                status_code=400, detail=f"unknown subcategory {body.subcategory_key!r}"
+            )
+
     updated = 0
     for transaction_id in body.transaction_ids:
         txn = crud.get_transaction(session, transaction_id)
@@ -148,6 +202,8 @@ def bulk_update_transactions(
             )
         elif body.kind is not None:
             crud.update_transaction_fields(session, txn, kind=body.kind, notes=None)
+        else:
+            continue
         updated += 1
     session.commit()
     return schemas.BulkUpdateResponse(updated=updated)

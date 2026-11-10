@@ -11,10 +11,12 @@ import json
 import uuid
 from collections import Counter
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
+from typing import Any
 
-from sqlalchemy import Select, or_, select
+from sqlalchemy import ColumnElement, Select, and_, func, not_, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -246,77 +248,157 @@ def get_transaction(session: Session, transaction_id: int) -> Transaction | None
     return session.get(Transaction, transaction_id)
 
 
+@dataclass(frozen=True, slots=True)
+class TransactionFilters:
+    """The filter set `GET /transactions`, `GET /transactions/ids` and `GET /export` all share, so
+    "the rows this filter shows", "select all of them" and "export them" can never disagree.
+
+    `kinds` wins over `include_non_spend`; with neither, only spend-relevant kinds are listed.
+    `uncategorized` selects rows with no category or the `others/uncategorized` fallback
+    (`True`) or everything else (`False`). `currency=None` means every currency.
+    """
+
+    user_ids: list[int] | None = None
+    account_ids: list[int] | None = None
+    statement_id: int | None = None
+    date_from: date | None = None
+    date_to: date | None = None
+    category_keys: list[str] | None = None
+    subcategory_keys: list[str] | None = None
+    amount_min_minor: int | None = None
+    amount_max_minor: int | None = None
+    kinds: list[str] | None = None
+    include_non_spend: bool = False
+    needs_review: bool | None = None
+    uncategorized: bool | None = None
+    search: str | None = None
+    currency: str | None = "USD"
+
+
+def uncategorized_clause() -> ColumnElement[bool]:
+    """Rows with no category at all, or parked in the `others/uncategorized` fallback (what the
+    cascade writes when nothing, including the LLM, could place a transaction)."""
+    fallback_ids = (
+        select(Subcategory.id)
+        .join(Category, Subcategory.category_id == Category.id)
+        .where(Category.key == "others", Subcategory.key == "uncategorized")
+    )
+    return or_(Transaction.category_id.is_(None), Transaction.subcategory_id.in_(fallback_ids))
+
+
+def unclassified_clause() -> ColumnElement[bool]:
+    """Rows a re-classification should reconsider: uncategorized (see `uncategorized_clause`) or
+    still flagged `needs_review`, but never one the user corrected by hand (those are final)."""
+    return and_(
+        or_(uncategorized_clause(), Transaction.needs_review.is_(True)),
+        Transaction.classified_by.is_distinct_from("user"),
+    )
+
+
+def _transaction_conditions(filters: TransactionFilters) -> list[ColumnElement[bool]]:
+    conditions: list[ColumnElement[bool]] = []
+    if filters.currency is not None:
+        conditions.append(Transaction.currency == filters.currency)
+    if filters.user_ids is not None:
+        conditions.append(Transaction.user_id.in_(filters.user_ids))
+    if filters.account_ids is not None:
+        conditions.append(Transaction.account_id.in_(filters.account_ids))
+    if filters.statement_id is not None:
+        conditions.append(Transaction.statement_id == filters.statement_id)
+    if filters.date_from is not None:
+        conditions.append(Transaction.posted_date >= filters.date_from.isoformat())
+    if filters.date_to is not None:
+        conditions.append(Transaction.posted_date <= filters.date_to.isoformat())
+    # Subqueries rather than joins: an inner join on `categories` would silently drop every
+    # uncategorized row whenever any category filter is set, and the filters compose freely.
+    if filters.category_keys is not None:
+        conditions.append(
+            Transaction.category_id.in_(
+                select(Category.id).where(Category.key.in_(filters.category_keys))
+            )
+        )
+    if filters.subcategory_keys is not None:
+        conditions.append(
+            Transaction.subcategory_id.in_(
+                select(Subcategory.id).where(Subcategory.key.in_(filters.subcategory_keys))
+            )
+        )
+    if filters.amount_min_minor is not None:
+        conditions.append(Transaction.amount_minor >= filters.amount_min_minor)
+    if filters.amount_max_minor is not None:
+        conditions.append(Transaction.amount_minor <= filters.amount_max_minor)
+    if filters.kinds is not None:
+        conditions.append(Transaction.kind.in_(filters.kinds))
+    elif not filters.include_non_spend:
+        conditions.append(Transaction.kind.in_(("purchase", "fee", "interest", "refund")))
+    if filters.needs_review is not None:
+        conditions.append(Transaction.needs_review.is_(filters.needs_review))
+    if filters.uncategorized is not None:
+        clause = uncategorized_clause()
+        conditions.append(clause if filters.uncategorized else not_(clause))
+    if filters.search:
+        conditions.append(Transaction.description_clean.contains(filters.search, autoescape=True))
+    return conditions
+
+
+def _transaction_order(sort: str | None) -> list[ColumnElement[Any]]:
+    """`ORDER BY` for `sort` (`posted_date` or `amount_minor`, `-` prefix for descending; default
+    newest first). `id` breaks ties so paging never repeats or skips a row."""
+    key = sort or "-posted_date"
+    column = {"posted_date": Transaction.posted_date, "amount_minor": Transaction.amount_minor}.get(
+        key.removeprefix("-"), Transaction.posted_date
+    )
+    if key.startswith("-"):
+        return [column.desc(), Transaction.id.desc()]
+    return [column.asc(), Transaction.id.asc()]
+
+
 def list_transactions(
     session: Session,
+    filters: TransactionFilters,
     *,
-    user_ids: list[int] | None,
-    account_ids: list[int] | None,
-    statement_id: int | None = None,
-    date_from: date | None,
-    date_to: date | None,
-    category_keys: list[str] | None,
-    subcategory_keys: list[str] | None,
-    amount_min_minor: int | None,
-    amount_max_minor: int | None,
-    kinds: list[str] | None,
-    include_non_spend: bool,
-    needs_review: bool | None,
-    search: str | None,
-    currency: str,
     page: int,
     page_size: int,
     sort: str | None,
 ) -> tuple[list[Transaction], int]:
-    stmt: Select[Transaction] = select(Transaction).where(Transaction.currency == currency)
-    if user_ids is not None:
-        stmt = stmt.where(Transaction.user_id.in_(user_ids))
-    if account_ids is not None:
-        stmt = stmt.where(Transaction.account_id.in_(account_ids))
-    if statement_id is not None:
-        stmt = stmt.where(Transaction.statement_id == statement_id)
-    if date_from is not None:
-        stmt = stmt.where(Transaction.posted_date >= date_from.isoformat())
-    if date_to is not None:
-        stmt = stmt.where(Transaction.posted_date <= date_to.isoformat())
-    if category_keys is not None:
-        stmt = stmt.join(Category, Transaction.category_id == Category.id).where(
-            Category.key.in_(category_keys)
-        )
-    if subcategory_keys is not None:
-        stmt = stmt.join(Subcategory, Transaction.subcategory_id == Subcategory.id).where(
-            Subcategory.key.in_(subcategory_keys)
-        )
-    if amount_min_minor is not None:
-        stmt = stmt.where(Transaction.amount_minor >= amount_min_minor)
-    if amount_max_minor is not None:
-        stmt = stmt.where(Transaction.amount_minor <= amount_max_minor)
-    if kinds is not None:
-        stmt = stmt.where(Transaction.kind.in_(kinds))
-    elif not include_non_spend:
-        stmt = stmt.where(Transaction.kind.in_(("purchase", "fee", "interest", "refund")))
-    if needs_review is not None:
-        stmt = stmt.where(Transaction.needs_review.is_(needs_review))
-    if search:
-        stmt = stmt.where(Transaction.description_clean.contains(search, autoescape=True))
-
-    total = len(session.execute(stmt).scalars().all())
-
-    sort_column = {
-        "posted_date": Transaction.posted_date,
-        "amount_minor": Transaction.amount_minor,
-        "-posted_date": Transaction.posted_date,
-        "-amount_minor": Transaction.amount_minor,
-    }.get(sort or "-posted_date", Transaction.posted_date)
-    if (sort or "-posted_date").startswith("-"):
-        stmt = stmt.order_by(sort_column.desc())
-    else:
-        stmt = stmt.order_by(sort_column.asc())
+    conditions = _transaction_conditions(filters)
+    total = session.execute(
+        select(func.count()).select_from(Transaction).where(*conditions)
+    ).scalar_one()
 
     page = max(page, 1)
     page_size = max(min(page_size, 500), 1)
-    stmt = stmt.offset((page - 1) * page_size).limit(page_size)
-    items = list(session.execute(stmt).scalars().all())
-    return items, total
+    stmt = (
+        select(Transaction)
+        .where(*conditions)
+        .order_by(*_transaction_order(sort))
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    )
+    return list(session.execute(stmt).scalars().all()), total
+
+
+def transaction_ids(
+    session: Session, filters: TransactionFilters, *, sort: str | None
+) -> list[int]:
+    """Every id `list_transactions` would page through for `filters`, in the same order (no page
+    cap, so "select all N matching" really selects N)."""
+    stmt = (
+        select(Transaction.id)
+        .where(*_transaction_conditions(filters))
+        .order_by(*_transaction_order(sort))
+    )
+    return list(session.execute(stmt).scalars().all())
+
+
+def export_transactions(session: Session, filters: TransactionFilters) -> list[Transaction]:
+    """Every transaction matching `filters`, oldest first (the export's order)."""
+    stmt = (
+        select(Transaction)
+        .where(*_transaction_conditions(filters))
+        .order_by(Transaction.posted_date, Transaction.id)
+    )
+    return list(session.execute(stmt).scalars().all())
 
 
 def category_key_of(session: Session, transaction: Transaction) -> str | None:
