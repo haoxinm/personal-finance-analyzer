@@ -10,6 +10,10 @@
 # then checks: healthy; the login is required; a wrong password and a right one; migrations ran
 # (the API answers with the default user); the data landed on the bind mount; and a recreated
 # container finds the same data. Everything it creates is removed on exit.
+#
+# The container keeps the data under PUID:PGID with mode 0700/0600 (UMASK 077), so the user running
+# this script (a CI runner is uid 1001, never the PUID) usually cannot even list the bind mount.
+# Everything the script looks at inside it goes through inmount(), a throwaway root container.
 set -eu
 
 IMAGE="${1:-personal-finance-analyzer:ci}"
@@ -30,6 +34,17 @@ cleanup() {
   rm -rf "$WORK" 2>/dev/null || true
 }
 trap cleanup EXIT
+
+# inmount SCRIPT [ARG...]: run an `sh -c SCRIPT` as root in a throwaway container with the bind
+# mount at /pfa, and pass its exit status and output on. The image has no USER, so --entrypoint
+# bypasses the privilege drop and root can read what is owned by PUID:PGID. The host-side path
+# would only work when the invoking user happens to own the files (and `stat -c` is GNU-only,
+# which macOS is not; the one in the image is).
+inmount() {
+  _script="$1"
+  shift
+  docker run --rm --network none -v "$WORK/pfa:/pfa" --entrypoint sh "$IMAGE" -c "$_script" inmount "$@"
+}
 
 fail() { echo "SMOKE TEST FAILED: $*" >&2; docker logs "$NAME" 2>&1 | tail -20 >&2 || true; exit 1; }
 check() { [ "$2" = "$3" ] || fail "$1: expected '$3', got '$2'"; echo "ok   $1"; }
@@ -76,10 +91,10 @@ api() { curl -s -b "$JAR" -H "X-PFA-Token: $PAGE_TOKEN" "$@"; }
 check "migrated: default user exists" "$(api "$URL/api/users" | grep -c '"is_default":true')" 1
 api -X POST -H 'Content-Type: application/json' -d '{"name":"Persisted"}' "$URL/api/users" >/dev/null
 
-[ -f "$WORK/pfa/data/finance.db" ] || fail "finance.db is not on the bind mount"
+inmount 'test -f /pfa/data/finance.db' || fail "finance.db is not on the bind mount"
 echo "ok   finance.db is on the bind mount"
 if [ "${PFA_SMOKE_CHECK_OWNER:-}" = 1 ]; then
-  check "files are owned by PUID:PGID" "$(stat -c '%u:%g' "$WORK/pfa/data/finance.db")" "$PUID_:$PGID_"
+  check "files are owned by PUID:PGID" "$(inmount 'stat -c %u:%g /pfa/data/finance.db')" "$PUID_:$PGID_"
 fi
 
 docker rm -f "$NAME" >/dev/null
