@@ -11,8 +11,8 @@ from fastapi.testclient import TestClient
 from sqlalchemy import Engine
 from sqlalchemy.orm import Session
 
-from spend_analyzer.api.app import create_app
-from spend_analyzer.config import Settings
+from personal_finance_analyzer.api.app import create_app
+from personal_finance_analyzer.config import Settings
 
 TEST_TOKEN = "test-token"
 
@@ -21,7 +21,7 @@ TEST_TOKEN = "test-token"
 def app_instance(engine: Engine, session: Session, tmp_path: Path) -> FastAPI:
     """Depends on the `session` fixture (not just `engine`) so the taxonomy is synced before any
     route runs, even for a test that never asks for `session` itself. The web directory points at
-    nothing, so a locally built frontend (`src/spend_analyzer/web/`, whose SPA fallback answers
+    nothing, so a locally built frontend (`src/personal_finance_analyzer/web/`, whose SPA fallback answers
     every unknown GET) cannot change what the API routes return."""
     del session
     return create_app(
@@ -34,6 +34,6 @@ def client(app_instance: FastAPI) -> Iterator[TestClient]:
     with TestClient(
         app_instance,
         base_url="http://127.0.0.1",
-        headers={"Host": "127.0.0.1", "X-Spend-Token": TEST_TOKEN},
+        headers={"Host": "127.0.0.1", "X-PFA-Token": TEST_TOKEN},
     ) as test_client:
         yield test_client

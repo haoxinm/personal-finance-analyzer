@@ -32,7 +32,7 @@ test("import a statement, confirm the extractor, review it, and see an overview 
   page,
 }) => {
   await page.goto(baseUrl());
-  await expect(page.getByRole("heading", { name: "Spend Analyzer" }).or(page.locator("body"))).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Personal Finance Analyzer" }).or(page.locator("body"))).toBeVisible();
   // `/` lands on the Spending section.
   await expect(page).toHaveURL(/\/spending$/);
 

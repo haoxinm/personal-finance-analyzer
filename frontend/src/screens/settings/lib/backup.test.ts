@@ -5,16 +5,16 @@ import { backupFilename, encodePassphrase, exportBackup, restoreBackup } from ".
 describe("backup API calls", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
-    document.head.querySelectorAll('meta[name="spend-token"]').forEach((el) => el.remove());
+    document.head.querySelectorAll('meta[name="pfa-token"]').forEach((el) => el.remove());
   });
 
   it("names the download like the CLI does", () => {
-    expect(backupFilename(new Date("2026-10-30T12:00:00Z"))).toBe("spend-analyzer-2026-10-30.spendbackup");
+    expect(backupFilename(new Date("2026-10-30T12:00:00Z"))).toBe("pfa-2026-10-30.pfabackup");
   });
 
   it("POSTs the passphrase as JSON with the spend token and returns the file", async () => {
     const meta = document.createElement("meta");
-    meta.name = "spend-token";
+    meta.name = "pfa-token";
     meta.content = "test-token";
     document.head.appendChild(meta);
     const fetchMock = vi.fn<typeof fetch>(() => Promise.resolve(new Response("archive-bytes")));
@@ -25,7 +25,7 @@ describe("backup API calls", () => {
     const [url, init] = fetchMock.mock.calls[0] ?? [];
     expect(url as string).toContain("/api/backup/export");
     expect(init?.method).toBe("POST");
-    expect(new Headers(init?.headers).get("X-Spend-Token")).toBe("test-token");
+    expect(new Headers(init?.headers).get("X-PFA-Token")).toBe("test-token");
     expect(JSON.parse(init?.body as string)).toEqual({ passphrase: "correct horse battery", encrypt: true });
     expect(await blob.text()).toBe("archive-bytes");
   });
@@ -45,7 +45,7 @@ describe("backup API calls", () => {
     );
     vi.stubGlobal("fetch", fetchMock);
 
-    const file = new File(["bytes"], "mine.spendbackup");
+    const file = new File(["bytes"], "mine.pfabackup");
     await expect(restoreBackup(file, "pw-pw-pw-pw")).resolves.toEqual(result);
 
     const [url, init] = fetchMock.mock.calls[0] ?? [];
@@ -66,7 +66,7 @@ describe("backup API calls", () => {
   it("omits an empty passphrase (unencrypted backups)", async () => {
     const fetchMock = vi.fn<typeof fetch>(() => Promise.resolve(new Response("{}")));
     vi.stubGlobal("fetch", fetchMock);
-    await restoreBackup(new File(["bytes"], "mine.spendbackup"), "");
+    await restoreBackup(new File(["bytes"], "mine.pfabackup"), "");
     const [, init] = fetchMock.mock.calls[0] ?? [];
     expect(new Headers(init?.headers).has("X-Backup-Passphrase")).toBe(false);
   });
@@ -76,7 +76,7 @@ describe("backup API calls", () => {
       "fetch",
       vi.fn<typeof fetch>(() => Promise.reject(new TypeError("Failed to fetch"))),
     );
-    await expect(restoreBackup(new File(["bytes"], "x.spendbackup"), "")).rejects.toThrow(/did not complete/);
+    await expect(restoreBackup(new File(["bytes"], "x.pfabackup"), "")).rejects.toThrow(/did not complete/);
   });
 
   it("throws the server's detail message on failure", async () => {
@@ -84,7 +84,7 @@ describe("backup API calls", () => {
       Promise.resolve(new Response(JSON.stringify({ detail: "wrong passphrase" }), { status: 400 })),
     );
     vi.stubGlobal("fetch", fetchMock);
-    await expect(restoreBackup(new File(["bytes"], "x.spendbackup"), "nope")).rejects.toThrow("wrong passphrase");
+    await expect(restoreBackup(new File(["bytes"], "x.pfabackup"), "nope")).rejects.toThrow("wrong passphrase");
     await expect(exportBackup("x")).rejects.toThrow("wrong passphrase");
   });
 });

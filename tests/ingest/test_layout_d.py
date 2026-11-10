@@ -16,9 +16,15 @@ from typing import Any
 import pdfplumber
 import pytest
 
-from spend_analyzer.core.errors import ParserError
-from spend_analyzer.core.types import ExtractedDoc, PageText, ParsedStatement, RawTransaction, Word
-from spend_analyzer.ingest.parsers.layout_d_bank import PARSER
+from personal_finance_analyzer.core.errors import ParserError
+from personal_finance_analyzer.core.types import (
+    ExtractedDoc,
+    PageText,
+    ParsedStatement,
+    RawTransaction,
+    Word,
+)
+from personal_finance_analyzer.ingest.parsers.layout_d_bank import PARSER
 from tests.fixtures.gen.base import format_row, render_lines_pdf
 from tests.fixtures.gen.layout_d import _HEADER, _WIDTHS, BUILDER, _data_row
 

@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import pytest
 
-from spend_analyzer.core.errors import UnsupportedLayoutError
-from spend_analyzer.core.tax_types import FormType, ParsedTaxDocument
-from spend_analyzer.core.types import ExtractedDoc
-from spend_analyzer.ingest import registry as bank_registry
-from spend_analyzer.ingest.tax import registry
+from personal_finance_analyzer.core.errors import UnsupportedLayoutError
+from personal_finance_analyzer.core.tax_types import FormType, ParsedTaxDocument
+from personal_finance_analyzer.core.types import ExtractedDoc
+from personal_finance_analyzer.ingest import registry as bank_registry
+from personal_finance_analyzer.ingest.tax import registry
 from tests.ingest.tax_support import doc_from_lines
 
 

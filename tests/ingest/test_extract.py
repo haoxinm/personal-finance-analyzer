@@ -1,4 +1,4 @@
-"""Tests for `spend_analyzer.ingest.extract` (P1-A)."""
+"""Tests for `personal_finance_analyzer.ingest.extract` (P1-A)."""
 
 from __future__ import annotations
 
@@ -11,10 +11,10 @@ from reportlab.lib.pagesizes import letter
 from reportlab.lib.pdfencrypt import StandardEncryption
 from reportlab.pdfgen import canvas
 
-from spend_analyzer.config import PrivacyConfig, Settings, save_settings
-from spend_analyzer.core.errors import ParserError
-from spend_analyzer.core.paths import extract_cache_dir
-from spend_analyzer.ingest.extract import extract, sha256_file
+from personal_finance_analyzer.config import PrivacyConfig, Settings, save_settings
+from personal_finance_analyzer.core.errors import ParserError
+from personal_finance_analyzer.core.paths import extract_cache_dir
+from personal_finance_analyzer.ingest.extract import extract, sha256_file
 from tests.fixtures.gen.base import render_lines_pdf
 
 # --------------------------------------------------------------------------------------------

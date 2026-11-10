@@ -3,7 +3,7 @@ import * as React from "react";
 import { LlmEgressNotice, LlmRequestPreview, PagePicker, type PagePickerPage } from "@/components/llm-preview";
 
 import { fetchStatementLlmPreview, useImportSettings, useStatementPages } from "./api";
-import { pageImageUrl } from "./spend-token";
+import { pageImageUrl } from "./pfa-token";
 import type { ImportItem } from "./types";
 import type { Action } from "./use-import-queue";
 import { isLlmChoice } from "./use-import-queue";

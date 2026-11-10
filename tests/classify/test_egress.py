@@ -10,13 +10,17 @@ from typing import Any
 import httpx
 import pytest
 
-from spend_analyzer.classify.llm import egress
-from spend_analyzer.config import LLMConfig
-from spend_analyzer.core.errors import EgressViolation, LLMError
+from personal_finance_analyzer.classify.llm import egress
+from personal_finance_analyzer.config import LLMConfig
+from personal_finance_analyzer.core.errors import EgressViolation, LLMError
 from tests.llm_fakes import FakeLLM, install, remote_cfg
 
 _LLM_ROOT = (
-    Path(__file__).resolve().parent.parent.parent / "src" / "spend_analyzer" / "classify" / "llm"
+    Path(__file__).resolve().parent.parent.parent
+    / "src"
+    / "personal_finance_analyzer"
+    / "classify"
+    / "llm"
 )
 
 #: I1b: these column names must never appear in any module under classify/llm/, because they
@@ -70,7 +74,7 @@ def _cfg(**overrides: Any) -> LLMConfig:
 def _fake_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
     """`get_llm_api_key` checks the env var first, so setting it avoids ever touching the real
     (and here, backend-less) OS keyring."""
-    monkeypatch.setenv("SPEND_ANALYZER_LLM_API_KEY", "sk-test-key-not-real")
+    monkeypatch.setenv("PFA_LLM_API_KEY", "sk-test-key-not-real")
 
 
 @pytest.fixture

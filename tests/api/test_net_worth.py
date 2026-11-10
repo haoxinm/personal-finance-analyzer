@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from spend_analyzer.db.models import BalanceEntry
+from personal_finance_analyzer.db.models import BalanceEntry
 
 
 def _user(client: TestClient, name: str = "Alex") -> int:

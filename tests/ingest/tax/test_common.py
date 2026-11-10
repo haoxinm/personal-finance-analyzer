@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import pytest
 
-from spend_analyzer.core.errors import ParserError
-from spend_analyzer.core.tax_types import ParsedTaxForm
-from spend_analyzer.ingest.tax import common
+from personal_finance_analyzer.core.errors import ParserError
+from personal_finance_analyzer.core.tax_types import ParsedTaxForm
+from personal_finance_analyzer.ingest.tax import common
 from tests.ingest.tax_support import doc_from_lines
 
 
@@ -82,7 +82,7 @@ def test_1099_section_detection() -> None:
 
 
 def test_helper_modules_expose_no_parser_shaped_objects() -> None:
-    from spend_analyzer.ingest.tax import fields, tin, year
+    from personal_finance_analyzer.ingest.tax import fields, tin, year
 
     for module in (common, fields, tin, year):
         for name in dir(module):

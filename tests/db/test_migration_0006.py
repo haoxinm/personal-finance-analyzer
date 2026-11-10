@@ -7,8 +7,8 @@ from pathlib import Path
 from alembic import command
 from sqlalchemy import inspect, text
 
-from spend_analyzer.db.migrate import build_alembic_config, upgrade_head
-from spend_analyzer.db.session import make_engine_for_path
+from personal_finance_analyzer.db.migrate import build_alembic_config, upgrade_head
+from personal_finance_analyzer.db.session import make_engine_for_path
 
 _NEW = {
     "tax_forms": ("extraction_method", "is_user_edited"),

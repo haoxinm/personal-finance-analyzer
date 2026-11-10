@@ -9,8 +9,8 @@ from alembic import command
 from sqlalchemy import inspect, text
 from sqlalchemy.exc import IntegrityError
 
-from spend_analyzer.db.migrate import build_alembic_config, upgrade_head
-from spend_analyzer.db.session import make_engine_for_path
+from personal_finance_analyzer.db.migrate import build_alembic_config, upgrade_head
+from personal_finance_analyzer.db.session import make_engine_for_path
 
 _TABLES = {"net_worth_history", "forecast_presets"}
 _USER = "INSERT INTO users (id, name, is_default, pii_aliases, created_at) VALUES (1, 'a', 0, '[]', 'now')"

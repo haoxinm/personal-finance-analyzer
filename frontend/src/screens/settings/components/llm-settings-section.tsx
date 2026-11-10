@@ -405,7 +405,7 @@ export function LlmSettingsSection({ settings, onSave, saving }: LlmSettingsSect
                     className="min-h-16 w-full rounded-md border border-input bg-transparent p-2 font-mono text-xs"
                     value={headersText}
                     onChange={(e) => setHeadersText(e.target.value)}
-                    placeholder="X-Title: Spend Analyzer"
+                    placeholder="X-Title: Personal Finance Analyzer"
                     aria-label="Extra headers"
                     aria-invalid={headers.error !== null}
                   />

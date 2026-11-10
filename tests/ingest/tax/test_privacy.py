@@ -11,9 +11,9 @@ from typing import Any
 
 import pytest
 
-from spend_analyzer.core.errors import ParserError
-from spend_analyzer.core.tax_types import ParsedTaxDocument
-from spend_analyzer.ingest.tax import registry as tax_registry
+from personal_finance_analyzer.core.errors import ParserError
+from personal_finance_analyzer.core.tax_types import ParsedTaxDocument
+from personal_finance_analyzer.ingest.tax import registry as tax_registry
 from tests.fixtures.gen.tax_common import RECIPIENT_NAME, RECIPIENT_SSN, SPOUSE_NAME, SPOUSE_SSN
 from tests.ingest.tax_support import GENERATED_DIR, extract_doc
 
@@ -63,8 +63,8 @@ def test_recipient_name_never_in_parsed_output(pdf: Path) -> None:
 
 def test_llm_fallback_output_has_no_tin_shapes() -> None:
     """Even when the model echoes identifiers, nothing identifier-shaped survives validation."""
-    from spend_analyzer.core.tax_types import UnparsedRegion
-    from spend_analyzer.llm.tax_parser import TaxLLMExtractor
+    from personal_finance_analyzer.core.tax_types import UnparsedRegion
+    from personal_finance_analyzer.llm.tax_parser import TaxLLMExtractor
     from tests.ingest.tax_support import doc_from_lines
     from tests.llm_fakes import FakeLLM, install, remote_cfg
 

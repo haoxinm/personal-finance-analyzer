@@ -11,7 +11,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/components/ui/use-toast";
 import { FileDropZone } from "@/components/primitives/file-drop-zone";
-import { taxPageImageUrl } from "@/screens/import/spend-token";
+import { taxPageImageUrl } from "@/screens/import/pfa-token";
 
 import {
   fetchTaxLlmPreview,

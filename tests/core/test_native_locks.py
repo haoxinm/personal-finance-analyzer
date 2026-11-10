@@ -6,8 +6,8 @@ import threading
 
 import pytest
 
-from spend_analyzer import config as config_module
-from spend_analyzer.core.native_locks import KEYRING_LOCK
+from personal_finance_analyzer import config as config_module
+from personal_finance_analyzer.core.native_locks import KEYRING_LOCK
 
 
 def test_keyring_calls_hold_lock_and_never_overlap(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -64,7 +64,8 @@ def test_keyring_calls_hold_lock_and_never_overlap(monkeypatch: pytest.MonkeyPat
     for t in threads:
         t.join(30)
     assert not any(t.is_alive() for t in threads)
-    assert state["calls"] == 8 * 50 * 3
+    # set = set + drop the pre-rename entry (2), get = 1, delete = both services (2)
+    assert state["calls"] == 8 * 50 * 5
     assert state["unlocked_calls"] == 0
     assert state["max_active"] == 1
     assert not KEYRING_LOCK.locked()

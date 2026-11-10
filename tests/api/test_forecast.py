@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from spend_analyzer.db.models import ForecastPreset, NetWorthHistory
+from personal_finance_analyzer.db.models import ForecastPreset, NetWorthHistory
 from tests.forecast_seed import add_balance, add_user
 
 HIST = "/api/net-worth/history"
@@ -200,7 +200,7 @@ def test_list_skips_saved_presets_with_invalid_stored_params(
     session.get(ForecastPreset, broken["id"]).params = "not json"  # type: ignore[union-attr]
     session.commit()
 
-    with caplog.at_level(logging.WARNING, logger="spend_analyzer.api.services.forecast"):
+    with caplog.at_level(logging.WARNING, logger="personal_finance_analyzer.api.services.forecast"):
         r = client.get(PRESETS)
     assert r.status_code == 200
     assert [p["id"] for p in r.json()["saved"]] == [good["id"]]

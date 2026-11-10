@@ -1,4 +1,4 @@
-"""`spend-analyzer tax estimate` and `tax params ...` (no network: the update check is faked)."""
+"""`pfa tax estimate` and `tax params ...` (no network: the update check is faked)."""
 
 from __future__ import annotations
 
@@ -9,9 +9,9 @@ import pytest
 import yaml
 from typer.testing import CliRunner
 
-from spend_analyzer.api.services import tax_params_update as upd
-from spend_analyzer.cli import app
-from spend_analyzer.core import tax_params
+from personal_finance_analyzer.api.services import tax_params_update as upd
+from personal_finance_analyzer.cli import app
+from personal_finance_analyzer.core import tax_params
 from tests.ingest.tax_support import generated_pdf
 from tests.tax_params_support import with_next_year
 
@@ -27,7 +27,7 @@ def migrated(home: Path) -> Path:
 
 def _bundled_text() -> str:
     return (
-        resources.files("spend_analyzer.core")
+        resources.files("personal_finance_analyzer.core")
         .joinpath("tax_data", "federal_params.yaml")
         .read_text(encoding="utf-8")
     )

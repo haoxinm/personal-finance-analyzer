@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from spend_analyzer.classify import kinds
-from spend_analyzer.classify.kinds import is_spend, resolve_kind
+from personal_finance_analyzer.classify import kinds
+from personal_finance_analyzer.classify.kinds import is_spend, resolve_kind
 
 
 def test_payment_or_refund_hint_resolves_payment_pattern_to_payment() -> None:

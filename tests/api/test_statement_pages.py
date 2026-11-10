@@ -8,10 +8,10 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
-from spend_analyzer.api.services import gateway
-from spend_analyzer.core.paths import statements_dir
-from spend_analyzer.db.models import Statement, utcnow_iso
-from spend_analyzer.ingest.extract import sha256_file
+from personal_finance_analyzer.api.services import gateway
+from personal_finance_analyzer.core.paths import statements_dir
+from personal_finance_analyzer.db.models import Statement, utcnow_iso
+from personal_finance_analyzer.ingest.extract import sha256_file
 from tests.fixtures.gen.base import render_lines_pdf
 
 
@@ -94,16 +94,16 @@ def test_image_accepts_token_query_param(
 
 
 def _configure_llm(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("SPEND_ANALYZER_LLM__ENABLED", "true")
-    monkeypatch.setenv("SPEND_ANALYZER_LLM__BASE_URL", "https://api.example.com")
-    monkeypatch.setenv("SPEND_ANALYZER_LLM__MODEL", "test-model")
+    monkeypatch.setenv("PFA_LLM__ENABLED", "true")
+    monkeypatch.setenv("PFA_LLM__BASE_URL", "https://api.example.com")
+    monkeypatch.setenv("PFA_LLM__MODEL", "test-model")
 
 
 def test_llm_preview_redacts_and_honours_pages(
     client: TestClient, session: Session, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _configure_llm(monkeypatch)
-    monkeypatch.setenv("SPEND_ANALYZER_PRIVACY__PII_TERMS", '["Alice Example"]')
+    monkeypatch.setenv("PFA_PRIVACY__PII_TERMS", '["Alice Example"]')
     sid = _staged_statement(session, tmp_path)
 
     all_pages = client.get(f"/api/statements/{sid}/llm-preview")
@@ -126,14 +126,14 @@ def test_llm_preview_reports_user_entry_redactions(
     client: TestClient, session: Session, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _configure_llm(monkeypatch)
-    monkeypatch.setenv("SPEND_ANALYZER_PRIVACY__PII_TERMS", "Alice Example,4111-1111-1111-1111")
+    monkeypatch.setenv("PFA_PRIVACY__PII_TERMS", "Alice Example,4111-1111-1111-1111")
     sid = _staged_statement(session, tmp_path)
     data = client.get(f"/api/statements/{sid}/llm-preview").json()
     text = data["requests"][0]
     assert "Alice" not in text and "[NUMBER]" in text and "XXXX1111" not in text
     assert data["redactions"] == 4  # three names on page 2 + the card number on page 1
 
-    monkeypatch.setenv("SPEND_ANALYZER_PRIVACY__PII_TERMS", "")
+    monkeypatch.setenv("PFA_PRIVACY__PII_TERMS", "")
     assert client.get(f"/api/statements/{sid}/llm-preview").json()["redactions"] == 0
 
 
@@ -213,7 +213,7 @@ def test_concurrent_page_renders_do_not_crash(tmp_path: Path) -> None:
     unserialised renders segfaulted the server (the e2e job's flaky 'Import is disabled')."""
     import threading
 
-    from spend_analyzer.api.services import statement_preview
+    from personal_finance_analyzer.api.services import statement_preview
 
     pdf = tmp_path / "c.pdf"
     render_lines_pdf(pdf, [["Page one " * 4], ["Page two " * 4], ["Page three " * 4]])

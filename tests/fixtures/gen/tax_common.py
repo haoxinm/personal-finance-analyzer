@@ -50,7 +50,7 @@ from typing import Any
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 
-from spend_analyzer.core.tax_types import ParsedTaxDocument
+from personal_finance_analyzer.core.tax_types import ParsedTaxDocument
 
 # --------------------------------------------------------------------------------------------
 # Invented identities

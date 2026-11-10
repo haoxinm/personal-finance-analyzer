@@ -13,10 +13,10 @@ from pathlib import Path
 import pdfplumber
 import pytest
 
-from spend_analyzer.core.errors import ParserError, UnsupportedLayoutError
-from spend_analyzer.core.types import ExtractedDoc, PageText, Word
-from spend_analyzer.ingest.layout import Band
-from spend_analyzer.ingest.parsers.generic_table import (
+from personal_finance_analyzer.core.errors import ParserError, UnsupportedLayoutError
+from personal_finance_analyzer.core.types import ExtractedDoc, PageText, Word
+from personal_finance_analyzer.ingest.layout import Band
+from personal_finance_analyzer.ingest.parsers.generic_table import (
     GenericTableParser,
     _ColumnRoles,
     _row_amount_minor,
@@ -36,7 +36,7 @@ _generated_dir: Path | None = None
 
 def _extract(path: Path) -> ExtractedDoc:
     """A minimal, local PDF->`ExtractedDoc` reader for this test module only. P1-A owns the real
-    `spend_analyzer.ingest.extract.extract()`; this parser-level test does not depend on it."""
+    `personal_finance_analyzer.ingest.extract.extract()`; this parser-level test does not depend on it."""
     with pdfplumber.open(path) as pdf:
         pages = []
         for page_number, page in enumerate(pdf.pages, start=1):

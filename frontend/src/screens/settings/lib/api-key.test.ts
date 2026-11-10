@@ -5,7 +5,7 @@ import { clearApiKey, setApiKey } from "./api-key";
 describe("setApiKey / clearApiKey", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
-    document.head.querySelectorAll('meta[name="spend-token"]').forEach((el) => el.remove());
+    document.head.querySelectorAll('meta[name="pfa-token"]').forEach((el) => el.remove());
   });
 
   it("PUTs the key and base_url, never leaking the key into an error path", async () => {
@@ -23,7 +23,7 @@ describe("setApiKey / clearApiKey", () => {
 
   it("sends the per-launch spend token when the meta tag is present", async () => {
     const meta = document.createElement("meta");
-    meta.name = "spend-token";
+    meta.name = "pfa-token";
     meta.content = "test-token";
     document.head.appendChild(meta);
     const fetchMock = vi.fn<typeof fetch>(() => Promise.resolve(new Response(null, { status: 204 })));
@@ -33,7 +33,7 @@ describe("setApiKey / clearApiKey", () => {
 
     const [, init] = fetchMock.mock.calls[0] ?? [];
     const headers = new Headers(init?.headers);
-    expect(headers.get("X-Spend-Token")).toBe("test-token");
+    expect(headers.get("X-PFA-Token")).toBe("test-token");
   });
 
   it("throws with the server's detail message on failure", async () => {

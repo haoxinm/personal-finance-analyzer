@@ -7,7 +7,7 @@ from itertools import count
 import pytest
 from sqlalchemy.orm import Session
 
-from spend_analyzer.analytics.tax_query import (
+from personal_finance_analyzer.analytics.tax_query import (
     TaxQuery,
     get_tax_document,
     list_tax_documents,
@@ -15,9 +15,9 @@ from spend_analyzer.analytics.tax_query import (
     run_income_by_payer,
     run_tax_summary,
 )
-from spend_analyzer.core.tax_types import FORM_ROLE
-from spend_analyzer.db.models import IncomeItem, TaxDocument, TaxForm, TaxItem, User
-from spend_analyzer.ingest.tax.tin import has_long_digit_run
+from personal_finance_analyzer.core.tax_types import FORM_ROLE
+from personal_finance_analyzer.db.models import IncomeItem, TaxDocument, TaxForm, TaxItem, User
+from personal_finance_analyzer.ingest.tax.tin import has_long_digit_run
 
 _seq = count(1)
 

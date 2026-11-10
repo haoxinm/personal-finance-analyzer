@@ -3,7 +3,7 @@
 @tailwind utilities;
 
 /*
- * Spend Analyzer design tokens.
+ * Personal Finance Analyzer design tokens.
  *
  * Deliberately not shadcn's default slate/zinc palette (§ P1-F): one accent hue (a deep
  * teal), a restrained type scale, and an explicit outflow/inflow pair for money that is

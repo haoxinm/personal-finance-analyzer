@@ -16,7 +16,7 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-_SRC_ROOT = Path(__file__).resolve().parent.parent / "src" / "spend_analyzer"
+_SRC_ROOT = Path(__file__).resolve().parent.parent / "src" / "personal_finance_analyzer"
 
 _HTTP_CLIENT_MODULES = {
     "httpx",
@@ -28,14 +28,14 @@ _HTTP_CLIENT_MODULES = {
     "urllib.request",
 }
 
-_CLIENT = "src/spend_analyzer/llm/client.py"
+_CLIENT = "src/personal_finance_analyzer/llm/client.py"
 #: The opt-in once-a-year fetch of the federal tax parameter file (no user data in the request).
-_PARAMS_UPDATER = "src/spend_analyzer/api/services/tax_params_update.py"
+_PARAMS_UPDATER = "src/personal_finance_analyzer/api/services/tax_params_update.py"
 _PARAMS_HOST = "raw.githubusercontent.com"
 _CLIENT_CALLERS = {
-    "src/spend_analyzer/classify/llm/egress.py",
-    "src/spend_analyzer/llm/statement_parser.py",
-    "src/spend_analyzer/llm/tax_parser.py",
+    "src/personal_finance_analyzer/classify/llm/egress.py",
+    "src/personal_finance_analyzer/llm/statement_parser.py",
+    "src/personal_finance_analyzer/llm/tax_parser.py",
 }
 
 
@@ -84,12 +84,12 @@ def _imports_http_client(tree: ast.AST) -> set[str]:
 def _imports_llm_client(tree: ast.AST) -> bool:
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
-            if any(alias.name == "spend_analyzer.llm.client" for alias in node.names):
+            if any(alias.name == "personal_finance_analyzer.llm.client" for alias in node.names):
                 return True
         elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module is not None:
-            if node.module == "spend_analyzer.llm.client":
+            if node.module == "personal_finance_analyzer.llm.client":
                 return True
-            if node.module == "spend_analyzer.llm" and any(
+            if node.module == "personal_finance_analyzer.llm" and any(
                 alias.name == "client" for alias in node.names
             ):
                 return True
@@ -170,16 +170,17 @@ def test_tax_modules_import_no_llm_or_http() -> None:
         hits = {
             m
             for m in _full_imported_modules(tree)
-            if m == "spend_analyzer.llm"
-            or m.startswith("spend_analyzer.llm.")
-            or m == "spend_analyzer.classify.llm"
-            or m.startswith("spend_analyzer.classify.llm.")
+            if m == "personal_finance_analyzer.llm"
+            or m.startswith("personal_finance_analyzer.llm.")
+            or m == "personal_finance_analyzer.classify.llm"
+            or m.startswith("personal_finance_analyzer.classify.llm.")
         }
         for node in ast.walk(tree):
             if (
                 isinstance(node, ast.ImportFrom)
                 and node.level == 0
-                and node.module in ("spend_analyzer", "spend_analyzer.classify")
+                and node.module
+                in ("personal_finance_analyzer", "personal_finance_analyzer.classify")
             ):
                 hits |= {f"{node.module}.{a.name}" for a in node.names if a.name in ("llm",)}
         hits |= _imports_http_client(tree)
@@ -191,12 +192,13 @@ def test_tax_modules_import_no_llm_or_http() -> None:
 def test_only_the_tax_llm_factory_imports_the_tax_llm_parser() -> None:
     """The tax package gets the fallback injected; `api/services/tax_llm.py` is the sole importer
     of the egress module (the CLI reaches it through that factory)."""
-    allowed = {"src/spend_analyzer/api/services/tax_llm.py"}
+    allowed = {"src/personal_finance_analyzer/api/services/tax_llm.py"}
     offenders = [
         _rel(path)
         for path in _iter_py_files(_SRC_ROOT)
         if any(
-            m == "spend_analyzer.llm.tax_parser" or m.startswith("spend_analyzer.llm.tax_parser.")
+            m == "personal_finance_analyzer.llm.tax_parser"
+            or m.startswith("personal_finance_analyzer.llm.tax_parser.")
             for m in _full_imported_modules(_parse(path))
         )
         and _rel(path) not in allowed
@@ -209,7 +211,13 @@ def test_tax_llm_parser_imports_no_database_or_analytics() -> None:
     bad = {
         m
         for m in _full_imported_modules(tree)
-        if m.startswith(("spend_analyzer.db", "spend_analyzer.analytics", "spend_analyzer.api"))
+        if m.startswith(
+            (
+                "personal_finance_analyzer.db",
+                "personal_finance_analyzer.analytics",
+                "personal_finance_analyzer.api",
+            )
+        )
     }
     assert not bad, f"llm/tax_parser.py must stay free of DB/analytics/API code: {bad}"
 
@@ -240,16 +248,17 @@ def test_net_worth_modules_import_no_llm_or_http() -> None:
         hits = {
             m
             for m in _full_imported_modules(tree)
-            if m == "spend_analyzer.llm"
-            or m.startswith("spend_analyzer.llm.")
-            or m == "spend_analyzer.classify.llm"
-            or m.startswith("spend_analyzer.classify.llm.")
+            if m == "personal_finance_analyzer.llm"
+            or m.startswith("personal_finance_analyzer.llm.")
+            or m == "personal_finance_analyzer.classify.llm"
+            or m.startswith("personal_finance_analyzer.classify.llm.")
         }
         for node in ast.walk(tree):
             if (
                 isinstance(node, ast.ImportFrom)
                 and node.level == 0
-                and node.module in ("spend_analyzer", "spend_analyzer.classify")
+                and node.module
+                in ("personal_finance_analyzer", "personal_finance_analyzer.classify")
             ):
                 hits |= {f"{node.module}.{a.name}" for a in node.names if a.name in ("llm",)}
         hits |= _imports_http_client(tree)
@@ -273,8 +282,10 @@ def test_backup_modules_import_no_llm_or_http() -> None:
         hits = {
             m
             for m in _full_imported_modules(tree)
-            if m in ("spend_analyzer.llm", "spend_analyzer.classify.llm")
-            or m.startswith(("spend_analyzer.llm.", "spend_analyzer.classify.llm."))
+            if m in ("personal_finance_analyzer.llm", "personal_finance_analyzer.classify.llm")
+            or m.startswith(
+                ("personal_finance_analyzer.llm.", "personal_finance_analyzer.classify.llm.")
+            )
         }
         hits |= _imports_http_client(tree)
         if hits:
@@ -301,11 +312,11 @@ def test_params_updater_is_isolated_from_user_data_and_llm_code() -> None:
         for m in _full_imported_modules(tree)
         if m.startswith(
             (
-                "spend_analyzer.db",
-                "spend_analyzer.analytics",
-                "spend_analyzer.ingest",
-                "spend_analyzer.llm",
-                "spend_analyzer.classify",
+                "personal_finance_analyzer.db",
+                "personal_finance_analyzer.analytics",
+                "personal_finance_analyzer.ingest",
+                "personal_finance_analyzer.llm",
+                "personal_finance_analyzer.classify",
             )
         )
     }

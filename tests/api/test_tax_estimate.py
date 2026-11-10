@@ -12,8 +12,8 @@ import yaml
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
-from spend_analyzer.api.services import tax_params_update as upd
-from spend_analyzer.core import tax_params
+from personal_finance_analyzer.api.services import tax_params_update as upd
+from personal_finance_analyzer.core import tax_params
 from tests.analytics.tax_seed import add_form
 from tests.tax_params_support import with_next_year
 
@@ -329,7 +329,7 @@ def test_summary_carries_headline_and_superseded_forms(
 
 def _bundled_text() -> str:
     return (
-        resources.files("spend_analyzer.core")
+        resources.files("personal_finance_analyzer.core")
         .joinpath("tax_data", "federal_params.yaml")
         .read_text(encoding="utf-8")
     )
@@ -437,7 +437,7 @@ def test_the_yearly_check_is_triggered_lazily_when_enabled(
         started.append(s)
         return True
 
-    from spend_analyzer.api.routers import tax as tax_router
+    from personal_finance_analyzer.api.routers import tax as tax_router
 
     monkeypatch.setattr(tax_router.tax_params_update, "maybe_check_in_background", fake_start)
     uid = _user(client)

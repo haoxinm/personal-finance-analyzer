@@ -14,11 +14,11 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
-from spend_analyzer.api.app import create_app
-from spend_analyzer.config import IngestConfig, PrivacyConfig, Settings, save_settings
-from spend_analyzer.core.paths import statements_dir, tax_staging_dir
-from spend_analyzer.db.models import User
-from spend_analyzer.ingest.tax import staging
+from personal_finance_analyzer.api.app import create_app
+from personal_finance_analyzer.config import IngestConfig, PrivacyConfig, Settings, save_settings
+from personal_finance_analyzer.core.paths import statements_dir, tax_staging_dir
+from personal_finance_analyzer.db.models import User
+from personal_finance_analyzer.ingest.tax import staging
 from tests.fixtures.gen.base import render_lines_pdf
 from tests.llm_fakes import FakeLLM, install, remote_cfg
 

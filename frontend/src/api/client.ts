@@ -4,13 +4,13 @@ import type { paths } from "./schema";
 
 /**
  * The per-launch token the server injects into the served `index.html` (A31) as
- * `<meta name="spend-token" content="...">`. Read once at module load; the meta tag does
+ * `<meta name="pfa-token" content="...">`. Read once at module load; the meta tag does
  * not exist yet in Phase 1 (no server) or in Vite dev without a proxy target, so this is
  * `undefined` there and the header is simply omitted.
  */
-function readSpendToken(): string | undefined {
+function readPfaToken(): string | undefined {
   if (typeof document === "undefined") return undefined;
-  const meta = document.querySelector('meta[name="spend-token"]');
+  const meta = document.querySelector('meta[name="pfa-token"]');
   return meta?.getAttribute("content") ?? undefined;
 }
 
@@ -36,8 +36,8 @@ function resolveBaseUrl(): string {
 export const apiClient = createClient<paths>({
   baseUrl: resolveBaseUrl(),
   headers: (() => {
-    const token = readSpendToken();
-    return token ? { "X-Spend-Token": token } : {};
+    const token = readPfaToken();
+    return token ? { "X-PFA-Token": token } : {};
   })(),
 });
 

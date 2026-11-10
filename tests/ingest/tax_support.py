@@ -23,9 +23,9 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-from spend_analyzer.core.tax_types import ParsedTaxDocument
-from spend_analyzer.core.types import ExtractedDoc, PageText, Word
-from spend_analyzer.ingest.extract import extract
+from personal_finance_analyzer.core.tax_types import ParsedTaxDocument
+from personal_finance_analyzer.core.types import ExtractedDoc, PageText, Word
+from personal_finance_analyzer.ingest.extract import extract
 from tests.fixtures.gen.tax_common import golden_dict
 
 CHAR_WIDTH = 6.0

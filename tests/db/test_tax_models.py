@@ -9,8 +9,8 @@ from sqlalchemy import Engine, inspect, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from spend_analyzer.db.migrate import upgrade_head
-from spend_analyzer.db.models import (
+from personal_finance_analyzer.db.migrate import upgrade_head
+from personal_finance_analyzer.db.models import (
     Base,
     IncomeItem,
     TaxDocument,
@@ -18,7 +18,7 @@ from spend_analyzer.db.models import (
     TaxItem,
     User,
 )
-from spend_analyzer.db.session import make_engine_for_path
+from personal_finance_analyzer.db.session import make_engine_for_path
 
 _TABLES = ("tax_documents", "tax_forms", "income_items", "tax_items")
 

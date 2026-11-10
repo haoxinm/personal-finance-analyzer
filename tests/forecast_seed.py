@@ -8,8 +8,8 @@ from itertools import count
 
 from sqlalchemy.orm import Session
 
-from spend_analyzer.core.tax_types import FORM_ROLE
-from spend_analyzer.db.models import (
+from personal_finance_analyzer.core.tax_types import FORM_ROLE
+from personal_finance_analyzer.db.models import (
     Account,
     BalanceEntry,
     IncomeItem,

@@ -6,7 +6,7 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from spend_analyzer.db.models import Account, Issuer, Statement, Transaction, User
+from personal_finance_analyzer.db.models import Account, Issuer, Statement, Transaction, User
 
 
 def test_deleting_statement_cascades_to_transactions(session: Session) -> None:

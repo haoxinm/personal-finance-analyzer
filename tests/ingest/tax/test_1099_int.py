@@ -7,12 +7,12 @@ import re
 
 import pytest
 
-from spend_analyzer.core.errors import ParserError
-from spend_analyzer.core.types import ExtractedDoc
-from spend_analyzer.ingest.tax.parsers.f1099_div import PARSER as DIV
-from spend_analyzer.ingest.tax.parsers.f1099_int import PARSER, parse_int_section
-from spend_analyzer.ingest.tax.parsers.f1099_nec_misc import PARSER as NEC_MISC
-from spend_analyzer.ingest.tax.parsers.w2 import PARSER as W2
+from personal_finance_analyzer.core.errors import ParserError
+from personal_finance_analyzer.core.types import ExtractedDoc
+from personal_finance_analyzer.ingest.tax.parsers.f1099_div import PARSER as DIV
+from personal_finance_analyzer.ingest.tax.parsers.f1099_int import PARSER, parse_int_section
+from personal_finance_analyzer.ingest.tax.parsers.f1099_nec_misc import PARSER as NEC_MISC
+from personal_finance_analyzer.ingest.tax.parsers.w2 import PARSER as W2
 from tests.ingest.tax_support import (
     assert_matches_golden,
     doc_from_lines,

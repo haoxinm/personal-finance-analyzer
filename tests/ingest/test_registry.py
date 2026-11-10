@@ -8,9 +8,14 @@ from types import ModuleType
 
 import pytest
 
-from spend_analyzer.core.types import ExtractedDoc, PageText, ParsedStatement, StatementParser
-from spend_analyzer.ingest import registry
-from spend_analyzer.ingest.parsers.generic_table import generic_table
+from personal_finance_analyzer.core.types import (
+    ExtractedDoc,
+    PageText,
+    ParsedStatement,
+    StatementParser,
+)
+from personal_finance_analyzer.ingest import registry
+from personal_finance_analyzer.ingest.parsers.generic_table import generic_table
 
 _EMPTY_DOC = ExtractedDoc(
     file_sha256="0" * 64,
@@ -125,7 +130,7 @@ class _FakeEntryPoint:
 def test_discover_builtin_parsers_skips_a_module_that_fails_to_import(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    import spend_analyzer.ingest.parsers as parsers_pkg
+    import personal_finance_analyzer.ingest.parsers as parsers_pkg
 
     def fake_iter_modules(path: object, prefix: str) -> list[_FakeModuleInfo]:
         return [_FakeModuleInfo(f"{parsers_pkg.__name__}.layout_broken")]
@@ -154,8 +159,7 @@ def test_discover_entrypoint_parsers_skips_broken_and_non_conforming_entry_point
     ]
 
     def fake_entry_points(*, group: str) -> list[_FakeEntryPoint]:
-        assert group == registry.ENTRY_POINT_GROUP
-        return entry_points_result
+        return entry_points_result if group == registry.ENTRY_POINT_GROUP else []
 
     monkeypatch.setattr(registry, "entry_points", fake_entry_points)
 
@@ -165,3 +169,31 @@ def test_discover_entrypoint_parsers_skips_broken_and_non_conforming_entry_point
     assert found == (good,)
     assert any("broken" in message for message in caplog.messages)
     assert any("not_a_parser" in message for message in caplog.messages)
+
+
+def test_parsers_registered_under_the_pre_rename_group_still_load_with_a_warning(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    current = _FixedScoreParser("layout_current", 0.7)
+    old = _FixedScoreParser("layout_old_plugin", 0.8)
+    shared = _FixedScoreParser("layout_shared", 0.9)
+    by_group = {
+        registry.ENTRY_POINT_GROUP: [
+            _FakeEntryPoint("current", "pkg.new:current", current),
+            _FakeEntryPoint("shared", "pkg.shared:parser", shared),
+        ],
+        registry.LEGACY_ENTRY_POINT_GROUP: [
+            _FakeEntryPoint("old", "pkg.old:parser", old),
+            # Registered under both groups (a plugin supporting two releases): loads once.
+            _FakeEntryPoint("shared", "pkg.shared:parser", shared),
+        ],
+    }
+    monkeypatch.setattr(registry, "entry_points", lambda *, group: by_group.get(group, []))
+
+    with caplog.at_level("WARNING"):
+        found = registry.discover_entrypoint_parsers()
+
+    assert registry.LEGACY_ENTRY_POINT_GROUP == "spend_analyzer.parsers"
+    assert sorted(p.id for p in found) == ["layout_current", "layout_old_plugin", "layout_shared"]
+    deprecations = [m for m in caplog.messages if "deprecated group" in m]
+    assert any("'old'" in m for m in deprecations)

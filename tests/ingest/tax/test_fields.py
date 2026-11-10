@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from spend_analyzer.ingest.tax import fields
-from spend_analyzer.ingest.tax.fields import (
+from personal_finance_analyzer.ingest.tax import fields
+from personal_finance_analyzer.ingest.tax.fields import (
     amount_for_label,
     checkbox_checked,
     compile_label,

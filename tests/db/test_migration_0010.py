@@ -8,11 +8,11 @@ from typing import Any
 from alembic import command
 from sqlalchemy import Connection, Engine, text
 
-from spend_analyzer.classify import cascade
-from spend_analyzer.classify.taxonomy import sync_taxonomy
-from spend_analyzer.config import LLMConfig
-from spend_analyzer.db.migrate import build_alembic_config, upgrade_head
-from spend_analyzer.db.models import (
+from personal_finance_analyzer.classify import cascade
+from personal_finance_analyzer.classify.taxonomy import sync_taxonomy
+from personal_finance_analyzer.config import LLMConfig
+from personal_finance_analyzer.db.migrate import build_alembic_config, upgrade_head
+from personal_finance_analyzer.db.models import (
     Account,
     Classification,
     Issuer,
@@ -20,7 +20,7 @@ from spend_analyzer.db.models import (
     Transaction,
     User,
 )
-from spend_analyzer.db.session import make_engine_for_path, make_session_factory
+from personal_finance_analyzer.db.session import make_engine_for_path, make_session_factory
 
 _PREVIOUS = "0009_tax_profiles"
 

@@ -1,6 +1,6 @@
 /**
  * Client-side mirror of `layout_spec.schema.json` and the semantic checks in
- * `spend_analyzer.ingest.layout_spec._build_doc` (P1-H, A21, §2d.2, §2f.1).
+ * `personal_finance_analyzer.ingest.layout_spec._build_doc` (P1-H, A21, §2d.2, §2f.1).
  *
  * This is a *mirror*, not a replacement: the backend's `load_spec` remains the single source of
  * truth that runs when a spec is actually interpreted. It exists because — see the P3-G report —

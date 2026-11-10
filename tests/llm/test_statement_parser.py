@@ -7,9 +7,9 @@ from datetime import date
 
 import pytest
 
-from spend_analyzer.core.errors import ParserError
-from spend_analyzer.core.types import ExtractedDoc, PageText, StatementParser
-from spend_analyzer.llm import statement_parser as sp
+from personal_finance_analyzer.core.errors import ParserError
+from personal_finance_analyzer.core.types import ExtractedDoc, PageText, StatementParser
+from personal_finance_analyzer.llm import statement_parser as sp
 from tests.llm_fakes import FakeLLM, install, remote_cfg
 
 

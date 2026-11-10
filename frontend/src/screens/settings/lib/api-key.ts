@@ -9,9 +9,9 @@
  *   DELETE /api/settings/api-key?base_url=<base_url> -> 204
  */
 
-function readSpendToken(): string | undefined {
+function readPfaToken(): string | undefined {
   if (typeof document === "undefined") return undefined;
-  const meta = document.querySelector('meta[name="spend-token"]');
+  const meta = document.querySelector('meta[name="pfa-token"]');
   return meta?.getAttribute("content") ?? undefined;
 }
 
@@ -35,10 +35,10 @@ async function readErrorDetail(response: Response): Promise<string> {
 }
 
 function jsonHeaders(): HeadersInit {
-  const token = readSpendToken();
+  const token = readPfaToken();
   return {
     "Content-Type": "application/json",
-    ...(token ? { "X-Spend-Token": token } : {}),
+    ...(token ? { "X-PFA-Token": token } : {}),
   };
 }
 

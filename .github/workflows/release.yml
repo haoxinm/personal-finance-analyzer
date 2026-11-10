@@ -40,7 +40,7 @@ jobs:
 
       # `uv sync` alone would only prepare an editable install (no frontend build, see
       # `hatch_build.py`); the dev extra is still needed so the smoke-test steps below can run
-      # this repo's own `spend-analyzer` for a quick sanity check ahead of the real install test.
+      # this repo's own `pfa` for a quick sanity check ahead of the real install test.
       - name: Sync dependencies
         run: uv sync --extra dev
 
@@ -52,31 +52,31 @@ jobs:
           set -euo pipefail
           wheel="$(ls dist/*.whl)"
           echo "built: $wheel"
-          if ! unzip -l "$wheel" | grep -q "spend_analyzer/web/index.html"; then
-            echo "::error::wheel is missing the built frontend (spend_analyzer/web/index.html)"
+          if ! unzip -l "$wheel" | grep -q "personal_finance_analyzer/web/index.html"; then
+            echo "::error::wheel is missing the built frontend (personal_finance_analyzer/web/index.html)"
             exit 1
           fi
           for f in taxonomy.yaml issuer_category_map.yaml builtin_rules.yaml; do
-            if ! unzip -l "$wheel" | grep -q "spend_analyzer/classify/$f"; then
-              echo "::error::wheel is missing spend_analyzer/classify/$f"
+            if ! unzip -l "$wheel" | grep -q "personal_finance_analyzer/classify/$f"; then
+              echo "::error::wheel is missing personal_finance_analyzer/classify/$f"
               exit 1
             fi
           done
-          if ! unzip -l "$wheel" | grep -q "spend_analyzer/data/store_aliases.yaml"; then
-            echo "::error::wheel is missing spend_analyzer/data/store_aliases.yaml"
+          if ! unzip -l "$wheel" | grep -q "personal_finance_analyzer/data/store_aliases.yaml"; then
+            echo "::error::wheel is missing personal_finance_analyzer/data/store_aliases.yaml"
             exit 1
           fi
-          if ! unzip -l "$wheel" | grep -q "spend_analyzer/ingest/layout_spec.schema.json"; then
-            echo "::error::wheel is missing spend_analyzer/ingest/layout_spec.schema.json"
+          if ! unzip -l "$wheel" | grep -q "personal_finance_analyzer/ingest/layout_spec.schema.json"; then
+            echo "::error::wheel is missing personal_finance_analyzer/ingest/layout_spec.schema.json"
             exit 1
           fi
-          if ! unzip -l "$wheel" | grep -q "spend_analyzer/db/migrations/versions/"; then
+          if ! unzip -l "$wheel" | grep -q "personal_finance_analyzer/db/migrations/versions/"; then
             echo "::error::wheel is missing the alembic migrations"
             exit 1
           fi
 
       # Installs the built wheel into a throwaway venv, outside the repo checkout, and exercises
-      # `migrate`/`doctor`/`serve` against a temp SPEND_ANALYZER_HOME — the same clean-install
+      # `migrate`/`doctor`/`serve` against a temp PFA_HOME — the same clean-install
       # check as docs/INSTALL.md and tests/bench/test_clean_install.py, run once more here against
       # the artifact this job is about to publish.
       - name: Clean-install smoke test
@@ -86,11 +86,15 @@ jobs:
           /tmp/release-smoke-venv/bin/pip install --quiet --upgrade pip
           /tmp/release-smoke-venv/bin/pip install --quiet dist/*.whl
 
-          export SPEND_ANALYZER_HOME=/tmp/release-smoke-home
-          mkdir -p "$SPEND_ANALYZER_HOME"
-          /tmp/release-smoke-venv/bin/spend-analyzer migrate
+          export PFA_HOME=/tmp/release-smoke-home
+          mkdir -p "$PFA_HOME"
+          /tmp/release-smoke-venv/bin/pfa migrate
+          # The deprecated `spend-analyzer` alias must still run, and say it was renamed (stderr).
+          /tmp/release-smoke-venv/bin/spend-analyzer --help 2>&1 >/dev/null | grep -q "renamed to pfa" \
+            || { echo "::error::spend-analyzer alias missing or silent"; exit 1; }
+          /tmp/release-smoke-venv/bin/personal-finance-analyzer --help > /dev/null
 
-          /tmp/release-smoke-venv/bin/spend-analyzer serve --no-open-browser > /tmp/serve.log 2>&1 &
+          /tmp/release-smoke-venv/bin/pfa serve --no-open-browser > /tmp/serve.log 2>&1 &
           server_pid=$!
           trap 'kill "$server_pid" 2>/dev/null || true' EXIT
 
@@ -105,12 +109,12 @@ jobs:
           fi
 
           index_status="$(curl -sS -o /tmp/index.html -w '%{http_code}' \
-            -H "X-Spend-Token: $token" "http://127.0.0.1:8756/")"
+            -H "X-PFA-Token: $token" "http://127.0.0.1:8756/")"
           [ "$index_status" = "200" ] || { echo "::error::index.html returned $index_status"; exit 1; }
-          grep -q 'spend-token' /tmp/index.html || { echo "::error::index.html missing token meta tag"; exit 1; }
+          grep -q 'pfa-token' /tmp/index.html || { echo "::error::index.html missing token meta tag"; exit 1; }
 
           api_status="$(curl -sS -o /dev/null -w '%{http_code}' \
-            -H "X-Spend-Token: $token" "http://127.0.0.1:8756/api/settings")"
+            -H "X-PFA-Token: $token" "http://127.0.0.1:8756/api/settings")"
           [ "$api_status" = "200" ] || { echo "::error::/api/settings returned $api_status"; exit 1; }
 
           unauth_status="$(curl -sS -o /dev/null -w '%{http_code}' "http://127.0.0.1:8756/api/settings")"

@@ -1,0 +1,170 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Personal Finance Analyzer layout spec (P1-H, A21)",
+  "description": "A declarative, versioned statement-layout description. Data, not code: no expressions or callables. Validated by personal_finance_analyzer.ingest.layout_spec.validate_against_schema before it is ever interpreted.",
+  "type": "object",
+  "required": ["id", "version", "account_type", "detect", "columns"],
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80,
+      "pattern": "^[a-z][a-z0-9_]*$"
+    },
+    "version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "account_type": {
+      "enum": ["credit", "checking", "savings"]
+    },
+    "currency": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 3
+    },
+    "account_mask": {
+      "type": "object",
+      "required": ["pattern"],
+      "additionalProperties": false,
+      "properties": {
+        "pattern": { "type": "string", "minLength": 1, "maxLength": 200 }
+      }
+    },
+    "fx": {
+      "type": "object",
+      "required": ["pattern", "amount_group", "currency_group", "rate_group"],
+      "additionalProperties": false,
+      "properties": {
+        "pattern": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "amount_group": {
+          "description": "A regex group name (string) or 1-based index (integer)."
+        },
+        "currency_group": {
+          "description": "A regex group name (string) or 1-based index (integer)."
+        },
+        "rate_group": {
+          "description": "A regex group name (string) or 1-based index (integer)."
+        }
+      }
+    },
+    "detect": {
+      "type": "object",
+      "required": ["score"],
+      "additionalProperties": false,
+      "properties": {
+        "all_of": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1, "maxLength": 200 }
+        },
+        "any_of": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1, "maxLength": 200 }
+        },
+        "score": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      }
+    },
+    "columns": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["name", "x0", "x1", "type"],
+        "additionalProperties": false,
+        "properties": {
+          "name": { "type": "string", "minLength": 1, "maxLength": 64 },
+          "x0": { "type": "number" },
+          "x1": { "type": "number" },
+          "type": { "enum": ["date", "text", "money", "balance"] },
+          "formats": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1, "maxLength": 32 }
+          },
+          "optional": { "type": "boolean" },
+          "multiline": { "type": "boolean" },
+          "role": { "enum": ["debit", "credit", "amount"] }
+        }
+      }
+    },
+    "sections": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": { "enum": ["heading", "column_header_row"] },
+        "patterns": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["match"],
+            "additionalProperties": false,
+            "properties": {
+              "match": { "type": "string", "minLength": 1, "maxLength": 200 },
+              "kind_hint": {
+                "enum": [
+                  "purchase",
+                  "refund",
+                  "payment",
+                  "transfer",
+                  "fee",
+                  "interest",
+                  "adjustment",
+                  "payment_or_refund"
+                ]
+              },
+              "outflow_kind_hint": {
+                "enum": [
+                  "purchase",
+                  "refund",
+                  "payment",
+                  "transfer",
+                  "fee",
+                  "interest",
+                  "adjustment",
+                  "payment_or_refund"
+                ]
+              },
+              "inflow_kind_hint": {
+                "enum": [
+                  "purchase",
+                  "refund",
+                  "payment",
+                  "transfer",
+                  "fee",
+                  "interest",
+                  "adjustment",
+                  "payment_or_refund"
+                ]
+              }
+            }
+          }
+        },
+        "terminator": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "exclude_tables": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1, "maxLength": 200 }
+        }
+      }
+    },
+    "sign": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "outflow": { "enum": ["unsigned", "leading_minus"] },
+        "inflow": { "enum": ["unsigned", "leading_minus"] }
+      }
+    },
+    "year_inference": { "enum": ["from_period", "explicit"] },
+    "totals": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "section_totals": { "type": "boolean" }
+      }
+    }
+  }
+}

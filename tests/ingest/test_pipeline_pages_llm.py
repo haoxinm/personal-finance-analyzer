@@ -8,9 +8,9 @@ from pathlib import Path
 import pytest
 from sqlalchemy.orm import Session
 
-from spend_analyzer.core.errors import ParserError, SpendAnalyzerError
-from spend_analyzer.db.models import Issuer, Statement, Transaction, User
-from spend_analyzer.ingest import pipeline
+from personal_finance_analyzer.core.errors import ParserError, PfaError
+from personal_finance_analyzer.db.models import Issuer, Statement, Transaction, User
+from personal_finance_analyzer.ingest import pipeline
 from tests.fixtures.gen.base import render_lines_pdf
 from tests.llm_fakes import install
 
@@ -38,9 +38,9 @@ def _setup(session: Session, tmp_path: Path) -> tuple[int, int]:
 
 
 def _llm_env(monkeypatch: pytest.MonkeyPatch, **extra: str) -> None:
-    monkeypatch.setenv("SPEND_ANALYZER_LLM__ENABLED", "true")
-    monkeypatch.setenv("SPEND_ANALYZER_LLM__BASE_URL", "https://api.example.com")
-    monkeypatch.setenv("SPEND_ANALYZER_LLM__MODEL", "m")
+    monkeypatch.setenv("PFA_LLM__ENABLED", "true")
+    monkeypatch.setenv("PFA_LLM__BASE_URL", "https://api.example.com")
+    monkeypatch.setenv("PFA_LLM__MODEL", "m")
     for k, v in extra.items():
         monkeypatch.setenv(k, v)
 
@@ -104,7 +104,7 @@ def test_llm_parse_end_to_end_with_pages(
 def test_invalid_pages_rejected(session: Session, tmp_path: Path) -> None:
     statement_id, issuer_id = _setup(session, tmp_path)
     for bad in ([], [9], [0]):
-        with pytest.raises(SpendAnalyzerError):
+        with pytest.raises(PfaError):
             pipeline.confirm_import(
                 session,
                 statement_id,
@@ -174,7 +174,7 @@ def test_saved_selection_applies_on_reparse(
 def test_propose_default_extractor_llm(
     session: Session, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _llm_env(monkeypatch, SPEND_ANALYZER_INGEST__DEFAULT_EXTRACTOR="llm")
+    _llm_env(monkeypatch, PFA_INGEST__DEFAULT_EXTRACTOR="llm")
     user = User(name="bob")
     session.add(user)
     session.flush()
@@ -189,7 +189,7 @@ def test_propose_default_extractor_llm(
 def test_propose_default_extractor_llm_needs_configured_llm(
     session: Session, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("SPEND_ANALYZER_INGEST__DEFAULT_EXTRACTOR", "llm")
+    monkeypatch.setenv("PFA_INGEST__DEFAULT_EXTRACTOR", "llm")
     user = User(name="bob")
     session.add(user)
     session.flush()

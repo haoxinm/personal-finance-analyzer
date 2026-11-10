@@ -51,7 +51,7 @@ vi.mock("./lib/hooks", () => ({
 
 vi.mock("./lib/backup", () => ({
   MIN_PASSPHRASE_LENGTH: 8,
-  backupFilename: () => "spend-analyzer-2026-01-01.spendbackup",
+  backupFilename: () => "pfa-2026-01-01.pfabackup",
   saveBlob: vi.fn(),
   useExportBackup: () => ({ mutate: vi.fn(), isPending: false }),
   useRestoreBackup: () => ({ mutate: vi.fn(), isPending: false }),

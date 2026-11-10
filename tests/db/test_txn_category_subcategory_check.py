@@ -12,11 +12,18 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from spend_analyzer.classify.taxonomy import sync_taxonomy
-from spend_analyzer.db.migrate import build_alembic_config
-from spend_analyzer.db.models import Account, Category, Issuer, Statement, Subcategory, User
-from spend_analyzer.db.models import Transaction as TransactionModel
-from spend_analyzer.db.session import make_engine_for_path, make_session_factory
+from personal_finance_analyzer.classify.taxonomy import sync_taxonomy
+from personal_finance_analyzer.db.migrate import build_alembic_config
+from personal_finance_analyzer.db.models import (
+    Account,
+    Category,
+    Issuer,
+    Statement,
+    Subcategory,
+    User,
+)
+from personal_finance_analyzer.db.models import Transaction as TransactionModel
+from personal_finance_analyzer.db.session import make_engine_for_path, make_session_factory
 
 
 def _make_transaction(**overrides: object) -> TransactionModel:

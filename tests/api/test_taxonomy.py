@@ -5,8 +5,8 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from spend_analyzer.api.services import gateway
-from spend_analyzer.db.models import Category, Subcategory, Transaction
+from personal_finance_analyzer.api.services import gateway
+from personal_finance_analyzer.db.models import Category, Subcategory, Transaction
 
 
 def test_get_taxonomy_includes_others_uncategorized(client: TestClient) -> None:

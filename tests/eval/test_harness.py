@@ -1,4 +1,4 @@
-"""Tests for `spend_analyzer.eval.harness` (P4-C).
+"""Tests for `personal_finance_analyzer.eval.harness` (P4-C).
 
 `run_eval` never touches the database, so no `session`/`engine` fixture is needed here. The LLM
 path is exercised with the fake endpoint in `tests/llm_fakes.py`, exactly as `tests/classify/
@@ -14,9 +14,9 @@ from typing import Any
 
 import pytest
 
-from spend_analyzer.config import LLMConfig
-from spend_analyzer.core.errors import ConfigError
-from spend_analyzer.eval import harness
+from personal_finance_analyzer.config import LLMConfig
+from personal_finance_analyzer.core.errors import ConfigError
+from personal_finance_analyzer.eval import harness
 from tests.llm_fakes import install, remote_cfg
 
 _REAL_CSV = Path(__file__).parent / "descriptions.csv"
@@ -41,7 +41,7 @@ def _items_payload(*items: dict[str, Any]) -> str:
 @pytest.fixture(autouse=True)
 def _fake_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keychain/keyring must be mocked in tests (per the common brief)."""
-    monkeypatch.setenv("SPEND_ANALYZER_LLM_API_KEY", "sk-ant-test-key-not-real")
+    monkeypatch.setenv("PFA_LLM_API_KEY", "sk-ant-test-key-not-real")
 
 
 # --------------------------------------------------------------------------------------------

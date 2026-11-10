@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 
 
 def test_missing_token_is_403(client: TestClient) -> None:
-    response = client.get("/api/users", headers={"X-Spend-Token": ""})
+    response = client.get("/api/users", headers={"X-PFA-Token": ""})
     assert response.status_code == 403
 
 
@@ -21,7 +21,7 @@ def test_wrong_host_is_403(client: TestClient) -> None:
 def test_multipart_upload_without_token_is_403(client: TestClient) -> None:
     response = client.post(
         "/api/statements",
-        headers={"X-Spend-Token": ""},
+        headers={"X-PFA-Token": ""},
         data={"user_id": "1"},
         files={"file": ("s.pdf", b"%PDF-1.4 fake", "application/pdf")},
     )
@@ -49,13 +49,13 @@ _TAX_GET_ROUTES = (
 
 @pytest.mark.parametrize("route", _TAX_GET_ROUTES)
 def test_tax_get_routes_require_token_and_host(client: TestClient, route: str) -> None:
-    assert client.get(route, headers={"X-Spend-Token": ""}).status_code == 403
-    assert client.get(route, headers={"X-Spend-Token": "wrong"}).status_code == 403
+    assert client.get(route, headers={"X-PFA-Token": ""}).status_code == 403
+    assert client.get(route, headers={"X-PFA-Token": "wrong"}).status_code == 403
     assert client.get(route, headers={"Host": "evil.example"}).status_code == 403
 
 
 def test_tax_delete_requires_token(client: TestClient) -> None:
-    assert client.delete("/api/tax/documents/1", headers={"X-Spend-Token": ""}).status_code == 403
+    assert client.delete("/api/tax/documents/1", headers={"X-PFA-Token": ""}).status_code == 403
 
 
 def test_tax_upload_requires_token_and_host(client: TestClient) -> None:
@@ -64,8 +64,7 @@ def test_tax_upload_requires_token_and_host(client: TestClient) -> None:
         "files": {"file": ("w2.pdf", b"%PDF-1.4 fake", "application/pdf")},
     }
     assert (
-        client.post("/api/tax/documents", headers={"X-Spend-Token": ""}, **kwargs).status_code
-        == 403
+        client.post("/api/tax/documents", headers={"X-PFA-Token": ""}, **kwargs).status_code == 403
     )
     assert (
         client.post("/api/tax/documents", headers={"Host": "evil.example"}, **kwargs).status_code

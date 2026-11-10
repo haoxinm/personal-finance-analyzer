@@ -10,8 +10,8 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
-from spend_analyzer.db.models import TaxDocument, TaxForm, User
-from spend_analyzer.ingest.tax.pipeline import import_tax_document
+from personal_finance_analyzer.db.models import TaxDocument, TaxForm, User
+from personal_finance_analyzer.ingest.tax.pipeline import import_tax_document
 from tests.ingest.tax_support import generated_pdf
 
 _SSN_SHAPE = re.compile(r"\b\d{3}-\d{2}-\d{4}\b")

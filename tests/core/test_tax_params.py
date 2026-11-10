@@ -15,8 +15,8 @@ from typing import Any
 import pytest
 import yaml
 
-from spend_analyzer.core import tax_calc, tax_params
-from spend_analyzer.core.tax_params import (
+from personal_finance_analyzer.core import tax_calc, tax_params
+from personal_finance_analyzer.core.tax_params import (
     FILING_STATUSES,
     added_years,
     load_bundled,
@@ -30,7 +30,7 @@ D = 100
 
 def _bundled_raw() -> dict[str, Any]:
     text = (
-        resources.files("spend_analyzer.core")
+        resources.files("personal_finance_analyzer.core")
         .joinpath("tax_data", "federal_params.yaml")
         .read_text(encoding="utf-8")
     )

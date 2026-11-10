@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import keyring.errors
 import pytest
 
-from spend_analyzer import config as config_module
-from spend_analyzer.config import (
+from personal_finance_analyzer import config as config_module
+from personal_finance_analyzer.config import (
     IngestConfig,
     LLMConfig,
     PrivacyConfig,
@@ -57,9 +58,39 @@ def test_env_override_wins_over_toml(home: Path, monkeypatch: pytest.MonkeyPatch
     save_settings(
         Settings(llm=LLMConfig(base_url="http://localhost:1", model="m", enabled=False)), path
     )
-    monkeypatch.setenv("SPEND_ANALYZER_LLM__MODE", "local")
+    monkeypatch.setenv("PFA_LLM__MODE", "local")
     loaded = load_settings(path)
     assert loaded.llm.mode == "local"
+
+
+def test_legacy_env_prefix_is_still_accepted(home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SPEND_ANALYZER_LLM__ENABLED", "true")
+    monkeypatch.setenv("SPEND_ANALYZER_LLM__MODEL", "legacy-model")
+    monkeypatch.setenv("SPEND_ANALYZER_TAX__AUTO_UPDATE_PARAMS", "true")
+    loaded = load_settings(home / "config.toml")
+    assert loaded.llm.enabled is True
+    assert loaded.llm.model == "legacy-model"
+    assert loaded.tax.auto_update_params is True
+
+
+def test_new_env_prefix_wins_over_the_legacy_one(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("SPEND_ANALYZER_LLM__MODEL", "legacy-model")
+    monkeypatch.setenv("SPEND_ANALYZER_LLM__ENABLED", "true")
+    monkeypatch.setenv("PFA_LLM__MODEL", "new-model")
+    loaded = load_settings(home / "config.toml")
+    assert loaded.llm.model == "new-model"
+    assert loaded.llm.enabled is True  # a field only the legacy prefix sets still applies
+
+
+def test_legacy_llm_api_key_env_is_a_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = LLMConfig(base_url="https://api.example.com/v1", model="m")
+    monkeypatch.delenv("PFA_LLM_API_KEY", raising=False)
+    monkeypatch.setenv("SPEND_ANALYZER_LLM_API_KEY", "legacy-key")
+    assert get_llm_api_key(cfg) == "legacy-key"
+    monkeypatch.setenv("PFA_LLM_API_KEY", "new-key")
+    assert get_llm_api_key(cfg) == "new-key"
 
 
 def test_save_settings_is_atomic_write(home: Path) -> None:
@@ -80,6 +111,9 @@ class _FakeKeyring:
         self.store[(service, account)] = value
 
     def delete_password(self, service: str, account: str) -> None:
+        # Like a real backend: deleting an entry that is not there is an error.
+        if (service, account) not in self.store:
+            raise keyring.errors.PasswordDeleteError("not found")
         del self.store[(service, account)]
 
 
@@ -103,15 +137,69 @@ def test_api_key_never_touches_config_or_log(
     assert get_api_key("anthropic") is None
 
 
+def _install_fake_keyring(monkeypatch: pytest.MonkeyPatch) -> _FakeKeyring:
+    fake = _FakeKeyring()
+    monkeypatch.setattr(config_module.keyring, "get_password", fake.get_password)
+    monkeypatch.setattr(config_module.keyring, "set_password", fake.set_password)
+    monkeypatch.setattr(config_module.keyring, "delete_password", fake.delete_password)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    return fake
+
+
+def test_api_key_saved_under_the_old_service_is_moved_on_first_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = _install_fake_keyring(monkeypatch)
+    fake.store[("spend-analyzer", "anthropic")] = "old-key"
+
+    assert get_api_key("anthropic") == "old-key"
+    assert fake.store == {("personal-finance-analyzer", "anthropic"): "old-key"}
+    assert get_api_key("anthropic") == "old-key"  # now served from the new service
+
+
+def test_new_keychain_entry_wins_and_leaves_the_old_one_alone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = _install_fake_keyring(monkeypatch)
+    fake.store[("spend-analyzer", "anthropic")] = "old-key"
+    fake.store[("personal-finance-analyzer", "anthropic")] = "new-key"
+    assert get_api_key("anthropic") == "new-key"
+    assert fake.store[("spend-analyzer", "anthropic")] == "old-key"
+
+
+def test_old_keychain_entry_still_works_when_it_cannot_be_copied(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = _install_fake_keyring(monkeypatch)
+    fake.store[("spend-analyzer", "anthropic")] = "old-key"
+
+    def refuse(service: str, account: str, value: str) -> None:
+        raise keyring.errors.KeyringError("read-only keychain")
+
+    monkeypatch.setattr(config_module.keyring, "set_password", refuse)
+    assert get_api_key("anthropic") == "old-key"
+    assert fake.store == {("spend-analyzer", "anthropic"): "old-key"}  # nothing deleted
+
+
+def test_set_and_delete_api_key_also_clear_the_old_service(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = _install_fake_keyring(monkeypatch)
+    fake.store[("spend-analyzer", "anthropic")] = "old-key"
+    set_api_key("anthropic", "fresh")
+    assert fake.store == {("personal-finance-analyzer", "anthropic"): "fresh"}
+
+    fake.store[("spend-analyzer", "anthropic")] = "stale-again"
+    delete_api_key("anthropic")
+    assert fake.store == {}
+
+
 def test_get_api_key_prefers_env_var(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "env-value")
     assert get_api_key("openai") == "env-value"
 
 
 # ---- unified LLMConfig ------------------------------------------------------------------------
-
-
-import keyring.errors  # noqa: E402
 
 
 def test_round_trip_new_fields(home: Path) -> None:
@@ -254,7 +342,7 @@ def test_key_account() -> None:
 def test_env_override_enabled(home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     path = home / "config.toml"
     save_settings(Settings(llm=LLMConfig(base_url="http://localhost:1", model="m")), path)
-    monkeypatch.setenv("SPEND_ANALYZER_LLM__ENABLED", "true")
+    monkeypatch.setenv("PFA_LLM__ENABLED", "true")
     loaded = load_settings(path).llm
     assert loaded.enabled is True
     assert loaded.mode == "local"
@@ -263,16 +351,16 @@ def test_env_override_enabled(home: Path, monkeypatch: pytest.MonkeyPatch) -> No
 def test_env_override_legacy_mode(home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     path = home / "config.toml"
     save_settings(Settings(llm=LLMConfig(base_url="http://localhost:1", model="m")), path)
-    monkeypatch.setenv("SPEND_ANALYZER_LLM__MODE", "local")
+    monkeypatch.setenv("PFA_LLM__MODE", "local")
     assert load_settings(path).llm.enabled is True
-    monkeypatch.setenv("SPEND_ANALYZER_LLM__MODE", "none")
+    monkeypatch.setenv("PFA_LLM__MODE", "none")
     assert load_settings(path).llm.enabled is False
 
 
 def test_env_override_optional_and_dict_fields(home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("SPEND_ANALYZER_LLM__TEMPERATURE", "0.25")
-    monkeypatch.setenv("SPEND_ANALYZER_LLM__MAX_TOKENS", "100")
-    monkeypatch.setenv("SPEND_ANALYZER_LLM__EXTRA_BODY", '{"top_p": 0.5}')
+    monkeypatch.setenv("PFA_LLM__TEMPERATURE", "0.25")
+    monkeypatch.setenv("PFA_LLM__MAX_TOKENS", "100")
+    monkeypatch.setenv("PFA_LLM__EXTRA_BODY", '{"top_p": 0.5}')
     cfg = load_settings(home / "none.toml").llm
     assert cfg.temperature == 0.25
     assert cfg.max_tokens == 100
@@ -280,7 +368,7 @@ def test_env_override_optional_and_dict_fields(home: Path, monkeypatch: pytest.M
 
 
 def test_get_llm_api_key_env_wins(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("SPEND_ANALYZER_LLM_API_KEY", "from-env")
+    monkeypatch.setenv("PFA_LLM_API_KEY", "from-env")
     cfg = LLMConfig(base_url="https://api.example.com", model="m")
     assert get_llm_api_key(cfg) == "from-env"
 
@@ -288,17 +376,17 @@ def test_get_llm_api_key_env_wins(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_get_llm_api_key_from_keychain(monkeypatch: pytest.MonkeyPatch) -> None:
     fake = _FakeKeyring()
     monkeypatch.setattr(config_module.keyring, "get_password", fake.get_password)
-    monkeypatch.delenv("SPEND_ANALYZER_LLM_API_KEY", raising=False)
+    monkeypatch.delenv("PFA_LLM_API_KEY", raising=False)
     cfg = LLMConfig(base_url="https://api.example.com", model="m")
     assert get_llm_api_key(cfg) is None
-    fake.store[("spend-analyzer", "llm:api.example.com")] = "kc-secret"
+    fake.store[("personal-finance-analyzer", "llm:api.example.com")] = "kc-secret"
     assert get_llm_api_key(cfg) == "kc-secret"
     other = LLMConfig(base_url="https://other.example.com", model="m")
     assert get_llm_api_key(other) is None  # a key is never reused for another host
 
 
 def test_get_llm_api_key_without_base_url(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("SPEND_ANALYZER_LLM_API_KEY", raising=False)
+    monkeypatch.delenv("PFA_LLM_API_KEY", raising=False)
     assert get_llm_api_key(LLMConfig()) is None
 
 
@@ -307,7 +395,7 @@ def test_keyring_error_reads_as_no_key(monkeypatch: pytest.MonkeyPatch) -> None:
         raise keyring.errors.KeyringError("no backend")
 
     monkeypatch.setattr(config_module.keyring, "get_password", _raise)
-    monkeypatch.delenv("SPEND_ANALYZER_LLM_API_KEY", raising=False)
+    monkeypatch.delenv("PFA_LLM_API_KEY", raising=False)
     assert get_api_key("llm:api.example.com") is None
     assert get_llm_api_key(LLMConfig(base_url="https://api.example.com", model="m")) is None
 

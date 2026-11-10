@@ -2,7 +2,7 @@ import { matchPath } from "react-router-dom";
 
 import { COMPARE_USER_PARAM } from "@/hooks/use-selected-user";
 
-export const APP_NAME = "Spend Analyzer";
+export const APP_NAME = "Personal Finance Analyzer";
 
 export interface TabSpec {
   /** Absolute route path. */

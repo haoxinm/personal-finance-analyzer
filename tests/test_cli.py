@@ -3,15 +3,73 @@ from __future__ import annotations
 import csv
 import io
 import json
+import re
+import sys
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
 
-from spend_analyzer.cli import app
-from spend_analyzer.db.session import make_engine_for_path
+from personal_finance_analyzer import cli
+from personal_finance_analyzer.cli import app
+from personal_finance_analyzer.db.session import make_engine_for_path
 
 runner = CliRunner()
+
+_ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+
+
+def _plain(text: str) -> str:
+    """Drop ANSI escapes, so help-text assertions hold even if a runner forces colour."""
+    return _ANSI.sub("", text)
+
+
+def _run_entry_point(
+    entry: Callable[[], None], argv0: str, capsys: pytest.CaptureFixture[str]
+) -> tuple[str, str]:
+    sys.argv = [argv0, "--help"]
+    with pytest.raises(SystemExit) as exit_info:
+        entry()
+    assert exit_info.value.code == 0
+    captured = capsys.readouterr()
+    return _plain(captured.out), _plain(captured.err)
+
+
+def test_pfa_entry_point_documents_pfa_and_prints_no_notice(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(sys, "argv", sys.argv)
+    out, err = _run_entry_point(cli.main, "personal-finance-analyzer", capsys)
+    assert "Usage: pfa" in out
+    assert "Personal Finance Analyzer" in out
+    assert err == ""
+
+
+def test_spend_analyzer_alias_prints_one_stderr_notice_then_runs_the_same_app(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(sys, "argv", sys.argv)
+    out, err = _run_entry_point(cli.legacy_main, "spend-analyzer", capsys)
+    assert err.strip().splitlines() == [
+        "spend-analyzer has been renamed to pfa; this alias will be removed in a future release"
+    ]
+    assert "Usage: pfa" in out  # stdout is the normal help, so scripts parsing it keep working
+
+
+def test_console_scripts_are_declared() -> None:
+    import tomllib
+
+    pyproject = tomllib.loads(
+        (Path(__file__).resolve().parent.parent / "pyproject.toml").read_text()
+    )
+    assert pyproject["project"]["name"] == "personal-finance-analyzer"
+    assert pyproject["project"]["scripts"] == {
+        "pfa": "personal_finance_analyzer.cli:main",
+        "personal-finance-analyzer": "personal_finance_analyzer.cli:main",
+        "spend-analyzer": "personal_finance_analyzer.cli:legacy_main",
+    }
+
 
 #: The generated fixtures Gate 2 walks (§ tests/fixtures/generated/**): each layout's own
 #: fictional bank name (found by `uv run python -c "extract(...)..."` against page 1's text)
@@ -32,7 +90,7 @@ def _expected_report_total() -> int:
     (`classify.kinds.resolve_kind`, called with each golden's own `kind_hint`/description/amount/
     account_type) — payments, transfers, and the one `adjustment` row are excluded, and the one
     `refund` row nets in with its negative sign (I11/A7)."""
-    from spend_analyzer.classify.kinds import resolve_kind
+    from personal_finance_analyzer.classify.kinds import resolve_kind
 
     fixtures_dir = Path(__file__).resolve().parent / "fixtures" / "generated"
     total = 0
@@ -55,7 +113,7 @@ def test_migrate_creates_valid_db(home: Path) -> None:
     result = runner.invoke(app, ["migrate"])
     assert result.exit_code == 0, result.output
 
-    db_file = home / "spend.db"
+    db_file = home / "finance.db"
     assert db_file.exists()
 
     engine = make_engine_for_path(db_file)
@@ -229,11 +287,11 @@ def test_doctor_reports_pass_fail_lines(home: Path) -> None:
 def _confirm_command_args(import_output: str) -> list[str]:
     """Parse the `import <path> --user-id ... [--parser-id ...]` command `import_cmd` prints
     after an `awaiting_extractor` result, and return it as the argv `runner.invoke` takes
-    (everything after the leading `spend-analyzer`) — exactly what a terminal user would copy
+    (everything after the leading `pfa`) — exactly what a terminal user would copy
     and run."""
     import re
 
-    match = re.search(r"confirm with:\n\s+spend-analyzer (.+)", import_output)
+    match = re.search(r"confirm with:\n\s+pfa (.+)", import_output)
     assert match is not None, f"no confirm command printed:\n{import_output}"
     return _split_printed_command(match.group(1))
 
@@ -342,7 +400,7 @@ def test_import_builtin_failure_warns_and_prints_llm_retry_command(
     from tests.ingest.test_pipeline import _build_bank_pdf
     from tests.llm_fakes import install
 
-    monkeypatch.setenv("SPEND_ANALYZER_PRIVACY__STORE_PDF_COPIES", "false")
+    monkeypatch.setenv("PFA_PRIVACY__STORE_PDF_COPIES", "false")
     pdf = tmp_path / "both.pdf"
     _build_bank_pdf(
         pdf,
@@ -362,12 +420,12 @@ def test_import_builtin_failure_warns_and_prints_llm_retry_command(
     assert failed.exit_code == 1, failed.output
     assert "both the debit and credit" in failed.output
     assert "warning" in failed.output
-    match = re.search(r"spend-analyzer (import .*--parser-id llm.*)", failed.output)
+    match = re.search(r"pfa (import .*--parser-id llm.*)", failed.output)
     assert match is not None, failed.output
 
-    monkeypatch.setenv("SPEND_ANALYZER_LLM__ENABLED", "true")
-    monkeypatch.setenv("SPEND_ANALYZER_LLM__BASE_URL", "https://api.example.com")
-    monkeypatch.setenv("SPEND_ANALYZER_LLM__MODEL", "m")
+    monkeypatch.setenv("PFA_LLM__ENABLED", "true")
+    monkeypatch.setenv("PFA_LLM__BASE_URL", "https://api.example.com")
+    monkeypatch.setenv("PFA_LLM__MODEL", "m")
     install(monkeypatch).queue(
         json.dumps({"account_type": "checking", "transactions": []})  # empty is fine too
     )

@@ -5,7 +5,12 @@ from __future__ import annotations
 
 import pytest
 
-from spend_analyzer.core.pii import classify_entry, compile_redactor, merge_entries, parse_aliases
+from personal_finance_analyzer.core.pii import (
+    classify_entry,
+    compile_redactor,
+    merge_entries,
+    parse_aliases,
+)
 
 PHONE_FORMATS = [
     "1234567890",

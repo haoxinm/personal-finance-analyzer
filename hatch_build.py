@@ -1,18 +1,18 @@
-"""Hatchling build hook (P4-D): builds the frontend into `src/spend_analyzer/web/` before a
+"""Hatchling build hook (P4-D): builds the frontend into `src/personal_finance_analyzer/web/` before a
 *standard* (non-editable) wheel is built, so that a built wheel/sdist-installed package ships the
-UI (§4 "Built into `src/spend_analyzer/web/` ... production is one process on one port").
+UI (§4 "Built into `src/personal_finance_analyzer/web/` ... production is one process on one port").
 
 Never touches anything under `frontend/**` beyond invoking its own, already-committed `npm`
 scripts (`npm ci`, `npm run build`) as subprocesses — `frontend/vite.config.ts` already points
-`build.outDir` at `../src/spend_analyzer/web` (P1-F), so this hook only decides *when* to run that
+`build.outDir` at `../src/personal_finance_analyzer/web` (P1-F), so this hook only decides *when* to run that
 existing build, not *how*.
 
 Skipped for an editable install (`version == "editable"`, i.e. `uv sync` / `pip install -e .`) so
 day-to-day development never needs `node`/`npm` installed just to sync Python dependencies; the
 API still serves fine without `web/` (`create_app` mounts it only if present, P2-C). Also skipped
-if `SPEND_ANALYZER_SKIP_FRONTEND_BUILD` is set (e.g. a CI job that only needs the sdist, or a
+if `PFA_SKIP_FRONTEND_BUILD` is set (e.g. a CI job that only needs the sdist, or a
 machine intentionally building without Node), or if a prebuilt `web/index.html` already exists and
-`SPEND_ANALYZER_SKIP_FRONTEND_BUILD` is unset but `npm`/`node` are unavailable (a clear warning is
+`PFA_SKIP_FRONTEND_BUILD` is unset but `npm`/`node` are unavailable (a clear warning is
 printed either way, since a wheel built without a warning that silently ships no UI would be
 confusing to debug).
 """
@@ -28,7 +28,7 @@ from hatchling.builders.hooks.plugin.interface import BuildHookInterface
 
 
 class FrontendBuildHook(BuildHookInterface):  # type: ignore[misc]
-    """Runs the frontend's own `npm run build` so its output lands in `src/spend_analyzer/web/`
+    """Runs the frontend's own `npm run build` so its output lands in `src/personal_finance_analyzer/web/`
     ahead of wheel packaging (`[tool.hatch.build.targets.wheel] artifacts` then force-includes
     it, since it is otherwise git-ignored, P1-F)."""
 
@@ -40,11 +40,13 @@ class FrontendBuildHook(BuildHookInterface):  # type: ignore[misc]
 
         root = Path(self.root)
         frontend_dir = root / "frontend"
-        web_dir = root / "src" / "spend_analyzer" / "web"
+        web_dir = root / "src" / "personal_finance_analyzer" / "web"
 
-        if os.environ.get("SPEND_ANALYZER_SKIP_FRONTEND_BUILD"):
+        if os.environ.get("PFA_SKIP_FRONTEND_BUILD") or os.environ.get(
+            "SPEND_ANALYZER_SKIP_FRONTEND_BUILD"  # deprecated name
+        ):
             self.app.display_info(
-                "frontend build hook: SPEND_ANALYZER_SKIP_FRONTEND_BUILD set, skipping "
+                "frontend build hook: PFA_SKIP_FRONTEND_BUILD set, skipping "
                 "`npm run build` (the wheel will not include the web UI)."
             )
             return
@@ -60,7 +62,7 @@ class FrontendBuildHook(BuildHookInterface):  # type: ignore[misc]
         if npm is None:
             self.app.display_warning(
                 "frontend build hook: `npm` not found on PATH; the wheel will not include the "
-                "web UI. Install Node.js/npm, or set SPEND_ANALYZER_SKIP_FRONTEND_BUILD=1 to "
+                "web UI. Install Node.js/npm, or set PFA_SKIP_FRONTEND_BUILD=1 to "
                 "silence this warning."
             )
             return

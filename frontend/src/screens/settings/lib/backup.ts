@@ -1,7 +1,7 @@
 /**
  * Moving all data to another machine: download a backup, restore one.
  *
- *   POST /api/backup/export    body {passphrase, encrypt} -> the .spendbackup file
+ *   POST /api/backup/export    body {passphrase, encrypt} -> the .pfabackup file
  *   POST /api/backup/restore   the raw file as an application/octet-stream body, the passphrase in the
  *                              X-Backup-Passphrase header (base64 of its UTF-8 bytes)
  *                              -> {created_at, counts, migrated, previous_dir}
@@ -27,15 +27,15 @@ export interface RestoreResult {
   previous_dir: string | null;
 }
 
-function readSpendToken(): string | undefined {
+function readPfaToken(): string | undefined {
   if (typeof document === "undefined") return undefined;
-  const meta = document.querySelector('meta[name="spend-token"]');
+  const meta = document.querySelector('meta[name="pfa-token"]');
   return meta?.getAttribute("content") ?? undefined;
 }
 
 function tokenHeaders(): Record<string, string> {
-  const token = readSpendToken();
-  return token ? { "X-Spend-Token": token } : {};
+  const token = readPfaToken();
+  return token ? { "X-PFA-Token": token } : {};
 }
 
 function backupUrl(path: string): string {
@@ -55,9 +55,9 @@ async function readErrorDetail(response: Response): Promise<string> {
   return `${response.status} ${response.statusText}`;
 }
 
-/** `spend-analyzer-YYYY-MM-DD.spendbackup`, matching the CLI's default name. */
+/** `pfa-YYYY-MM-DD.pfabackup`, matching the CLI's default name. */
 export function backupFilename(date: Date = new Date()): string {
-  return `spend-analyzer-${date.toISOString().slice(0, 10)}.spendbackup`;
+  return `pfa-${date.toISOString().slice(0, 10)}.pfabackup`;
 }
 
 /** Asks the backend to build a backup. `passphrase: null` is an explicit "do not encrypt". */

@@ -17,7 +17,7 @@ ignore = [
 ]
 
 [lint.isort]
-known-first-party = ["spend_analyzer"]
+known-first-party = ["personal_finance_analyzer"]
 
 [format]
 quote-style = "double"

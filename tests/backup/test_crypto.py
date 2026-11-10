@@ -5,8 +5,8 @@ import os
 
 import pytest
 
-from spend_analyzer.backup import crypto
-from spend_analyzer.backup.errors import BackupError, BackupFormatError, PassphraseError
+from personal_finance_analyzer.backup import crypto
+from personal_finance_analyzer.backup.errors import BackupError, BackupFormatError, PassphraseError
 
 PASS = "a long enough passphrase"
 SEED = bytes(range(23))

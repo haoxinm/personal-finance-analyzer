@@ -12,7 +12,7 @@ from typing import Any
 import pytest
 from sqlalchemy.orm import Session
 
-from spend_analyzer.analytics.tax_estimate import (
+from personal_finance_analyzer.analytics.tax_estimate import (
     NOT_MODELED,
     EstimateConflict,
     EstimateInputs,
@@ -22,9 +22,9 @@ from spend_analyzer.analytics.tax_estimate import (
     compute,
     run_tax_estimate,
 )
-from spend_analyzer.core import tax_calc
-from spend_analyzer.core.tax_params import FILING_STATUSES, load_bundled
-from spend_analyzer.db.models import TaxProfile
+from personal_finance_analyzer.core import tax_calc
+from personal_finance_analyzer.core.tax_params import FILING_STATUSES, load_bundled
+from personal_finance_analyzer.db.models import TaxProfile
 from tests.analytics.tax_seed import add_form, add_profile, make_user
 
 D = 100

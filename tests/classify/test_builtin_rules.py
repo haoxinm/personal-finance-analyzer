@@ -15,8 +15,8 @@ from __future__ import annotations
 
 from collections import Counter
 
-from spend_analyzer.classify import rules
-from spend_analyzer.ingest.normalize import normalize
+from personal_finance_analyzer.classify import rules
+from personal_finance_analyzer.ingest.normalize import normalize
 
 # --------------------------------------------------------------------------------------------
 # Corpus-level checks.

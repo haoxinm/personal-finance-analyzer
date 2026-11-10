@@ -1,6 +1,6 @@
 # Income and tax analysis
 
-Spend Analyzer can read your W-2, 1099 and Form 1040 PDFs and show what you earned, what was
+Personal Finance Analyzer can read your W-2, 1099 and Form 1040 PDFs and show what you earned, what was
 withheld, what you owed or got back, and your effective tax rate, year by year. It is a second,
 separate import path next to bank and card statements: tax forms are parsed locally by
 deterministic code and stay on your machine. An optional, off-by-default LLM fallback for the
@@ -15,10 +15,10 @@ the [README's privacy model](../README.md#privacy-model).
 ## Getting forms in
 
 ```console
-$ spend-analyzer tax import w2-2024.pdf 1099-composite-2024.pdf return-2024.pdf
+$ pfa tax import w2-2024.pdf 1099-composite-2024.pdf return-2024.pdf
 ```
 
-or use **Income & tax › Import** in the web UI (`spend-analyzer serve`), which uploads the same
+or use **Income & tax › Import** in the web UI (`pfa serve`), which uploads the same
 files (the imported documents are then listed under **Income & tax › Documents**). Import is a single step: there is no preview-and-confirm phase, because there is nothing to
 choose (no issuer, no layout; the optional LLM fallback is a setting, not a step). A file is either recognised and stored, or reported as
 unsupported or unreadable.
@@ -276,7 +276,7 @@ refund of $600, not both at once.
 
 ## The federal tax split is an estimate
 
-The Form 1040 prints one number for income tax (line 16). Spend Analyzer splits it into
+The Form 1040 prints one number for income tax (line 16). Personal Finance Analyzer splits it into
 
 - **tax on ordinary income**, and
 - **tax on qualified dividends and long-term gains** (the preferential part),
@@ -359,8 +359,8 @@ share them, as with two W-2s from one employer) nothing is replaced and the old 
 corrected form and the original would both be counted. Delete the one it replaces:
 
 ```console
-$ spend-analyzer tax list
-$ spend-analyzer tax delete 3
+$ pfa tax list
+$ pfa tax delete 3
 ```
 
 Importing the same file again for the same user does nothing (a parsed document that has lost all
@@ -410,7 +410,7 @@ inputs. The 1040, when there is one, is only a **cross-check** (see below), neve
 planning aid, not tax advice and not a substitute for your return. Everything is local.
 
 ```console
-$ spend-analyzer tax estimate --year 2024 --user-id 1
+$ pfa tax estimate --year 2024 --user-id 1
 ```
 
 or **Income & tax › Estimate** in the web UI (see [In the web UI](#in-the-web-ui)), or
@@ -588,22 +588,22 @@ The app makes no network request for this by default. Two optional files can sit
    (loss limits, NIIT and Additional Medicare thresholds, the senior deduction) unchanged, no year
    far ahead. One violation rejects the whole download; a cached file that fails the checks is
    ignored when parameters are loaded;
-3. **your own file** (`spend-analyzer tax params import FILE`, removed by `tax params clear`) replaces
+3. **your own file** (`pfa tax params import FILE`, removed by `tax params clear`) replaces
    the years it lists (your deliberate correction, or a newer year before a release) and leaves the
    other years alone, so no year can disappear;
 4. an invalid or unreadable optional file is ignored (the bundled data always loads).
 
 **The update check is opt-in and off by default** (`[tax] auto_update_params = false`, the toggle under
-**Settings › Tax parameters**, or `SPEND_ANALYZER_TAX__AUTO_UPDATE_PARAMS=true`). When on, the first estimate or summary
+**Settings › Tax parameters**, or `PFA_TAX__AUTO_UPDATE_PARAMS=true`). When on, the first estimate or summary
 request in a **calendar year** starts one check in a background thread (the page never waits, and a
 network error is ignored with an info log): a plain HTTPS `GET`, no query string, cookies,
 credentials, proxy or user data, of `federal_params.yaml` from this project's GitHub repository
-(`raw.githubusercontent.com/haoxinm/spending-analysis-from-bills/main/src/spend_analyzer/core/tax_data/federal_params.yaml`).
+(`raw.githubusercontent.com/haoxinm/personal-finance-analyzer/main/src/personal_finance_analyzer/core/tax_data/federal_params.yaml`).
 It is accepted only if it passes the same schema validation and adds at least one tax year that is
 not already known, every added year passing the checks above; it is then stored with mode 0600. The date of
 the attempt is recorded *before* the request (in `tax_params/state.json`), whatever the outcome, so
 a machine that is offline is not retried on every page view until the next calendar year.
-`spend-analyzer tax params update` (or `POST /api/tax/parameters/refresh`, the **Check now** button
+`pfa tax params update` (or `POST /api/tax/parameters/refresh`, the **Check now** button
 in Settings › Tax parameters) runs one check on request whatever the setting says, because you asked
 for it, and records the date too. That Settings card also shows the file in effect (source, version,
 last check and its outcome, the tax years covered) and says what the toggle sends: nothing about you. `tax params show` and `GET /api/tax/parameters` report the file in effect, its
@@ -635,7 +635,7 @@ income (enter the taxable amount as other income); and state and local income ta
 
 Off by default. Deterministic parsing always runs first and its results always win. If you have an
 LLM configured (Settings -> LLM) you can additionally tick **Use the LLM for tax forms the built-in
-parsers can't read** (`[ingest] tax_llm_fallback = true`, or `spend-analyzer llm set
+parsers can't read** (`[ingest] tax_llm_fallback = true`, or `pfa llm set
 --tax-llm-fallback`). It then applies only to:
 
 - regions the parsers reported as unreadable (an unrecognised section, a form with a blank key
@@ -643,7 +643,7 @@ parsers can't read** (`[ingest] tax_llm_fallback = true`, or `spend-analyzer llm
 - a whole file nothing could be read from, when it has a text layer and a tax year is printed on it
   (or you pass one).
 
-A parseable file never triggers a request. `spend-analyzer tax import --no-llm` skips it for one run.
+A parseable file never triggers a request. `pfa tax import --no-llm` skips it for one run.
 
 **What is sent.** Only the text of the affected pages (at most 2 pages / 12,000 characters per
 request, at most 12 requests per file), after redaction: SSN / EIN shapes become `***-**-1234` /
@@ -727,7 +727,7 @@ is on the [supported list](#supported-forms): 1040-SR, 1040-NR, 1040-X and state
 read. A row for the file stays in `tax list`; remove it with `tax delete <id>`.
 
 **"Could not determine the tax year for this form."** The year isn't printed where the parser looks
-for it. Supply it: `spend-analyzer tax import --tax-year 2024 form.pdf` (the web UI has a tax year
+for it. Supply it: `pfa tax import --tax-year 2024 form.pdf` (the web UI has a tax year
 field).
 
 **"This tax form could not be read."** The form was recognised, but a required box (for example W-2

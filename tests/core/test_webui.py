@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from spend_analyzer.core.webui import NOT_BUILT_MESSAGE, STALE_MESSAGE, web_ui_warning
+from personal_finance_analyzer.core.webui import NOT_BUILT_MESSAGE, STALE_MESSAGE, web_ui_warning
 
 
 def _checkout(tmp_path: Path) -> tuple[Path, Path]:

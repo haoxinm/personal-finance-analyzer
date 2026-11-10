@@ -17,9 +17,13 @@ from pathlib import Path
 
 import pytest
 
-from spend_analyzer.backup import archive, crypto
-from spend_analyzer.backup.errors import BackupError, BackupFormatError, RestoreTargetError
-from spend_analyzer.db.migrate import upgrade_head
+from personal_finance_analyzer.backup import archive, crypto
+from personal_finance_analyzer.backup.errors import (
+    BackupError,
+    BackupFormatError,
+    RestoreTargetError,
+)
+from personal_finance_analyzer.db.migrate import upgrade_head
 
 from .support import PASSPHRASE, seed_home
 
@@ -27,11 +31,11 @@ _HOUR = 3600
 
 
 def _target(tmp_path: Path) -> Path:
-    return tmp_path / "machine_b" / "SpendAnalyzer"
+    return tmp_path / "machine_b" / "PersonalFinanceAnalyzer"
 
 
 def _backup(tmp_path: Path) -> Path:
-    out = tmp_path / "good.spendbackup"
+    out = tmp_path / "good.pfabackup"
     archive.create_backup(out, passphrase=None)
     return out
 
@@ -59,7 +63,7 @@ def test_manifest_declaring_a_huge_member_is_refused_before_anything_is_written(
             if entry["path"] == archive.DB_MEMBER:
                 entry["size"] = 10**12
 
-    crafted = tmp_path / "huge.spendbackup"
+    crafted = tmp_path / "huge.pfabackup"
     _with_manifest(_backup(tmp_path), crafted, declare_huge)
     target = _target(tmp_path)
     with pytest.raises(BackupFormatError, match="larger than a file in a backup may be"):
@@ -91,7 +95,7 @@ def test_member_that_inflates_past_its_declared_size_is_stopped_at_the_declared_
             if entry["path"] == "specs/my-bank.yaml":
                 entry["size"] = 10
 
-    bomb = tmp_path / "bomb.spendbackup"
+    bomb = tmp_path / "bomb.pfabackup"
     with zipfile.ZipFile(good) as zin, zipfile.ZipFile(bomb, "w", zipfile.ZIP_DEFLATED) as zout:
         for name in zin.namelist():
             data = zin.read(name)
@@ -124,7 +128,7 @@ def test_too_many_members_are_refused(
     source: tuple[Path, dict[str, str]], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     good = _backup(tmp_path)
-    crowded = tmp_path / "crowded.spendbackup"
+    crowded = tmp_path / "crowded.pfabackup"
     with zipfile.ZipFile(good) as zin, zipfile.ZipFile(crowded, "w") as zout:
         for name in zin.namelist():
             zout.writestr(name, zin.read(name))
@@ -189,7 +193,7 @@ def test_export_plaintext_zip_stays_inside_the_data_directory(
         real_encrypt(src, dst, *args, **kw)  # type: ignore[arg-type]
 
     monkeypatch.setattr(crypto, "encrypt_stream", spy)
-    archive.create_backup(tmp_path / "b.spendbackup", passphrase=PASSPHRASE)
+    archive.create_backup(tmp_path / "b.pfabackup", passphrase=PASSPHRASE)
 
     assert len(seen) == 1
     assert home in seen[0].parents
@@ -200,7 +204,7 @@ def test_export_plaintext_zip_stays_inside_the_data_directory(
 def test_inspect_and_restore_use_no_system_temp(
     source: tuple[Path, dict[str, str]], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    sealed = tmp_path / "sealed.spendbackup"
+    sealed = tmp_path / "sealed.pfabackup"
     archive.create_backup(sealed, passphrase=PASSPHRASE)
     system_tmp = tmp_path / "system_tmp"
     system_tmp.mkdir()
@@ -223,7 +227,7 @@ def test_work_dir_is_private_and_cleaned_up_on_error(tmp_path: Path) -> None:
 
 
 def test_work_dir_for_a_missing_home_creates_nothing_inside_it(tmp_path: Path) -> None:
-    home = tmp_path / "fresh" / "SpendAnalyzer"
+    home = tmp_path / "fresh" / "PersonalFinanceAnalyzer"
     with archive.work_dir(home, "inspect") as work:
         assert work.parent == home.parent
     assert not home.exists()
@@ -231,7 +235,7 @@ def test_work_dir_for_a_missing_home_creates_nothing_inside_it(tmp_path: Path) -
 
 
 def test_sibling_work_dir_is_private_and_beside_the_home(tmp_path: Path) -> None:
-    home = tmp_path / "SpendAnalyzer"
+    home = tmp_path / "PersonalFinanceAnalyzer"
     home.mkdir()
     work = archive.make_sibling_work_dir(home, "restore-upload")
     try:
@@ -254,7 +258,7 @@ def _age(path: Path, hours: float) -> None:
 
 
 def test_sweep_removes_old_work_dirs_and_keeps_fresh_ones(tmp_path: Path) -> None:
-    home = tmp_path / "SpendAnalyzer"
+    home = tmp_path / "PersonalFinanceAnalyzer"
     home.mkdir()
     base = home / archive.WORK_DIRNAME
     old_export, fresh_export = base / "export-old", base / "export-new"
@@ -272,7 +276,7 @@ def test_sweep_removes_old_work_dirs_and_keeps_fresh_ones(tmp_path: Path) -> Non
 
 
 def test_sweep_removes_the_scratch_parent_when_it_empties(tmp_path: Path) -> None:
-    home = tmp_path / "SpendAnalyzer"
+    home = tmp_path / "PersonalFinanceAnalyzer"
     (home / archive.WORK_DIRNAME / "backup-aaaa").mkdir(parents=True)
     _age(home / archive.WORK_DIRNAME / "backup-aaaa", 48)
     archive.sweep_stale_work_dirs(home)
@@ -280,7 +284,7 @@ def test_sweep_removes_the_scratch_parent_when_it_empties(tmp_path: Path) -> Non
 
 
 def test_sweep_uses_the_newest_file_so_a_slow_upload_is_not_swept(tmp_path: Path) -> None:
-    home = tmp_path / "SpendAnalyzer"
+    home = tmp_path / "PersonalFinanceAnalyzer"
     work = home / archive.WORK_DIRNAME / "restore-live"
     work.mkdir(parents=True)
     (work / "upload.part").write_bytes(b"still being written")
@@ -290,19 +294,21 @@ def test_sweep_uses_the_newest_file_so_a_slow_upload_is_not_swept(tmp_path: Path
 
 
 def test_sweep_removes_stale_sibling_staging_dirs_but_only_exact_matches(tmp_path: Path) -> None:
-    home = tmp_path / "SpendAnalyzer"
+    home = tmp_path / "PersonalFinanceAnalyzer"
     home.mkdir()
-    stale_stage = tmp_path / ".SpendAnalyzer.restore-ab12cd34"  # a killed restore's staging dir
-    stale_upload = tmp_path / ".SpendAnalyzer.restore-upload-xy98zw76"
-    fresh_stage = tmp_path / ".SpendAnalyzer.restore-fresh123"
+    stale_stage = (
+        tmp_path / ".PersonalFinanceAnalyzer.restore-ab12cd34"
+    )  # a killed restore's staging dir
+    stale_upload = tmp_path / ".PersonalFinanceAnalyzer.restore-upload-xy98zw76"
+    fresh_stage = tmp_path / ".PersonalFinanceAnalyzer.restore-fresh123"
     for d in (stale_stage, stale_upload, fresh_stage):
         (d / "work").mkdir(parents=True)
         (d / "work" / "archive.zip").write_bytes(b"plaintext")
     # Things that merely look similar must never be touched.
     keep = [
-        tmp_path / "SpendAnalyzer.20260101T000000.before-restore",
-        tmp_path / ".SpendAnalyzer.restore-short",
-        tmp_path / ".SpendAnalyzer.restore-ab12cd34.bak",
+        tmp_path / "PersonalFinanceAnalyzer.20260101T000000.before-restore",
+        tmp_path / ".PersonalFinanceAnalyzer.restore-short",
+        tmp_path / ".PersonalFinanceAnalyzer.restore-ab12cd34.bak",
         tmp_path / ".OtherApp.restore-ab12cd34",
         tmp_path / "notes",
     ]
@@ -320,7 +326,7 @@ def test_sweep_removes_stale_sibling_staging_dirs_but_only_exact_matches(tmp_pat
 
 
 def test_sweep_honours_max_age_and_a_fixed_clock(tmp_path: Path) -> None:
-    home = tmp_path / "SpendAnalyzer"
+    home = tmp_path / "PersonalFinanceAnalyzer"
     work = home / archive.WORK_DIRNAME / "export-1"
     work.mkdir(parents=True)
     assert archive.sweep_stale_work_dirs(home) == []
@@ -343,7 +349,7 @@ def test_next_backup_operation_sweeps_a_crashed_ones_leftovers(
     (stage / "work" / "archive.zip").write_bytes(b"PK plaintext")
     _age(stage, 24)
 
-    archive.create_backup(tmp_path / "b.spendbackup", passphrase=None)
+    archive.create_backup(tmp_path / "b.pfabackup", passphrase=None)
 
     assert not leftover.exists()
     assert not stage.exists()
@@ -360,22 +366,22 @@ def test_restore_sweeps_a_crashed_restores_staging_dir(
     _age(stale, 24)
     archive.restore_backup(good, passphrase=None, home=target)
     assert not stale.exists()
-    assert (target / "spend.db").is_file()
+    assert (target / "finance.db").is_file()
 
 
 def test_app_start_sweeps_stale_work_dirs(
     source: tuple[Path, dict[str, str]], tmp_path: Path
 ) -> None:
-    from spend_analyzer.api.app import create_app
-    from spend_analyzer.config import Settings
-    from spend_analyzer.db.session import make_engine_for_path
+    from personal_finance_analyzer.api.app import create_app
+    from personal_finance_analyzer.config import Settings
+    from personal_finance_analyzer.db.session import make_engine_for_path
 
     home, _ = source
     leftover = home / archive.WORK_DIRNAME / "export-crashed"
     leftover.mkdir(parents=True)
-    (leftover / "x.spendbackup").write_bytes(b"PK")
+    (leftover / "x.pfabackup").write_bytes(b"PK")
     _age(leftover, 24)
-    engine = make_engine_for_path(home / "spend.db")
+    engine = make_engine_for_path(home / "finance.db")
     try:
         create_app(engine=engine, settings=Settings(), token="t", web_dir=tmp_path / "no-web")
     finally:
@@ -404,7 +410,7 @@ def _rollback_db(path: Path) -> None:
 
 
 def test_idle_database_is_not_in_use(tmp_path: Path) -> None:
-    db = tmp_path / "spend.db"
+    db = tmp_path / "finance.db"
     _rollback_db(db)
     assert archive._db_in_use(db) is False
     assert archive._db_in_use(tmp_path / "missing.db") is False
@@ -413,7 +419,7 @@ def test_idle_database_is_not_in_use(tmp_path: Path) -> None:
 def test_rollback_journal_database_in_a_transaction_is_in_use(tmp_path: Path) -> None:
     """No `-wal`/`-shm` sidecars exist in rollback-journal mode, so the old check saw nothing; the
     lock probe sees another process in the middle of a transaction."""
-    db = tmp_path / "spend.db"
+    db = tmp_path / "finance.db"
     _rollback_db(db)
     server = sqlite3.connect(db, isolation_level=None)
     try:
@@ -427,7 +433,7 @@ def test_rollback_journal_database_in_a_transaction_is_in_use(tmp_path: Path) ->
 
 
 def test_rollback_journal_database_being_read_is_in_use(tmp_path: Path) -> None:
-    db = tmp_path / "spend.db"
+    db = tmp_path / "finance.db"
     _rollback_db(db)
     reader = sqlite3.connect(db, isolation_level=None)
     try:
@@ -445,10 +451,10 @@ def test_restore_refuses_a_database_locked_in_rollback_mode(
     good = _backup(tmp_path)
     target = _target(tmp_path)
     seed_home(target)
-    _rollback_db_in_place = sqlite3.connect(target / "spend.db")
+    _rollback_db_in_place = sqlite3.connect(target / "finance.db")
     _rollback_db_in_place.execute("PRAGMA journal_mode=DELETE")
     _rollback_db_in_place.close()
-    server = sqlite3.connect(target / "spend.db", isolation_level=None)
+    server = sqlite3.connect(target / "finance.db", isolation_level=None)
     server.execute("BEGIN EXCLUSIVE")
     try:
         with pytest.raises(RestoreTargetError, match="open in another process"):

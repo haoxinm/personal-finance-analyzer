@@ -8,11 +8,15 @@
  * artifact/browser-storage rule this app follows generally: storage failures never break render.
  */
 
-const SKIP_CONFIRM_KEY = "spend-analyzer:import:skip-confirm-issuer-ids";
+import { readWithLegacy } from "@/lib/local-storage";
+
+const SKIP_CONFIRM_KEY = "pfa:import:skip-confirm-issuer-ids";
+/** The key before the app was renamed; read once and moved (see `readWithLegacy`). */
+const LEGACY_SKIP_CONFIRM_KEY = "spend-analyzer:import:skip-confirm-issuer-ids";
 
 function readSkipConfirmIds(): number[] {
   try {
-    const raw = window.localStorage.getItem(SKIP_CONFIRM_KEY);
+    const raw = readWithLegacy(SKIP_CONFIRM_KEY, LEGACY_SKIP_CONFIRM_KEY);
     if (!raw) return [];
     const parsed: unknown = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];

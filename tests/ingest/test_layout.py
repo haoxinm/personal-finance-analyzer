@@ -6,9 +6,9 @@ from pathlib import Path
 import pdfplumber
 import pytest
 
-from spend_analyzer.core.errors import ParserError
-from spend_analyzer.core.types import ExtractedDoc, PageText, Word
-from spend_analyzer.ingest.layout import (
+from personal_finance_analyzer.core.errors import ParserError
+from personal_finance_analyzer.core.types import ExtractedDoc, PageText, Word
+from personal_finance_analyzer.ingest.layout import (
     Band,
     Row,
     assign_to_bands,

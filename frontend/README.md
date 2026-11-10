@@ -1,4 +1,4 @@
-# Spend Analyzer — frontend
+# Personal Finance Analyzer — frontend
 
 Vite + React 18 + TypeScript. Owned by work package P1-F (`frontend/**`, except
 `frontend/src/screens/**`, which Phase 3 owns per screen).
@@ -8,7 +8,7 @@ Vite + React 18 + TypeScript. Owned by work package P1-F (`frontend/**`, except
 ```
 npm install
 npm run dev          # Vite dev server; proxies /api -> http://127.0.0.1:8756
-npm run build        # emits to ../src/spend_analyzer/web/ (served by FastAPI in production)
+npm run build        # emits to ../src/personal_finance_analyzer/web/ (served by FastAPI in production)
 npm run typecheck
 npm run lint
 npm run test

@@ -5,8 +5,8 @@ from __future__ import annotations
 
 import pytest
 
-from spend_analyzer.ingest.layout import cluster_rows
-from spend_analyzer.ingest.tax.normalize import normalize_doc
+from personal_finance_analyzer.ingest.layout import cluster_rows
+from personal_finance_analyzer.ingest.tax.normalize import normalize_doc
 from tests.ingest.tax_support import doc_from_lines, doc_from_pages
 
 

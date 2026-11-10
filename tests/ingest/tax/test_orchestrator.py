@@ -8,9 +8,9 @@ import re
 
 import pytest
 
-from spend_analyzer.core.errors import ParserError, UnsupportedLayoutError
-from spend_analyzer.core.tax_types import ParsedTaxDocument
-from spend_analyzer.ingest.tax.orchestrator import parse_document
+from personal_finance_analyzer.core.errors import ParserError, UnsupportedLayoutError
+from personal_finance_analyzer.core.tax_types import ParsedTaxDocument
+from personal_finance_analyzer.ingest.tax.orchestrator import parse_document
 from tests.ingest.tax_support import (
     GOLDEN_DIR,
     assert_matches_golden,

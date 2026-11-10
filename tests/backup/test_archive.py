@@ -10,16 +10,16 @@ from pathlib import Path
 import pytest
 from alembic import command
 
-from spend_analyzer import config as config_module
-from spend_analyzer.backup import archive, crypto
-from spend_analyzer.backup.errors import (
+from personal_finance_analyzer import config as config_module
+from personal_finance_analyzer.backup import archive, crypto
+from personal_finance_analyzer.backup.errors import (
     BackupError,
     BackupFormatError,
     PassphraseError,
     RestoreTargetError,
     SchemaTooNewError,
 )
-from spend_analyzer.db.migrate import build_alembic_config
+from personal_finance_analyzer.db.migrate import build_alembic_config
 
 from .support import (
     CONFIG_TOML,
@@ -52,7 +52,7 @@ _ALL_TABLES = (
 
 
 def _target(tmp_path: Path) -> Path:
-    return tmp_path / "machine_b" / "SpendAnalyzer"
+    return tmp_path / "machine_b" / "PersonalFinanceAnalyzer"
 
 
 def _rewrite_zip(src: Path, dest: Path, change: dict[str, bytes | None]) -> None:
@@ -88,7 +88,7 @@ def test_round_trip_reproduces_rows_and_files(
     source: tuple[Path, dict[str, str]], tmp_path: Path
 ) -> None:
     home_a, shas = source
-    backup = tmp_path / "all.spendbackup"
+    backup = tmp_path / "all.pfabackup"
     manifest = archive.create_backup(backup, passphrase=PASSPHRASE)
     assert manifest.counts == {
         "users": 1,
@@ -105,8 +105,8 @@ def test_round_trip_reproduces_rows_and_files(
     assert not result.migrated
 
     for table in _ALL_TABLES:
-        assert table_rows(home_b / "spend.db", table, skip=("stored_path",)) == table_rows(
-            home_a / "spend.db", table, skip=("stored_path",)
+        assert table_rows(home_b / "finance.db", table, skip=("stored_path",)) == table_rows(
+            home_a / "finance.db", table, skip=("stored_path",)
         ), table
     for sha in shas.values():
         name = f"{sha}.pdf"
@@ -118,25 +118,123 @@ def test_round_trip_reproduces_rows_and_files(
         assert (home_b / sub).is_dir()
 
 
+def _make_legacy_archive(src: Path, dest: Path) -> None:
+    """Rewrite a new-format archive the way the app wrote it before it was renamed: the old
+    manifest `format` and the database under `db/spend.db`."""
+    manifest = _manifest_of(src)
+    manifest["format"] = archive.LEGACY_FORMAT_NAME
+    for entry in manifest["files"]:  # type: ignore[attr-defined]
+        if entry["path"] == archive.DB_MEMBER:
+            entry["path"] = archive.LEGACY_DB_MEMBER
+    with zipfile.ZipFile(src) as zf:
+        database = zf.read(archive.DB_MEMBER)
+    _rewrite_zip(
+        src,
+        dest,
+        {
+            archive.MANIFEST_NAME: json.dumps(manifest).encode(),
+            archive.DB_MEMBER: None,
+            archive.LEGACY_DB_MEMBER: database,
+        },
+    )
+
+
+def test_new_archives_use_the_new_names(
+    source: tuple[Path, dict[str, str]], tmp_path: Path
+) -> None:
+    backup = tmp_path / archive.default_filename()
+    archive.create_backup(backup, passphrase=None)
+    assert backup.suffix == ".pfabackup"
+    manifest = _manifest_of(backup)
+    assert manifest["format"] == "personal-finance-analyzer-backup"
+    assert {f["path"] for f in manifest["files"]} >= {"db/finance.db"}  # type: ignore[attr-defined]
+    with zipfile.ZipFile(backup) as zf:
+        assert "db/spend.db" not in zf.namelist()
+
+
+def test_legacy_archive_is_inspected_and_restored(
+    source: tuple[Path, dict[str, str]], tmp_path: Path
+) -> None:
+    home_a, shas = source
+    current = tmp_path / "current.pfabackup"
+    archive.create_backup(current, passphrase=None)
+    legacy = tmp_path / "mine.spendbackup"
+    _make_legacy_archive(current, legacy)
+
+    info = archive.inspect_backup(legacy)
+    assert archive.database_member(info.manifest) == "db/spend.db"
+    assert info.manifest.counts["transactions"] == 1
+
+    home_b = _target(tmp_path)
+    result = archive.restore_backup(legacy, passphrase=None, home=home_b)
+    assert not result.migrated
+    assert (home_b / "finance.db").is_file()
+    assert not (home_b / "spend.db").exists()
+    assert not (home_b / "db").exists()
+    assert table_rows(home_b / "finance.db", "transactions", skip=("stored_path",)) == table_rows(
+        home_a / "finance.db", "transactions", skip=("stored_path",)
+    )
+    assert (home_b / "statements" / f"{shas['statement_sha']}.pdf").is_file()
+
+
+def test_manifest_listing_both_database_members_is_rejected(
+    source: tuple[Path, dict[str, str]], tmp_path: Path
+) -> None:
+    current = tmp_path / "current.pfabackup"
+    archive.create_backup(current, passphrase=None)
+    manifest = _manifest_of(current)
+    with zipfile.ZipFile(current) as zf:
+        database = zf.read(archive.DB_MEMBER)
+    manifest["files"].append(  # type: ignore[attr-defined]
+        {
+            **next(f for f in manifest["files"] if f["path"] == archive.DB_MEMBER),  # type: ignore[attr-defined]
+            "path": archive.LEGACY_DB_MEMBER,
+        }
+    )
+    bad = tmp_path / "both.pfabackup"
+    _rewrite_zip(
+        current,
+        bad,
+        {archive.MANIFEST_NAME: json.dumps(manifest).encode(), archive.LEGACY_DB_MEMBER: database},
+    )
+    with pytest.raises(BackupFormatError, match="more than one database"):
+        archive.inspect_backup(bad)
+
+
+def test_backup_of_a_data_dir_that_still_has_spend_db(
+    source: tuple[Path, dict[str, str]], tmp_path: Path
+) -> None:
+    home_a, _shas = source
+    (home_a / "finance.db").rename(home_a / "spend.db")
+    backup = tmp_path / "from-old-layout.pfabackup"
+    manifest = archive.create_backup(backup, passphrase=None)
+    assert manifest.counts["transactions"] == 1
+    assert (
+        archive.database_member(manifest) == archive.DB_MEMBER
+    )  # always written under the new name
+
+
 def test_stored_paths_point_into_the_new_home(
     source: tuple[Path, dict[str, str]], tmp_path: Path
 ) -> None:
     home_a, shas = source
     # A backup made on Windows holds backslash paths; one whose PDF was not kept holds a path too.
-    con = sqlite3.connect(home_a / "spend.db")
+    con = sqlite3.connect(home_a / "finance.db")
     con.execute(
         "UPDATE statements SET stored_path = ?",
-        (rf"C:\Users\x\AppData\Local\SpendAnalyzer\statements\{shas['statement_sha']}.pdf",),
+        (
+            rf"C:\Users\x\AppData\Local\PersonalFinanceAnalyzer\statements\{shas['statement_sha']}.pdf",
+        ),
     )
     con.execute("UPDATE tax_documents SET stored_path = '/old/machine/statements/missing.pdf'")
     con.commit()
     con.close()
-    backup = tmp_path / "all.spendbackup"
+    backup = tmp_path / "all.pfabackup"
     archive.create_backup(backup, passphrase=None)
 
     home_b = _target(tmp_path)
     archive.restore_backup(backup, passphrase=None, home=home_b)
-    db = home_b / "spend.db"
+    db = home_b / "finance.db"
     assert table_rows(db, "statements")[0][
         table_columns(db, "statements").index("stored_path")
     ] == str(home_b / "statements" / f"{shas['statement_sha']}.pdf")
@@ -150,8 +248,8 @@ def test_archive_holds_only_allow_listed_members_and_no_secrets(
     source: tuple[Path, dict[str, str]], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _, shas = source
-    monkeypatch.setenv("SPEND_ANALYZER_LLM_API_KEY", "sk-env-secret")
-    keychain = {("spend-analyzer", "llm:llm.example.com"): SECRET_API_KEY}
+    monkeypatch.setenv("PFA_LLM_API_KEY", "sk-env-secret")
+    keychain = {("personal-finance-analyzer", "llm:llm.example.com"): SECRET_API_KEY}
     reads: list[str] = []
 
     def fake_get_password(service: str, account: str) -> str | None:
@@ -159,7 +257,7 @@ def test_archive_holds_only_allow_listed_members_and_no_secrets(
         return keychain.get((service, account))
 
     monkeypatch.setattr(config_module.keyring, "get_password", fake_get_password)
-    backup = tmp_path / "plain.spendbackup"
+    backup = tmp_path / "plain.pfabackup"
     archive.create_backup(backup, passphrase=None)
     assert reads == []  # a backup never even asks the keychain
 
@@ -169,7 +267,7 @@ def test_archive_holds_only_allow_listed_members_and_no_secrets(
         config = zf.read("config.toml").decode()
     assert names == {
         "manifest.json",
-        "db/spend.db",
+        "db/finance.db",
         "config.toml",
         "specs/my-bank.yaml",
         f"statements/{shas['statement_sha']}.pdf",
@@ -196,26 +294,26 @@ def test_snapshot_drops_jobs_but_keeps_everything_else(
     source: tuple[Path, dict[str, str]], tmp_path: Path
 ) -> None:
     home_a, _ = source
-    backup = tmp_path / "plain.spendbackup"
+    backup = tmp_path / "plain.pfabackup"
     archive.create_backup(backup, passphrase=None)
     home_b = _target(tmp_path)
     archive.restore_backup(backup, passphrase=None, home=home_b)
-    assert table_rows(home_a / "spend.db", "jobs")  # the live DB still has its queued job
-    assert table_rows(home_b / "spend.db", "jobs") == []
+    assert table_rows(home_a / "finance.db", "jobs")  # the live DB still has its queued job
+    assert table_rows(home_b / "finance.db", "jobs") == []
 
 
 def test_snapshot_is_consistent_while_a_writer_is_open(
     source: tuple[Path, dict[str, str]], tmp_path: Path
 ) -> None:
     home_a, _ = source
-    writer = sqlite3.connect(home_a / "spend.db")
+    writer = sqlite3.connect(home_a / "finance.db")
     writer.execute("PRAGMA journal_mode=WAL")
     writer.execute("BEGIN IMMEDIATE")
     writer.execute(
         "INSERT INTO users (name, is_default, pii_aliases, created_at) VALUES ('Z', 0, '[]', 'x')"
     )
     try:
-        backup = tmp_path / "plain.spendbackup"
+        backup = tmp_path / "plain.pfabackup"
         manifest = archive.create_backup(backup, passphrase=None)
     finally:
         writer.rollback()
@@ -226,7 +324,7 @@ def test_snapshot_is_consistent_while_a_writer_is_open(
 def test_inspect_reports_manifest_without_extracting(
     source: tuple[Path, dict[str, str]], tmp_path: Path
 ) -> None:
-    backup = tmp_path / "all.spendbackup"
+    backup = tmp_path / "all.pfabackup"
     archive.create_backup(backup, passphrase=PASSPHRASE)
     with pytest.raises(PassphraseError, match="passphrase is required"):
         archive.inspect_backup(backup)
@@ -235,14 +333,14 @@ def test_inspect_reports_manifest_without_extracting(
     assert info.manifest.schema_revision == archive.head_revision()
     assert info.manifest.format_version == archive.FORMAT_VERSION
     assert info.manifest.counts["transactions"] == 1
-    assert {f.path for f in info.manifest.files} >= {"db/spend.db", "config.toml"}
+    assert {f.path for f in info.manifest.files} >= {"db/finance.db", "config.toml"}
     assert not _target(tmp_path).exists()
 
 
 def test_wrong_passphrase_leaves_target_untouched(
     source: tuple[Path, dict[str, str]], tmp_path: Path
 ) -> None:
-    backup = tmp_path / "all.spendbackup"
+    backup = tmp_path / "all.pfabackup"
     archive.create_backup(backup, passphrase=PASSPHRASE)
     home_b = _target(tmp_path)
     seed_home(home_b)
@@ -262,9 +360,9 @@ def test_tampered_member_is_rejected_by_hash(
     source: tuple[Path, dict[str, str]], tmp_path: Path
 ) -> None:
     _, shas = source
-    good = tmp_path / "good.spendbackup"
+    good = tmp_path / "good.pfabackup"
     archive.create_backup(good, passphrase=None)
-    tampered = tmp_path / "tampered.spendbackup"
+    tampered = tmp_path / "tampered.pfabackup"
     _rewrite_zip(
         good, tampered, {f"statements/{shas['statement_sha']}.pdf": b"%PDF-1.4 swapped content"}
     )
@@ -279,10 +377,10 @@ def test_tampered_member_is_rejected_by_hash(
 
 
 def test_tampered_database_is_rejected(source: tuple[Path, dict[str, str]], tmp_path: Path) -> None:
-    good = tmp_path / "good.spendbackup"
+    good = tmp_path / "good.pfabackup"
     archive.create_backup(good, passphrase=None)
-    tampered = tmp_path / "tampered.spendbackup"
-    _rewrite_zip(good, tampered, {"db/spend.db": b"SQLite format 3\x00 garbage"})
+    tampered = tmp_path / "tampered.pfabackup"
+    _rewrite_zip(good, tampered, {"db/finance.db": b"SQLite format 3\x00 garbage"})
     with pytest.raises(BackupFormatError, match="hash mismatch"):
         archive.restore_backup(tampered, passphrase=None, home=_target(tmp_path))
 
@@ -290,7 +388,7 @@ def test_tampered_database_is_rejected(source: tuple[Path, dict[str, str]], tmp_
 def test_modified_encrypted_archive_is_rejected(
     source: tuple[Path, dict[str, str]], tmp_path: Path
 ) -> None:
-    backup = tmp_path / "all.spendbackup"
+    backup = tmp_path / "all.pfabackup"
     archive.create_backup(backup, passphrase=PASSPHRASE)
     blob = bytearray(backup.read_bytes())
     blob[len(blob) // 2] ^= 0xFF
@@ -302,7 +400,7 @@ def test_modified_encrypted_archive_is_rejected(
 
 def test_truncated_archive_is_rejected(source: tuple[Path, dict[str, str]], tmp_path: Path) -> None:
     for passphrase in (None, PASSPHRASE):
-        backup = tmp_path / f"{bool(passphrase)}.spendbackup"
+        backup = tmp_path / f"{bool(passphrase)}.pfabackup"
         archive.create_backup(backup, passphrase=passphrase)
         backup.write_bytes(backup.read_bytes()[:-200])
         with pytest.raises(BackupError):
@@ -311,7 +409,7 @@ def test_truncated_archive_is_rejected(source: tuple[Path, dict[str, str]], tmp_
 
 
 def test_not_a_backup_file(tmp_path: Path) -> None:
-    junk = tmp_path / "junk.spendbackup"
+    junk = tmp_path / "junk.pfabackup"
     junk.write_bytes(b"hello")
     with pytest.raises(BackupFormatError):
         archive.inspect_backup(junk)
@@ -325,7 +423,7 @@ def test_not_a_backup_file(tmp_path: Path) -> None:
 def test_hostile_member_names_are_rejected(
     source: tuple[Path, dict[str, str]], tmp_path: Path
 ) -> None:
-    good = tmp_path / "good.spendbackup"
+    good = tmp_path / "good.pfabackup"
     archive.create_backup(good, passphrase=None)
     manifest = _manifest_of(good)
     for evil in ("../evil.txt", "statements/../../evil.txt", "/abs/evil.txt", "statements\\x.pdf"):
@@ -333,7 +431,7 @@ def test_hostile_member_names_are_rejected(
         files = list(manifest["files"])  # type: ignore[call-overload]
         files.append({"path": evil, "size": 1, "sha256": "0" * 64})
         doc["files"] = files
-        hostile = tmp_path / "hostile.spendbackup"
+        hostile = tmp_path / "hostile.pfabackup"
         _rewrite_zip(good, hostile, {archive.MANIFEST_NAME: json.dumps(doc).encode(), evil: b"x"})
         with pytest.raises(BackupFormatError, match="unexpected file"):
             archive.restore_backup(hostile, passphrase=None, home=_target(tmp_path))
@@ -344,9 +442,9 @@ def test_hostile_member_names_are_rejected(
 def test_member_missing_from_manifest_is_rejected(
     source: tuple[Path, dict[str, str]], tmp_path: Path
 ) -> None:
-    good = tmp_path / "good.spendbackup"
+    good = tmp_path / "good.pfabackup"
     archive.create_backup(good, passphrase=None)
-    smuggled = tmp_path / "smuggled.spendbackup"
+    smuggled = tmp_path / "smuggled.pfabackup"
     _rewrite_zip(good, smuggled, {"specs/extra.yaml": b"x: 1"})
     with pytest.raises(BackupFormatError, match="do not match its manifest"):
         archive.restore_backup(smuggled, passphrase=None, home=_target(tmp_path))
@@ -355,13 +453,13 @@ def test_member_missing_from_manifest_is_rejected(
 def test_member_larger_than_declared_is_aborted(
     source: tuple[Path, dict[str, str]], tmp_path: Path
 ) -> None:
-    good = tmp_path / "good.spendbackup"
+    good = tmp_path / "good.pfabackup"
     archive.create_backup(good, passphrase=None)
     manifest = _manifest_of(good)
     for entry in manifest["files"]:  # type: ignore[attr-defined]
         if entry["path"] == "specs/my-bank.yaml":
             entry["size"] = 2
-    bomb = tmp_path / "bomb.spendbackup"
+    bomb = tmp_path / "bomb.pfabackup"
     _rewrite_zip(
         good,
         bomb,
@@ -374,11 +472,11 @@ def test_member_larger_than_declared_is_aborted(
 def test_newer_format_version_is_refused(
     source: tuple[Path, dict[str, str]], tmp_path: Path
 ) -> None:
-    good = tmp_path / "good.spendbackup"
+    good = tmp_path / "good.pfabackup"
     archive.create_backup(good, passphrase=None)
     manifest = _manifest_of(good)
     manifest["format_version"] = archive.FORMAT_VERSION + 1
-    future = tmp_path / "future.spendbackup"
+    future = tmp_path / "future.pfabackup"
     _rewrite_zip(good, future, {archive.MANIFEST_NAME: json.dumps(manifest).encode()})
     with pytest.raises(BackupFormatError, match="newer than this version"):
         archive.inspect_backup(future)
@@ -387,7 +485,7 @@ def test_newer_format_version_is_refused(
 def test_non_empty_target_refused_without_replace(
     source: tuple[Path, dict[str, str]], tmp_path: Path
 ) -> None:
-    backup = tmp_path / "all.spendbackup"
+    backup = tmp_path / "all.pfabackup"
     archive.create_backup(backup, passphrase=None)
     home_b = _target(tmp_path)
     seed_home(home_b)
@@ -402,7 +500,7 @@ def test_non_empty_target_refused_without_replace(
 def test_replace_moves_old_dir_aside_and_keeps_it(
     source: tuple[Path, dict[str, str]], tmp_path: Path
 ) -> None:
-    backup = tmp_path / "all.spendbackup"
+    backup = tmp_path / "all.pfabackup"
     archive.create_backup(backup, passphrase=None)
     home_b = _target(tmp_path)
     seed_home(home_b)
@@ -417,13 +515,13 @@ def test_replace_moves_old_dir_aside_and_keeps_it(
     assert result.previous_dir.name.endswith(".before-restore")
     assert tree(result.previous_dir) == before
     assert not (home_b / "specs" / "only-on-b.yaml").exists()
-    assert (home_b / "spend.db").is_file()
+    assert (home_b / "finance.db").is_file()
 
 
 def test_two_replaces_in_one_second_do_not_collide(
     source: tuple[Path, dict[str, str]], tmp_path: Path
 ) -> None:
-    backup = tmp_path / "all.spendbackup"
+    backup = tmp_path / "all.pfabackup"
     archive.create_backup(backup, passphrase=None)
     home_b = _target(tmp_path)
     first = archive.restore_backup(backup, passphrase=None, home=home_b)
@@ -438,31 +536,31 @@ def test_two_replaces_in_one_second_do_not_collide(
 def test_fresh_empty_dirs_do_not_count_as_data(
     source: tuple[Path, dict[str, str]], tmp_path: Path
 ) -> None:
-    from spend_analyzer.core.paths import create_home_layout
+    from personal_finance_analyzer.core.paths import create_home_layout
 
-    backup = tmp_path / "all.spendbackup"
+    backup = tmp_path / "all.pfabackup"
     archive.create_backup(backup, passphrase=None)
     home_b = _target(tmp_path)
     create_home_layout(home_b)  # what `ensure_home()` leaves on a machine that never ran anything
     result = archive.restore_backup(backup, passphrase=None, home=home_b)
     assert result.previous_dir is None
-    assert (home_b / "spend.db").is_file()
+    assert (home_b / "finance.db").is_file()
 
 
 def test_database_open_elsewhere_blocks_replace(
     source: tuple[Path, dict[str, str]], tmp_path: Path
 ) -> None:
-    backup = tmp_path / "all.spendbackup"
+    backup = tmp_path / "all.pfabackup"
     archive.create_backup(backup, passphrase=None)
     home_b = _target(tmp_path)
     seed_home(home_b)
-    server = sqlite3.connect(home_b / "spend.db")  # stands in for a running `serve`
+    server = sqlite3.connect(home_b / "finance.db")  # stands in for a running `serve`
     server.execute("PRAGMA journal_mode=WAL")
     server.execute("SELECT COUNT(*) FROM users").fetchone()
     try:
         with pytest.raises(RestoreTargetError, match="open in another process"):
             archive.restore_backup(backup, passphrase=None, replace=True, home=home_b)
-        assert (home_b / "spend.db").is_file()
+        assert (home_b / "finance.db").is_file()
         assert [p.name for p in home_b.parent.iterdir()] == [home_b.name]
     finally:
         server.close()
@@ -472,7 +570,7 @@ def test_database_open_elsewhere_blocks_replace(
 def test_before_swap_failure_aborts_cleanly(
     source: tuple[Path, dict[str, str]], tmp_path: Path
 ) -> None:
-    backup = tmp_path / "all.spendbackup"
+    backup = tmp_path / "all.pfabackup"
     archive.create_backup(backup, passphrase=None)
     home_b = _target(tmp_path)
     seed_home(home_b)
@@ -491,12 +589,12 @@ def test_before_swap_failure_aborts_cleanly(
 
 def _make_old_schema_home(home: Path) -> None:
     """A data directory whose database was last migrated at 0005, before the provenance columns."""
-    from spend_analyzer.core.paths import create_home_layout
+    from personal_finance_analyzer.core.paths import create_home_layout
 
     create_home_layout(home)
-    url = f"sqlite:///{home / 'spend.db'}"
+    url = f"sqlite:///{home / 'finance.db'}"
     command.upgrade(build_alembic_config(url), "0005_balance_entries")
-    con = sqlite3.connect(home / "spend.db")
+    con = sqlite3.connect(home / "finance.db")
     con.execute(
         "INSERT INTO users (name, is_default, pii_aliases, created_at) "
         "VALUES ('Old User', 1, '[]', 'then')"
@@ -508,7 +606,7 @@ def _make_old_schema_home(home: Path) -> None:
 def test_older_schema_is_migrated_on_restore(tmp_path: Path) -> None:
     old = tmp_path / "old_machine"
     _make_old_schema_home(old)
-    backup = tmp_path / "old.spendbackup"
+    backup = tmp_path / "old.pfabackup"
     manifest = archive.create_backup(backup, passphrase=None, home=old)
     assert manifest.schema_revision == "0005_balance_entries"
 
@@ -516,7 +614,7 @@ def test_older_schema_is_migrated_on_restore(tmp_path: Path) -> None:
     result = archive.restore_backup(backup, passphrase=None, home=home_b)
 
     assert result.migrated
-    db = home_b / "spend.db"
+    db = home_b / "finance.db"
     assert "extraction_method" in table_columns(db, "tax_forms")  # added by 0006
     revisions = table_rows(db, "alembic_version")
     assert revisions == [(archive.head_revision(),)]
@@ -528,17 +626,19 @@ def test_newer_schema_is_refused_with_clear_message(
     source: tuple[Path, dict[str, str]], tmp_path: Path
 ) -> None:
     home_a, _ = source
-    con = sqlite3.connect(home_a / "spend.db")
+    con = sqlite3.connect(home_a / "finance.db")
     con.execute("UPDATE alembic_version SET version_num = '0099_from_the_future'")
     con.commit()
     con.close()
-    backup = tmp_path / "future.spendbackup"
+    backup = tmp_path / "future.pfabackup"
     archive.create_backup(backup, passphrase=None)
 
     home_b = _target(tmp_path)
     seed_home(home_b)
     before = tree(home_b)
-    with pytest.raises(SchemaTooNewError, match="newer than this version of Spend Analyzer"):
+    with pytest.raises(
+        SchemaTooNewError, match="newer than this version of Personal Finance Analyzer"
+    ):
         archive.restore_backup(backup, passphrase=None, replace=True, home=home_b)
     assert tree(home_b) == before
     assert [p.name for p in home_b.parent.iterdir()] == [home_b.name]
@@ -548,19 +648,19 @@ def test_create_requires_a_database_and_a_real_passphrase(tmp_path: Path) -> Non
     empty = tmp_path / "empty"
     empty.mkdir()
     with pytest.raises(BackupError, match="nothing to back up"):
-        archive.create_backup(tmp_path / "x.spendbackup", passphrase=None, home=empty)
+        archive.create_backup(tmp_path / "x.pfabackup", passphrase=None, home=empty)
     home = tmp_path / "h"
     seed_home(home)
     with pytest.raises(BackupError, match="at least"):
-        archive.create_backup(tmp_path / "x.spendbackup", passphrase="short", home=home)
-    assert not (tmp_path / "x.spendbackup").exists()
+        archive.create_backup(tmp_path / "x.pfabackup", passphrase="short", home=home)
+    assert not (tmp_path / "x.pfabackup").exists()
 
 
 def test_create_failure_leaves_no_partial_file(tmp_path: Path) -> None:
     home = tmp_path / "h"
     seed_home(home)
     (home / "config.toml").write_text("this is [not valid toml", encoding="utf-8")
-    dest = tmp_path / "out.spendbackup"
+    dest = tmp_path / "out.pfabackup"
     with pytest.raises(BackupError, match="not valid TOML"):
         archive.create_backup(dest, passphrase=None, home=home)
     assert list(tmp_path.glob("out.*")) == []
@@ -570,7 +670,7 @@ def test_config_without_llm_section_round_trips(tmp_path: Path) -> None:
     home = tmp_path / "h"
     seed_home(home)
     (home / "config.toml").write_text("[server]\nport = 9000\n", encoding="utf-8")
-    backup = tmp_path / "b.spendbackup"
+    backup = tmp_path / "b.pfabackup"
     archive.create_backup(backup, passphrase=None, home=home)
     target = _target(tmp_path)
     archive.restore_backup(backup, passphrase=None, home=target)
@@ -580,11 +680,11 @@ def test_config_without_llm_section_round_trips(tmp_path: Path) -> None:
 def test_restored_database_and_description_survive(
     source: tuple[Path, dict[str, str]], tmp_path: Path
 ) -> None:
-    backup = tmp_path / "b.spendbackup"
+    backup = tmp_path / "b.pfabackup"
     archive.create_backup(backup, passphrase=PASSPHRASE)
     home_b = _target(tmp_path)
     archive.restore_backup(backup, passphrase=PASSPHRASE, home=home_b)
-    con = sqlite3.connect(home_b / "spend.db")
+    con = sqlite3.connect(home_b / "finance.db")
     try:
         assert con.execute("SELECT name FROM users").fetchone() == (USER_NAME,)
         assert con.execute("SELECT description_raw FROM transactions").fetchone() == (DESCRIPTION,)
@@ -602,8 +702,8 @@ def test_default_filename_has_extension() -> None:
 def test_encrypt_stream_is_used_for_passphrases(
     source: tuple[Path, dict[str, str]], tmp_path: Path
 ) -> None:
-    plain = tmp_path / "p.spendbackup"
-    sealed = tmp_path / "s.spendbackup"
+    plain = tmp_path / "p.pfabackup"
+    sealed = tmp_path / "s.pfabackup"
     archive.create_backup(plain, passphrase=None)
     archive.create_backup(sealed, passphrase=PASSPHRASE)
     assert zipfile.is_zipfile(plain)

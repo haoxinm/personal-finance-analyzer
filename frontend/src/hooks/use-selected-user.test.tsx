@@ -96,6 +96,21 @@ describe("useSelectedUser", () => {
     await waitFor(() => expect(result.current.sel.selectedUserId).toBe(1));
   });
 
+  it("restores a selection saved under the pre-rename key, moving it to the new key", async () => {
+    window.localStorage.setItem("spend-analyzer:selected-user", "1");
+    const { result } = renderHook(useBoth, { wrapper: makeWrapper("/spending") });
+    await waitFor(() => expect(result.current.sel.selectedUserId).toBe(1));
+    expect(window.localStorage.getItem(SELECTED_USER_STORAGE_KEY)).toBe("1");
+    expect(window.localStorage.getItem("spend-analyzer:selected-user")).toBeNull();
+  });
+
+  it("prefers the new key over a leftover pre-rename one", async () => {
+    window.localStorage.setItem(SELECTED_USER_STORAGE_KEY, "2");
+    window.localStorage.setItem("spend-analyzer:selected-user", "1");
+    const { result } = renderHook(useBoth, { wrapper: makeWrapper("/spending") });
+    await waitFor(() => expect(result.current.sel.selectedUserId).toBe(2));
+  });
+
   it("is All users (userIds undefined) by default with several users", async () => {
     const { result } = renderHook(useBoth, { wrapper: makeWrapper("/spending") });
     await waitFor(() => expect(result.current.sel.isLoading).toBe(false));

@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from spend_analyzer import config as config_module
+from personal_finance_analyzer import config as config_module
 from tests.llm_fakes import FakeLLM, install
 
 
@@ -40,7 +40,7 @@ def fake_keyring(monkeypatch: pytest.MonkeyPatch) -> _FakeKeyring:
     monkeypatch.setattr(config_module.keyring, "get_password", fake.get_password)
     monkeypatch.setattr(config_module.keyring, "set_password", fake.set_password)
     monkeypatch.setattr(config_module.keyring, "delete_password", fake.delete_password)
-    monkeypatch.delenv("SPEND_ANALYZER_LLM_API_KEY", raising=False)
+    monkeypatch.delenv("PFA_LLM_API_KEY", raising=False)
     return fake
 
 
@@ -65,7 +65,7 @@ def test_put_settings_round_trips(client: TestClient) -> None:
 
 
 def test_put_settings_preserves_config_toml_only_tax_pdf_flag(client: TestClient) -> None:
-    from spend_analyzer.config import load_settings, save_settings
+    from personal_finance_analyzer.config import load_settings, save_settings
 
     saved = load_settings()
     save_settings(
@@ -92,7 +92,7 @@ _REPLY = (
 )
 _SECRET = "sk-ant-super-secret-value"
 _ANTHROPIC = "https://api.anthropic.com"
-_ACCOUNT = ("spend-analyzer", "llm:api.anthropic.com")
+_ACCOUNT = ("personal-finance-analyzer", "llm:api.anthropic.com")
 
 
 def _draft(**kw: object) -> dict[str, object]:
@@ -161,7 +161,7 @@ def test_test_llm_draft_works_while_saved_config_is_disabled(
 def test_test_llm_draft_uses_key_for_draft_host(
     client: TestClient, fake_keyring: _FakeKeyring, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    fake_keyring.store[("spend-analyzer", "llm:api.example.com")] = "key-for-example"
+    fake_keyring.store[("personal-finance-analyzer", "llm:api.example.com")] = "key-for-example"
     fake = install(monkeypatch, FakeLLM(default=_REPLY))
     client.post("/api/settings/test-llm", json={"llm": _draft()})
     assert fake.headers
@@ -275,14 +275,14 @@ def test_api_key_routes_require_the_token(client: TestClient) -> None:
     put_response = client.put(
         "/api/settings/api-key",
         json={"base_url": _ANTHROPIC, "api_key": _SECRET},
-        headers={"X-Spend-Token": "wrong-token"},
+        headers={"X-PFA-Token": "wrong-token"},
     )
     assert put_response.status_code == 403
 
     delete_response = client.delete(
         "/api/settings/api-key",
         params={"base_url": _ANTHROPIC},
-        headers={"X-Spend-Token": "wrong-token"},
+        headers={"X-PFA-Token": "wrong-token"},
     )
     assert delete_response.status_code == 403
 
@@ -299,7 +299,7 @@ def test_pii_test_masks_sample_text_with_draft_terms(client: TestClient) -> None
 def test_pii_test_defaults_to_saved_terms(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("SPEND_ANALYZER_PRIVACY__PII_TERMS", "Alice Example")
+    monkeypatch.setenv("PFA_PRIVACY__PII_TERMS", "Alice Example")
     r = client.post("/api/settings/pii-test", json={"text": "hi ALICE  example"})
     assert r.json() == {"redacted_text": "hi [NAME]", "count": 1}
     r = client.post("/api/settings/pii-test", json={"text": "hi ALICE", "terms": []})

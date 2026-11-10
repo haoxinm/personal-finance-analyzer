@@ -4,7 +4,7 @@ attached (D, 1, 2, C).
 
 Everything is invented (see `tax_common`). Amounts are internally consistent: line 16 is the
 Qualified Dividends and Capital Gain Tax Worksheet result for the printed taxable income (from
-`spend_analyzer.ingest.tax.estimate`, whose bracket data is hand-verified in its own tests), the
+`personal_finance_analyzer.ingest.tax.estimate`, whose bracket data is hand-verified in its own tests), the
 totals add up, and refund/owed equal payments minus total tax. Each variant's golden is built here
 from the same figures, independently of the parser.
 
@@ -25,7 +25,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 from typing import Any
 
-from spend_analyzer.core.tax_types import (
+from personal_finance_analyzer.core.tax_types import (
     IncomeCategory,
     ParsedIncomeItem,
     ParsedTaxDocument,
@@ -33,7 +33,7 @@ from spend_analyzer.core.tax_types import (
     ParsedTaxItem,
     TaxCategory,
 )
-from spend_analyzer.ingest.tax import estimate
+from personal_finance_analyzer.ingest.tax import estimate
 from tests.fixtures.gen.base import render_lines_pdf
 from tests.fixtures.gen.tax_common import (
     RECIPIENT_ADDRESS_LINES,

@@ -14,9 +14,9 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from spend_analyzer.db.migrate import upgrade_head
-from spend_analyzer.db.models import Base
-from spend_analyzer.db.session import make_engine_for_path
+from personal_finance_analyzer.db.migrate import upgrade_head
+from personal_finance_analyzer.db.models import Base
+from personal_finance_analyzer.db.session import make_engine_for_path
 
 
 def _split_top_level(body: str) -> list[str]:

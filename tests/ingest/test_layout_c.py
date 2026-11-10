@@ -10,9 +10,9 @@ from typing import Any
 import pdfplumber
 import pytest
 
-from spend_analyzer.core.errors import ParserError, UnsupportedLayoutError
-from spend_analyzer.core.types import ExtractedDoc, PageText, RawTransaction, Word
-from spend_analyzer.ingest.parsers.layout_c_credit import _match_header, layout_c_credit
+from personal_finance_analyzer.core.errors import ParserError, UnsupportedLayoutError
+from personal_finance_analyzer.core.types import ExtractedDoc, PageText, RawTransaction, Word
+from personal_finance_analyzer.ingest.parsers.layout_c_credit import _match_header, layout_c_credit
 from tests.fixtures.gen.layout_c import layout_c_credit as layout_c_builder
 from tests.generate_fixtures import generate_all
 
@@ -145,7 +145,7 @@ def test_both_header_spellings_are_matched() -> None:
     assert any("TRANS DATE" in row and "TRANS. DATE" not in row for row in rows_text)
 
     # Both header shapes are recognized directly by the parser's own matcher.
-    from spend_analyzer.ingest.layout import cluster_rows
+    from personal_finance_analyzer.ingest.layout import cluster_rows
 
     all_rows = [row for page in doc.pages for row in cluster_rows(page.words)]
     matches = [m for row in all_rows if (m := _match_header(row)) is not None]

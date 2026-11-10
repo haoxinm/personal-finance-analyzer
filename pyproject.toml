@@ -3,9 +3,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "spend-analyzer"
+name = "personal-finance-analyzer"
 version = "0.1.0"
-description = "Locally-run spend analysis for credit/debit card bills and bank statements"
+description = "Local-first personal finance: spending from statements, income and tax, net worth and forecast"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.12,<3.13"
@@ -41,18 +41,21 @@ dev = [
 ]
 
 [project.scripts]
-spend-analyzer = "spend_analyzer.cli:app"
+pfa = "personal_finance_analyzer.cli:main"
+personal-finance-analyzer = "personal_finance_analyzer.cli:main"
+# Deprecated alias for the product's old name: prints a one-line notice on stderr, then runs the same CLI.
+spend-analyzer = "personal_finance_analyzer.cli:legacy_main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/spend_analyzer"]
+packages = ["src/personal_finance_analyzer"]
 # `*.yaml`/`*.yml`/`*.json` are taxonomy/rules/aliases/issuer-category-map/JSON-Schema data files
 # (§3.3, §3.6, §3.7); migrations are plain `.py` and already included via `packages`. `web/**` is
 # the built frontend (P1-F's `vite.config.ts` outDir): git-ignored, so it needs an explicit
 # artifacts entry to be force-included despite that — see `hatch_build.py`, which builds it.
-artifacts = ["*.yaml", "*.yml", "*.json", "src/spend_analyzer/web/**/*"]
+artifacts = ["*.yaml", "*.yml", "*.json", "src/personal_finance_analyzer/web/**/*"]
 
 [tool.hatch.build.targets.wheel.force-include]
-"src/spend_analyzer/classify/taxonomy.yaml" = "spend_analyzer/classify/taxonomy.yaml"
+"src/personal_finance_analyzer/classify/taxonomy.yaml" = "personal_finance_analyzer/classify/taxonomy.yaml"
 
 # Scoped to the wheel target only: an sdist ships the frontend *source* (built by the consumer's
 # own wheel build, or by this same hook when `pip install` builds a wheel from that sdist), so
@@ -64,7 +67,7 @@ path = "hatch_build.py"
 # Hatchling's default sdist file selection only reads the project-root `.gitignore`, not nested
 # ones (`frontend/.gitignore`), so `frontend/node_modules/` (and any local `frontend/dist/`) must
 # be excluded explicitly or `uv build --sdist`/`python -m build --sdist` ships hundreds of MB of
-# installed npm packages. `src/spend_analyzer/web/` is already covered by the root `.gitignore`
+# installed npm packages. `src/personal_finance_analyzer/web/` is already covered by the root `.gitignore`
 # (a build hook regenerates it from `frontend/` at wheel-build time, so the sdist ships the
 # frontend *source*, not its output) and `.venv`/`__pycache__`/`.mypy_cache` likewise.
 exclude = [
@@ -103,4 +106,4 @@ markers = [
 ]
 
 [tool.coverage.run]
-source = ["src/spend_analyzer"]
+source = ["src/personal_finance_analyzer"]

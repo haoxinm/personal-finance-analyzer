@@ -10,8 +10,8 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 from sqlalchemy import Engine
 
-from spend_analyzer.api.app import create_app
-from spend_analyzer.config import Settings
+from personal_finance_analyzer.api.app import create_app
+from personal_finance_analyzer.config import Settings
 
 
 def test_create_app_succeeds_with_a_built_frontend_present(engine: Engine, tmp_path: Path) -> None:
@@ -46,11 +46,11 @@ def test_served_index_html_has_the_per_launch_token_injected(
     with TestClient(app_instance, base_url="http://127.0.0.1") as client:
         response = client.get("/", headers={"Host": "127.0.0.1"})
         assert response.status_code == 200
-        assert 'name="spend-token" content="the-per-launch-token"' in response.text
+        assert 'name="pfa-token" content="the-per-launch-token"' in response.text
 
         spa_response = client.get("/some/client-side/route", headers={"Host": "127.0.0.1"})
         assert spa_response.status_code == 200
-        assert 'name="spend-token" content="the-per-launch-token"' in spa_response.text
+        assert 'name="pfa-token" content="the-per-launch-token"' in spa_response.text
 
         # /api/* is token-protected regardless of route (I8/A31); an unknown path still 403s
         # rather than falling through to the SPA's catch-all and serving index.html for it.
@@ -59,6 +59,6 @@ def test_served_index_html_has_the_per_launch_token_injected(
 
         authenticated_404 = client.get(
             "/api/does-not-exist",
-            headers={"Host": "127.0.0.1", "X-Spend-Token": "the-per-launch-token"},
+            headers={"Host": "127.0.0.1", "X-PFA-Token": "the-per-launch-token"},
         )
         assert authenticated_404.status_code == 404

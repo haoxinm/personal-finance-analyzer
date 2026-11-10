@@ -3,9 +3,13 @@ family cuts, continuation and the untouched single-form path."""
 
 from __future__ import annotations
 
-from spend_analyzer.core.types import ExtractedDoc
-from spend_analyzer.ingest.layout import cluster_rows
-from spend_analyzer.ingest.tax.segment import build_segments, find_anchors, layout_regions
+from personal_finance_analyzer.core.types import ExtractedDoc
+from personal_finance_analyzer.ingest.layout import cluster_rows
+from personal_finance_analyzer.ingest.tax.segment import (
+    build_segments,
+    find_anchors,
+    layout_regions,
+)
 from tests.ingest.tax_support import doc_from_lines, doc_from_pages
 
 _RIGHT_COL = 62  # character column of the right-hand form on a 6 pt grid (372 pt)

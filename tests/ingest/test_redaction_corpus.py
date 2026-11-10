@@ -20,7 +20,7 @@ import re
 
 import pytest
 
-from spend_analyzer.ingest.normalize import _FORBIDDEN_PATTERNS, normalize
+from personal_finance_analyzer.ingest.normalize import _FORBIDDEN_PATTERNS, normalize
 
 PII_TERMS = ["John Doe", "Maria Garcia"]
 

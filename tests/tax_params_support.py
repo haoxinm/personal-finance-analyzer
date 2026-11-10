@@ -11,7 +11,7 @@ import yaml
 
 def shipped_raw() -> dict[str, Any]:
     text = (
-        resources.files("spend_analyzer.core")
+        resources.files("personal_finance_analyzer.core")
         .joinpath("tax_data", "federal_params.yaml")
         .read_text(encoding="utf-8")
     )

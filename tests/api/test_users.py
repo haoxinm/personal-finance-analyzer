@@ -43,11 +43,11 @@ def test_only_one_default_user(client: TestClient) -> None:
 def test_user_pii_terms_merges_settings_and_aliases(
     session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from spend_analyzer.config import load_settings
-    from spend_analyzer.db.models import User
-    from spend_analyzer.db.pii_terms import user_pii_terms
+    from personal_finance_analyzer.config import load_settings
+    from personal_finance_analyzer.db.models import User
+    from personal_finance_analyzer.db.pii_terms import user_pii_terms
 
-    monkeypatch.setenv("SPEND_ANALYZER_PRIVACY__PII_TERMS", "Jane Doe,312-555-0100")
+    monkeypatch.setenv("PFA_PRIVACY__PII_TERMS", "Jane Doe,312-555-0100")
     user = User(name="Pat", pii_aliases='["jane doe", "Pat Q", 7]')
     session.add(user)
     session.flush()

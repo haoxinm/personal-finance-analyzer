@@ -17,8 +17,8 @@ import pytest
 from sqlalchemy import insert, select
 from sqlalchemy.orm import Session
 
-from spend_analyzer.analytics.query import SpendQuery, run_query
-from spend_analyzer.db.models import (
+from personal_finance_analyzer.analytics.query import SpendQuery, run_query
+from personal_finance_analyzer.db.models import (
     Account,
     Category,
     Issuer,

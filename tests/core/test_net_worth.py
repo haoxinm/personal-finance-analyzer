@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from spend_analyzer.core.net_worth import (
+from personal_finance_analyzer.core.net_worth import (
     BALANCE_CATEGORIES,
     normalize_account_name,
     signed_balance,

@@ -104,7 +104,7 @@ describe("App shell nav", () => {
   it("puts Estimate between Overview and Documents and marks it active on its route", async () => {
     await renderApp("/tax/estimate?year=2023");
     expect(activeTabs(sectionNav("Income & tax"))).toEqual(["Estimate"]);
-    expect(document.title).toBe("Estimate · Income & tax · Spend Analyzer");
+    expect(document.title).toBe("Estimate · Income & tax · Personal Finance Analyzer");
     expect(within(sectionNav("Income & tax")).getByRole("link", { name: "Overview" })).toHaveAttribute(
       "href",
       "/tax?year=2023",
@@ -122,7 +122,7 @@ describe("App shell nav", () => {
     expect(navLinkClassName("Net worth")).toContain("bg-muted");
     expect(tabNames(sectionNav("Net worth"))).toEqual(["Overview", "Forecast"]);
     expect(activeTabs(sectionNav("Net worth"))).toEqual(["Forecast"]);
-    expect(document.title).toBe("Forecast · Net worth · Spend Analyzer");
+    expect(document.title).toBe("Forecast · Net worth · Personal Finance Analyzer");
     // The Overview tab is `end`-matched, so it is not also active on the Forecast route.
     expect(within(mainNav()).getByRole("link", { name: "Net worth" })).toHaveAttribute("href", "/net-worth");
   });
@@ -149,7 +149,7 @@ describe("App shell nav", () => {
 
   it("sets the document title from the route", async () => {
     await renderApp("/spending/review");
-    expect(document.title).toBe("Review · Spending · Spend Analyzer");
+    expect(document.title).toBe("Review · Spending · Personal Finance Analyzer");
   });
 
   it("carries ?compare= only to compare-capable links", async () => {

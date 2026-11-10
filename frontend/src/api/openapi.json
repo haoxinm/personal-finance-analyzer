@@ -1,7 +1,7 @@
 {
   "openapi": "3.1.0",
   "info": {
-    "title": "Spend Analyzer API",
+    "title": "Personal Finance Analyzer API",
     "version": "0.1.0"
   },
   "paths": {
@@ -6593,7 +6593,7 @@
         },
         "requestBody": {
           "required": true,
-          "description": "The .spendbackup archive, as the raw request body.",
+          "description": "The .pfabackup archive, as the raw request body.",
           "content": {
             "application/octet-stream": {
               "schema": {

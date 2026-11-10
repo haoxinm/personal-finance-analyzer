@@ -14,10 +14,10 @@ import pytest
 from sqlalchemy import Engine, select
 from sqlalchemy.orm import Session
 
-from spend_analyzer.classify import cascade
-from spend_analyzer.config import PrivacyConfig, Settings, save_settings
-from spend_analyzer.core.paths import extract_cache_dir, statements_dir
-from spend_analyzer.db.models import (
+from personal_finance_analyzer.classify import cascade
+from personal_finance_analyzer.config import PrivacyConfig, Settings, save_settings
+from personal_finance_analyzer.core.paths import extract_cache_dir, statements_dir
+from personal_finance_analyzer.db.models import (
     Account,
     IncomeItem,
     Issuer,
@@ -28,9 +28,9 @@ from spend_analyzer.db.models import (
     Transaction,
     User,
 )
-from spend_analyzer.db.session import make_session_factory
-from spend_analyzer.ingest.extract import extract
-from spend_analyzer.ingest.tax.pipeline import import_tax_document
+from personal_finance_analyzer.db.session import make_session_factory
+from personal_finance_analyzer.ingest.extract import extract
+from personal_finance_analyzer.ingest.tax.pipeline import import_tax_document
 from tests.ingest.tax_support import GENERATED_DIR
 from tests.llm_fakes import FakeLLM, install, remote_cfg
 
@@ -126,7 +126,7 @@ def test_no_tin_on_disk_in_db_or_logs(
         assert not stmts.exists() or list(stmts.iterdir()) == []
 
     # (2) the SQL dump has only last-4 fields
-    con = sqlite3.connect(privacy_home / "spend.db")
+    con = sqlite3.connect(privacy_home / "finance.db")
     try:
         dump = "\n".join(con.iterdump())
     finally:
@@ -141,7 +141,9 @@ def test_no_tin_on_disk_in_db_or_logs(
     assert not _ACCOUNT_SHAPE.search(dump)
 
     # (3) our own logs (third-party pdfminer debug chatter is not ours) carry no identifier
-    ours = "\n".join(r.getMessage() for r in caplog.records if r.name.startswith("spend_analyzer"))
+    ours = "\n".join(
+        r.getMessage() for r in caplog.records if r.name.startswith("personal_finance_analyzer")
+    )
     assert "tax import" in ours
     for needle in needles:
         assert needle not in ours
@@ -149,7 +151,7 @@ def test_no_tin_on_disk_in_db_or_logs(
 
 
 def load_keep_flag() -> bool:
-    from spend_analyzer.config import load_settings
+    from personal_finance_analyzer.config import load_settings
 
     return load_settings().privacy.store_tax_pdf_copies
 
@@ -165,7 +167,7 @@ def test_import_and_classify_send_no_tax_content_to_the_llm(
     session: Session,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("SPEND_ANALYZER_LLM_API_KEY", "sk-test-key-not-real")
+    monkeypatch.setenv("PFA_LLM_API_KEY", "sk-test-key-not-real")
     fake = install(monkeypatch, FakeLLM(default=json.dumps({"items": []})))
 
     user_id, parsed = _import_everything(session)
@@ -251,7 +253,7 @@ def _unreadable_pdf(tmp_path: Path) -> Path:
 
 
 def _enable_llm(*, fallback: bool) -> None:
-    from spend_analyzer.config import IngestConfig
+    from personal_finance_analyzer.config import IngestConfig
 
     save_settings(
         Settings(
@@ -265,9 +267,9 @@ def _enable_llm(*, fallback: bool) -> None:
 def test_llm_fallback_off_by_default_even_with_llm_configured(
     home: Path, session: Session, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from spend_analyzer.api.services.tax_llm import build_tax_fallback
+    from personal_finance_analyzer.api.services.tax_llm import build_tax_fallback
 
-    monkeypatch.setenv("SPEND_ANALYZER_LLM_API_KEY", "sk-test-key-not-real")
+    monkeypatch.setenv("PFA_LLM_API_KEY", "sk-test-key-not-real")
     fake = install(monkeypatch, FakeLLM())  # a request would raise
     _enable_llm(fallback=False)
     user = User(name="alice")
@@ -288,9 +290,9 @@ def test_llm_fallback_off_by_default_even_with_llm_configured(
 def test_llm_fallback_request_is_redacted(
     home: Path, session: Session, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from spend_analyzer.api.services.tax_llm import build_tax_fallback
+    from personal_finance_analyzer.api.services.tax_llm import build_tax_fallback
 
-    monkeypatch.setenv("SPEND_ANALYZER_LLM_API_KEY", "sk-test-key-not-real")
+    monkeypatch.setenv("PFA_LLM_API_KEY", "sk-test-key-not-real")
     reply = json.dumps(
         {
             "forms": [
