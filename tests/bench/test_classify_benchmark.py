@@ -14,10 +14,10 @@ import time
 
 import pytest
 
-from spend_analyzer.classify.llm import batching
-from spend_analyzer.classify.llm.egress import BatchResult
-from spend_analyzer.classify.llm.schema import Item
-from spend_analyzer.config import LLMConfig
+from personal_finance_analyzer.classify.llm import batching
+from personal_finance_analyzer.classify.llm.egress import BatchResult
+from personal_finance_analyzer.classify.llm.schema import Item
+from personal_finance_analyzer.config import LLMConfig
 
 pytestmark = pytest.mark.benchmark
 

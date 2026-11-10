@@ -6,13 +6,13 @@ from datetime import date
 
 from sqlalchemy.orm import Session
 
-from spend_analyzer.analytics.net_worth_query import (
+from personal_finance_analyzer.analytics.net_worth_query import (
     STALE_AFTER_MONTHS,
     NetWorthQuery,
     parse_period,
     run_net_worth_query,
 )
-from spend_analyzer.db.models import BalanceEntry, User
+from personal_finance_analyzer.db.models import BalanceEntry, User
 
 
 def _user(session: Session) -> int:

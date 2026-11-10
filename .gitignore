@@ -217,7 +217,7 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-# Spend Analyzer project-specific
+# Personal Finance Analyzer project-specific
 # Never commit a real statement, a database, or a secret (see IMPLEMENTATION_PLAN.md §0.4, §6.4).
 *.pdf
 !tests/fixtures/generated/**/*.pdf
@@ -226,5 +226,5 @@ __marimo__/
 *.db-shm
 /data/
 .env
-src/spend_analyzer/web/
+src/personal_finance_analyzer/web/
 

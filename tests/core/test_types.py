@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from spend_analyzer.core.types import (
+from personal_finance_analyzer.core.types import (
     AccountHint,
     ExtractedDoc,
     PageText,

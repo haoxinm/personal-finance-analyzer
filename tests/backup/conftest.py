@@ -9,7 +9,7 @@ from .support import seed_home
 
 @pytest.fixture(autouse=True)
 def _isolated_home(home: Path) -> None:
-    """Every backup test runs with `SPEND_ANALYZER_HOME` redirected, so a call that forgets an
+    """Every backup test runs with `PFA_HOME` redirected, so a call that forgets an
     explicit `home=` can never read or replace a real data directory."""
     del home
 

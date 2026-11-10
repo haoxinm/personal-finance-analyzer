@@ -18,9 +18,9 @@ export interface UseJobProgressResult {
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 15000;
 
-function readSpendToken(): string | undefined {
+function readPfaToken(): string | undefined {
   if (typeof document === "undefined") return undefined;
-  return document.querySelector('meta[name="spend-token"]')?.getAttribute("content") ?? undefined;
+  return document.querySelector('meta[name="pfa-token"]')?.getAttribute("content") ?? undefined;
 }
 
 /**
@@ -52,7 +52,7 @@ export function useJobProgress(jobId: string | null | undefined): UseJobProgress
       if (cancelled) return;
       setConnectionState("connecting");
 
-      const token = readSpendToken();
+      const token = readPfaToken();
       const url = new URL(`/api/jobs/${encodeURIComponent(jobId)}/events`, window.location.origin);
       if (token) url.searchParams.set("token", token);
 

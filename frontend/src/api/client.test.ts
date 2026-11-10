@@ -31,9 +31,9 @@ describe("apiClient", () => {
     expect(request?.url).toContain("/api/users");
   });
 
-  it("sends the per-launch token from the spend-token meta tag, when present", async () => {
+  it("sends the per-launch token from the pfa-token meta tag, when present", async () => {
     const meta = document.createElement("meta");
-    meta.name = "spend-token";
+    meta.name = "pfa-token";
     meta.content = "test-token";
     document.head.appendChild(meta);
 
@@ -44,7 +44,7 @@ describe("apiClient", () => {
     await apiClient.GET("/users");
 
     const request = fetchMock.mock.calls.at(0)?.[0] as Request | undefined;
-    expect(request?.headers.get("X-Spend-Token")).toBe("test-token");
+    expect(request?.headers.get("X-PFA-Token")).toBe("test-token");
 
     document.head.removeChild(meta);
   });

@@ -3,7 +3,7 @@
 Opt-in only (`@pytest.mark.benchmark`; not a performance budget, but this is by far the slowest
 check in the suite — it builds the frontend, builds a wheel, creates a throwaway virtualenv
 *outside the repository*, `pip install`s the wheel into it, and drives `migrate`/`doctor`/`serve`
-against a temp `SPEND_ANALYZER_HOME` — so it belongs with the rest of the opt-in suite, run with::
+against a temp `PFA_HOME` — so it belongs with the rest of the opt-in suite, run with::
 
     uv run pytest -m benchmark tests/bench/test_clean_install.py -v -s
 
@@ -55,19 +55,19 @@ def test_wheel_builds_and_clean_installs_and_serves(tmp_path: Path) -> None:
     venv_dir = tmp_path / "clean-venv"
     venv.create(venv_dir, with_pip=True)
     pip = venv_dir / "bin" / "pip"
-    spend_analyzer_bin = venv_dir / "bin" / "spend-analyzer"
+    pfa_bin = venv_dir / "bin" / "pfa"
 
     install = _run([str(pip), "install", "--quiet", str(wheel)])
     assert install.returncode == 0, f"pip install failed:\n{install.stdout}\n{install.stderr}"
 
-    home = tmp_path / "spend_analyzer_home"
+    home = tmp_path / "pfa_home"
     home.mkdir()
-    env = {"SPEND_ANALYZER_HOME": str(home), "PATH": f"{venv_dir / 'bin'}:/usr/bin:/bin"}
+    env = {"PFA_HOME": str(home), "PATH": f"{venv_dir / 'bin'}:/usr/bin:/bin"}
 
-    migrate = _run([str(spend_analyzer_bin), "migrate"], env=env)
+    migrate = _run([str(pfa_bin), "migrate"], env=env)
     assert migrate.returncode == 0, f"migrate failed:\n{migrate.stdout}\n{migrate.stderr}"
 
-    doctor = _run([str(spend_analyzer_bin), "doctor"], env=env)
+    doctor = _run([str(pfa_bin), "doctor"], env=env)
     # Keychain access commonly fails in a headless container with no secret-service daemon
     # (unrelated to packaging); every other line must PASS.
     for line in doctor.stdout.splitlines():
@@ -75,7 +75,7 @@ def test_wheel_builds_and_clean_installs_and_serves(tmp_path: Path) -> None:
             pytest.fail(f"doctor reported an unexpected failure: {line}\n{doctor.stdout}")
 
     server = subprocess.Popen(
-        [str(spend_analyzer_bin), "serve", "--no-open-browser"],
+        [str(pfa_bin), "serve", "--no-open-browser"],
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -107,7 +107,7 @@ def _get_with_retry(url: str, token: str, *, timeout_s: float = 10.0) -> str:
     last_error: Exception | None = None
     while time.monotonic() < deadline:
         try:
-            req = urllib.request.Request(url, headers={"X-Spend-Token": token})
+            req = urllib.request.Request(url, headers={"X-PFA-Token": token})
             with urllib.request.urlopen(req, timeout=2) as resp:
                 assert resp.status == 200
                 return str(resp.read().decode("utf-8"))

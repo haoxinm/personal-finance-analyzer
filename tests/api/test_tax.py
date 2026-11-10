@@ -12,16 +12,16 @@ from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from spend_analyzer.api import schemas
-from spend_analyzer.core.paths import statements_dir
-from spend_analyzer.core.tax_types import (
+from personal_finance_analyzer.api import schemas
+from personal_finance_analyzer.core.paths import statements_dir
+from personal_finance_analyzer.core.tax_types import (
     INCOME_CATEGORY_LABELS,
     TAX_CATEGORIES,
     TAX_CATEGORY_LABELS,
     FormType,
     IncomeCategory,
 )
-from spend_analyzer.db.models import IncomeItem, TaxDocument, TaxForm, TaxItem, User
+from personal_finance_analyzer.db.models import IncomeItem, TaxDocument, TaxForm, TaxItem, User
 from tests.ingest.tax_support import generated_pdf
 
 _SSN_SHAPE = re.compile(r"\b\d{3}-\d{2}-\d{4}\b")
@@ -361,7 +361,7 @@ def test_income_by_payer(client: TestClient, user_id: int) -> None:
 
 
 def test_no_ssn_or_stored_path_anywhere(client: TestClient, user_id: int) -> None:
-    from spend_analyzer.ingest.extract import extract
+    from personal_finance_analyzer.ingest.extract import extract
 
     assert _FIXTURE_SSN in extract(generated_pdf("tax_w2", "normal"), write_cache=False).full_text
 
@@ -428,7 +428,7 @@ def test_upload_uses_the_llm_fallback_only_when_opted_in(
 ) -> None:
     import json
 
-    from spend_analyzer.config import IngestConfig, Settings, save_settings
+    from personal_finance_analyzer.config import IngestConfig, Settings, save_settings
     from tests.fixtures.gen.base import render_lines_pdf
     from tests.llm_fakes import FakeLLM, install, remote_cfg
 

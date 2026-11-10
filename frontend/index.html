@@ -3,10 +3,10 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Spend Analyzer</title>
+    <title>Personal Finance Analyzer</title>
     <!--
       A31: the per-launch API token is injected here by the server (a meta tag,
-      `<meta name="spend-token" content="...">`) once the FastAPI static-file route (P2-C)
+      `<meta name="pfa-token" content="...">`) once the FastAPI static-file route (P2-C)
       exists. `lib/api/client.ts` reads it at startup; its absence (dev, or before P2-C lands)
       just means requests go out without the header, which a mocked/dev backend tolerates.
     -->

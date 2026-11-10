@@ -9,9 +9,9 @@ from pathlib import Path
 import pytest
 from sqlalchemy.orm import Session
 
-from spend_analyzer.core.errors import ParserError
-from spend_analyzer.db.models import Statement, Transaction
-from spend_analyzer.ingest import pipeline
+from personal_finance_analyzer.core.errors import ParserError
+from personal_finance_analyzer.db.models import Statement, Transaction
+from personal_finance_analyzer.ingest import pipeline
 from tests.ingest.test_pipeline import _build_bank_pdf, _make_issuer, _make_user
 from tests.llm_fakes import install
 
@@ -33,11 +33,11 @@ _LLM_REPLY = json.dumps(
 
 
 def _llm_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("SPEND_ANALYZER_LLM__ENABLED", "true")
-    monkeypatch.setenv("SPEND_ANALYZER_LLM__BASE_URL", "https://api.example.com")
-    monkeypatch.setenv("SPEND_ANALYZER_LLM__MODEL", "m")
+    monkeypatch.setenv("PFA_LLM__ENABLED", "true")
+    monkeypatch.setenv("PFA_LLM__BASE_URL", "https://api.example.com")
+    monkeypatch.setenv("PFA_LLM__MODEL", "m")
     # The case that used to delete the staged PDF on failure.
-    monkeypatch.setenv("SPEND_ANALYZER_PRIVACY__STORE_PDF_COPIES", "false")
+    monkeypatch.setenv("PFA_PRIVACY__STORE_PDF_COPIES", "false")
 
 
 def _failing_generic_statement(session: Session, tmp_path: Path) -> tuple[int, int]:
@@ -126,12 +126,12 @@ def test_llm_timeout_then_retry_with_larger_timeout_uses_fresh_config(
 ) -> None:
     import httpx
 
-    from spend_analyzer.config import LLMConfig
-    from spend_analyzer.llm import client
+    from personal_finance_analyzer.config import LLMConfig
+    from personal_finance_analyzer.llm import client
     from tests.llm_fakes import wrap_text
 
     _llm_env(monkeypatch)
-    monkeypatch.setenv("SPEND_ANALYZER_LLM__TIMEOUT_S", "5")
+    monkeypatch.setenv("PFA_LLM__TIMEOUT_S", "5")
     seen: list[int] = []
 
     def fake_post(cfg: LLMConfig, body: dict[str, object]) -> tuple[int, object]:
@@ -156,7 +156,7 @@ def test_llm_timeout_then_retry_with_larger_timeout_uses_fresh_config(
     assert statement is not None and statement.status == "error"
 
     # The user raises the timeout in Settings; no restart, same process.
-    monkeypatch.setenv("SPEND_ANALYZER_LLM__TIMEOUT_S", "300")
+    monkeypatch.setenv("PFA_LLM__TIMEOUT_S", "300")
     result = pipeline.confirm_import(
         session,
         statement_id,
@@ -174,7 +174,7 @@ def test_reproposing_a_failed_statement_reopens_it(
 ) -> None:
     import httpx
 
-    from spend_analyzer.llm import client
+    from personal_finance_analyzer.llm import client
 
     _llm_env(monkeypatch)
 

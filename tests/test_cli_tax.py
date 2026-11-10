@@ -1,4 +1,4 @@
-"""`spend-analyzer tax ...` and the tax-form hint in `import`."""
+"""`pfa tax ...` and the tax-form hint in `import`."""
 
 from __future__ import annotations
 
@@ -10,9 +10,9 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from spend_analyzer.cli import app
-from spend_analyzer.db.models import TaxDocument
-from spend_analyzer.db.session import make_engine_for_path
+from personal_finance_analyzer.cli import app
+from personal_finance_analyzer.db.models import TaxDocument
+from personal_finance_analyzer.db.session import make_engine_for_path
 from tests.ingest.tax_support import generated_pdf
 
 runner = CliRunner()
@@ -158,7 +158,7 @@ def test_list_and_delete(migrated: Path) -> None:
     assert deleted.exit_code == 0, deleted.output
     assert "No tax documents." in runner.invoke(app, ["tax", "list"]).output
     assert "No tax data" in runner.invoke(app, ["tax", "report"]).output
-    engine = make_engine_for_path(migrated / "spend.db")
+    engine = make_engine_for_path(migrated / "finance.db")
     try:
         from sqlalchemy.orm import Session
 
@@ -175,7 +175,7 @@ def test_list_and_delete(migrated: Path) -> None:
 def test_statement_import_hints_at_tax_import(migrated: Path) -> None:
     result = runner.invoke(app, ["import", _pdf("tax_w2", "normal")])
     assert "looks like a tax form (w2)" in result.output
-    assert "spend-analyzer tax import" in result.output
+    assert "pfa tax import" in result.output
 
 
 def test_statement_import_has_no_hint_for_a_real_statement(migrated: Path) -> None:
@@ -192,7 +192,7 @@ def test_import_scrubs_ssn_shape_in_file_name(migrated: Path, tmp_path: Path) ->
     named.write_bytes(Path(_pdf("tax_w2", "normal")).read_bytes())
     result = runner.invoke(app, ["tax", "import", str(named)])
     assert result.exit_code == 0, result.output
-    engine = make_engine_for_path(migrated / "spend.db")
+    engine = make_engine_for_path(migrated / "finance.db")
     from sqlalchemy.orm import Session
 
     with Session(engine) as session:

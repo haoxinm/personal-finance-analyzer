@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from spend_analyzer.core.logging import configure_logging, get_logger
+from personal_finance_analyzer.core.logging import configure_logging, get_logger
 
 
 def test_secret_shaped_string_is_redacted(home: Path) -> None:
@@ -31,9 +31,9 @@ def test_configure_logging_is_idempotent(home: Path) -> None:
 
 def test_get_logger_returns_child_logger() -> None:
     child = get_logger("ingest")
-    assert child.name == "spend_analyzer.ingest"
+    assert child.name == "personal_finance_analyzer.ingest"
     root = get_logger()
-    assert root.name == "spend_analyzer"
+    assert root.name == "personal_finance_analyzer"
 
 
 def test_pdf_libraries_never_log_document_text_at_debug(

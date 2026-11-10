@@ -17,8 +17,8 @@ from typing import Any
 import pdfplumber
 import pytest
 
-from spend_analyzer.core.types import ExtractedDoc, PageText, Word
-from spend_analyzer.ingest.layout_spec import load_spec
+from personal_finance_analyzer.core.types import ExtractedDoc, PageText, Word
+from personal_finance_analyzer.ingest.layout_spec import load_spec
 
 _GENERATED_DIR = (
     Path(__file__).resolve().parent.parent / "fixtures" / "generated" / "layout_b_credit"

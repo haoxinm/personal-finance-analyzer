@@ -9,7 +9,7 @@ export type User = components["schemas"]["User"];
 /** URL search param holding the explicit selection: `?user=<id>` or `?user=all`. */
 export const SELECTED_USER_PARAM = "user";
 /** localStorage key restoring the selection when navigating between screens (nav links carry no query). */
-export const SELECTED_USER_STORAGE_KEY = "spend-analyzer:selected-user";
+export const SELECTED_USER_STORAGE_KEY = "pfa:selected-user";
 const ALL = "all";
 
 function parseRaw(raw: string | null, users: readonly User[]): number | null | undefined {

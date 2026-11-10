@@ -10,9 +10,9 @@ import pytest
 import yaml
 from fastapi.testclient import TestClient
 
-from spend_analyzer.api.services import tax_params_update as upd
-from spend_analyzer.config import Settings, TaxConfig
-from spend_analyzer.core import tax_params
+from personal_finance_analyzer.api.services import tax_params_update as upd
+from personal_finance_analyzer.config import Settings, TaxConfig
+from personal_finance_analyzer.core import tax_params
 from tests.tax_params_support import with_next_year
 
 ENABLED = Settings(tax=TaxConfig(auto_update_params=True))
@@ -53,8 +53,12 @@ def _bundled_version() -> int:
 def test_request_is_the_fixed_plain_url() -> None:
     assert upd.PARAMS_URL.startswith("https://raw.githubusercontent.com/")
     assert "?" not in upd.PARAMS_URL and "#" not in upd.PARAMS_URL
-    assert upd.PARAMS_URL.endswith("/src/spend_analyzer/core/tax_data/federal_params.yaml")
-    assert (Path(__file__).resolve().parents[2] / "src/spend_analyzer/core/tax_data").is_dir()
+    assert upd.PARAMS_URL.endswith(
+        "/src/personal_finance_analyzer/core/tax_data/federal_params.yaml"
+    )
+    assert (
+        Path(__file__).resolve().parents[2] / "src/personal_finance_analyzer/core/tax_data"
+    ).is_dir()
 
 
 def test_new_tax_year_is_cached_and_used(home: Path) -> None:
@@ -203,7 +207,7 @@ def test_only_one_background_check_in_flight(home: Path) -> None:
 
 def test_cache_is_used_on_later_loads_without_fetching(home: Path) -> None:
     upd.check_for_update(fetch=FakeFetcher(_remote(_bundled_version() + 1, wage_base_2027=191_000)))
-    from spend_analyzer.core import tax_calc
+    from personal_finance_analyzer.core import tax_calc
 
     params = tax_calc.params_for(2027)
     assert params is not None and params.ss_wage_base_minor == 191_000 * 100

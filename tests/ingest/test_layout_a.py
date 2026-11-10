@@ -10,9 +10,9 @@ from typing import Any
 import pdfplumber
 import pytest
 
-from spend_analyzer.core.errors import ParserError
-from spend_analyzer.core.types import ExtractedDoc, PageText, RawTransaction, Word
-from spend_analyzer.ingest.parsers.layout_a_credit import parser
+from personal_finance_analyzer.core.errors import ParserError
+from personal_finance_analyzer.core.types import ExtractedDoc, PageText, RawTransaction, Word
+from personal_finance_analyzer.ingest.parsers.layout_a_credit import parser
 from tests.fixtures.gen.layout_a import builder
 
 _HERE = Path(__file__).resolve().parent

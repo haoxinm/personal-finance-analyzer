@@ -25,7 +25,7 @@ export default defineConfig({
   build: {
     // FastAPI serves this directory as static files in production (§4), so the whole
     // app is one process on one port. Never git-ignored source, only build output.
-    outDir: "../src/spend_analyzer/web",
+    outDir: "../src/personal_finance_analyzer/web",
     emptyOutDir: true,
   },
 });

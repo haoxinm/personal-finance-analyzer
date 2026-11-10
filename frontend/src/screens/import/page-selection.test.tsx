@@ -138,10 +138,10 @@ describe("page selection", () => {
   beforeEach(() => {
     vi.stubGlobal("EventSource", MockEventSource);
     window.localStorage.clear();
-    document.head.insertAdjacentHTML("beforeend", '<meta name="spend-token" content="tok123">');
+    document.head.insertAdjacentHTML("beforeend", '<meta name="pfa-token" content="tok123">');
   });
   afterEach(() => {
-    document.querySelector('meta[name="spend-token"]')?.remove();
+    document.querySelector('meta[name="pfa-token"]')?.remove();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });

@@ -10,7 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from spend_analyzer.core.tax_types import (
+from personal_finance_analyzer.core.tax_types import (
     FormType,
     ParsedIncomeItem,
     ParsedTaxDocument,

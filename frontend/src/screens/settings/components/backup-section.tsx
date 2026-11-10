@@ -153,7 +153,7 @@ export function BackupSection() {
             <Input
               ref={fileInput}
               type="file"
-              accept=".spendbackup"
+              accept=".pfabackup"
               onChange={(e) => setFile(e.target.files?.[0] ?? null)}
               className="w-64"
               aria-label="Backup file"

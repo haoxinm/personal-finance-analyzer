@@ -7,8 +7,8 @@ from datetime import date
 import pytest
 from sqlalchemy.orm import Session
 
-from spend_analyzer.analytics.forecast_baseline import cagr_pct, run_forecast_baseline
-from spend_analyzer.db.models import NetWorthHistory
+from personal_finance_analyzer.analytics.forecast_baseline import cagr_pct, run_forecast_baseline
+from personal_finance_analyzer.db.models import NetWorthHistory
 from tests.forecast_seed import SpendSeed, add_balance, add_user, add_w2
 
 # Withholding on 80,000.00 of 2022 wages: federal 10,000 + Social Security 4,960 + Medicare 1,160.

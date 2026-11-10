@@ -8,9 +8,14 @@ from types import ModuleType
 
 import pytest
 
-from spend_analyzer.core.types import ExtractedDoc, PageText, ParsedStatement, StatementParser
-from spend_analyzer.ingest import registry
-from spend_analyzer.ingest.parsers.generic_table import generic_table
+from personal_finance_analyzer.core.types import (
+    ExtractedDoc,
+    PageText,
+    ParsedStatement,
+    StatementParser,
+)
+from personal_finance_analyzer.ingest import registry
+from personal_finance_analyzer.ingest.parsers.generic_table import generic_table
 
 _EMPTY_DOC = ExtractedDoc(
     file_sha256="0" * 64,
@@ -125,7 +130,7 @@ class _FakeEntryPoint:
 def test_discover_builtin_parsers_skips_a_module_that_fails_to_import(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    import spend_analyzer.ingest.parsers as parsers_pkg
+    import personal_finance_analyzer.ingest.parsers as parsers_pkg
 
     def fake_iter_modules(path: object, prefix: str) -> list[_FakeModuleInfo]:
         return [_FakeModuleInfo(f"{parsers_pkg.__name__}.layout_broken")]

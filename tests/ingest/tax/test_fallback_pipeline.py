@@ -11,16 +11,16 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from spend_analyzer.config import IngestConfig, LLMConfig, Settings, save_settings
-from spend_analyzer.core.tax_types import (
+from personal_finance_analyzer.config import IngestConfig, LLMConfig, Settings, save_settings
+from personal_finance_analyzer.core.tax_types import (
     ParsedIncomeItem,
     ParsedTaxForm,
     ParsedTaxItem,
 )
-from spend_analyzer.db.models import IncomeItem, TaxDocument, TaxForm, TaxItem, User
-from spend_analyzer.ingest.tax.fallback import _merge_forms
-from spend_analyzer.ingest.tax.pipeline import import_tax_document
-from spend_analyzer.llm.tax_parser import TaxLLMExtractor
+from personal_finance_analyzer.db.models import IncomeItem, TaxDocument, TaxForm, TaxItem, User
+from personal_finance_analyzer.ingest.tax.fallback import _merge_forms
+from personal_finance_analyzer.ingest.tax.pipeline import import_tax_document
+from personal_finance_analyzer.llm.tax_parser import TaxLLMExtractor
 from tests.fixtures.gen.base import render_lines_pdf
 from tests.ingest.tax_support import generated_pdf
 from tests.llm_fakes import FakeLLM, install, remote_cfg
@@ -119,7 +119,7 @@ def test_no_write_transaction_is_open_during_the_llm_call(
     seen: list[str] = []
 
     def during_call(body: dict[str, Any]) -> str:
-        con = sqlite3.connect(home / "spend.db", timeout=0)
+        con = sqlite3.connect(home / "finance.db", timeout=0)
         try:
             con.execute("BEGIN IMMEDIATE")  # fails with "database is locked" if a writer is open
             con.rollback()
@@ -282,7 +282,7 @@ def test_bank_annual_statement_with_year_and_fallback_sends_nothing(
 
 
 def test_only_pages_with_form_evidence_and_their_continuations_are_sent() -> None:
-    from spend_analyzer.ingest.tax.fallback import _whole_file_regions
+    from personal_finance_analyzer.ingest.tax.fallback import _whole_file_regions
     from tests.ingest.tax_support import doc_from_pages
 
     pages = [
@@ -308,8 +308,8 @@ def test_a_1040_alone_is_never_sent(
 
 
 def test_requests_sent_is_reported_when_the_extractor_raises() -> None:
-    from spend_analyzer.core.tax_types import FallbackResult
-    from spend_analyzer.ingest.tax.fallback import apply_fallback
+    from personal_finance_analyzer.core.tax_types import FallbackResult
+    from personal_finance_analyzer.ingest.tax.fallback import apply_fallback
     from tests.ingest.tax_support import doc_from_pages
 
     class Boom:
@@ -333,7 +333,7 @@ def test_text_only_pages_are_classified_as_form_1040() -> None:
     """Pages without word boxes still get the 1040 exclusion (and the pages after it)."""
     from dataclasses import replace
 
-    from spend_analyzer.ingest.tax.fallback import (
+    from personal_finance_analyzer.ingest.tax.fallback import (
         _page_evidence,
         _whole_file_regions,
         other_form_pages,

@@ -9,8 +9,8 @@ from alembic import command
 from sqlalchemy import Engine, text
 from sqlalchemy.exc import IntegrityError
 
-from spend_analyzer.db.migrate import build_alembic_config, upgrade_head
-from spend_analyzer.db.session import make_engine_for_path
+from personal_finance_analyzer.db.migrate import build_alembic_config, upgrade_head
+from personal_finance_analyzer.db.session import make_engine_for_path
 
 _PRE = "0007_net_worth_forecast"
 

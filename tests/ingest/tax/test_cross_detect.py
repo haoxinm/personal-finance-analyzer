@@ -13,9 +13,9 @@ from pathlib import Path
 
 import pytest
 
-from spend_analyzer.core.types import ExtractedDoc
-from spend_analyzer.ingest import registry as bank_registry
-from spend_analyzer.ingest.tax import registry as tax_registry
+from personal_finance_analyzer.core.types import ExtractedDoc
+from personal_finance_analyzer.ingest import registry as bank_registry
+from personal_finance_analyzer.ingest.tax import registry as tax_registry
 from tests.ingest.tax_support import GENERATED_DIR, extract_doc
 
 THRESHOLD = tax_registry.TAX_DETECT_THRESHOLD

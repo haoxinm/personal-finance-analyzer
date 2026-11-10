@@ -9,7 +9,7 @@ import time
 
 from fastapi.testclient import TestClient
 
-from spend_analyzer.jobs.runner import JobProgress, JobRunner
+from personal_finance_analyzer.jobs.runner import JobProgress, JobRunner
 
 
 def test_get_unknown_job_is_404(client: TestClient) -> None:
@@ -21,11 +21,11 @@ def test_job_runner_reports_progress_and_completes() -> None:
     import tempfile
     from pathlib import Path
 
-    from spend_analyzer.db.migrate import upgrade_head
-    from spend_analyzer.db.session import make_engine_for_path, make_session_factory
+    from personal_finance_analyzer.db.migrate import upgrade_head
+    from personal_finance_analyzer.db.session import make_engine_for_path, make_session_factory
 
     with tempfile.TemporaryDirectory() as tmp:
-        db_path = Path(tmp) / "spend.db"
+        db_path = Path(tmp) / "finance.db"
         upgrade_head(f"sqlite:///{db_path}")
         engine = make_engine_for_path(db_path)
         session_factory = make_session_factory(engine)
@@ -42,7 +42,7 @@ def test_job_runner_reports_progress_and_completes() -> None:
 
         deadline = time.time() + 5
         with session_factory() as session:
-            from spend_analyzer.db.models import Job
+            from personal_finance_analyzer.db.models import Job
 
             job = session.get(Job, job_id)
             while job is not None and job.status != "done" and time.time() < deadline:
@@ -61,12 +61,12 @@ def test_job_runner_records_task_errors() -> None:
     import tempfile
     from pathlib import Path
 
-    from spend_analyzer.db.migrate import upgrade_head
-    from spend_analyzer.db.models import Job
-    from spend_analyzer.db.session import make_engine_for_path, make_session_factory
+    from personal_finance_analyzer.db.migrate import upgrade_head
+    from personal_finance_analyzer.db.models import Job
+    from personal_finance_analyzer.db.session import make_engine_for_path, make_session_factory
 
     with tempfile.TemporaryDirectory() as tmp:
-        db_path = Path(tmp) / "spend.db"
+        db_path = Path(tmp) / "finance.db"
         upgrade_head(f"sqlite:///{db_path}")
         engine = make_engine_for_path(db_path)
         session_factory = make_session_factory(engine)
@@ -137,7 +137,7 @@ def test_two_concurrent_classify_jobs_do_not_corrupt_state(app_instance) -> None
     job_a = runner.run_job(kind="classify", task=make_task("a"))
     job_b = runner.run_job(kind="classify", task=make_task("b"))
 
-    from spend_analyzer.db.models import Job
+    from personal_finance_analyzer.db.models import Job
 
     deadline = time.time() + 5
     session_factory = app_instance.state.session_factory

@@ -6,10 +6,10 @@ from pathlib import Path
 
 from sqlalchemy.orm import Session
 
-from spend_analyzer.core.types import ExtractedDoc, PageText
-from spend_analyzer.db.models import Issuer
-from spend_analyzer.ingest import issuer_match
-from spend_analyzer.ingest.layout import locate_table_bands
+from personal_finance_analyzer.core.types import ExtractedDoc, PageText
+from personal_finance_analyzer.db.models import Issuer
+from personal_finance_analyzer.ingest import issuer_match
+from personal_finance_analyzer.ingest.layout import locate_table_bands
 from tests.fixtures.gen.base import format_row, render_lines_pdf
 
 _CARD_WIDTHS = (10, 32, 14)
@@ -34,7 +34,7 @@ def _build_statement_pdf(
 
 
 def _extract(path: Path) -> ExtractedDoc:
-    from spend_analyzer.ingest.extract import extract
+    from personal_finance_analyzer.ingest.extract import extract
 
     return extract(path)
 

@@ -6,8 +6,8 @@ from __future__ import annotations
 
 import pytest
 
-from spend_analyzer.core.tax_types import UnparsedRegion
-from spend_analyzer.llm import tax_parser as tp
+from personal_finance_analyzer.core.tax_types import UnparsedRegion
+from personal_finance_analyzer.llm import tax_parser as tp
 from tests.ingest.tax_support import doc_from_lines, doc_from_pages
 
 _FORM = [

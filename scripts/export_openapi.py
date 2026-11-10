@@ -8,7 +8,7 @@ Usage::
 
 Building the app for this alone never binds a port or starts the job runner's worker thread doing
 real work: `create_app()` is only asked for its `.openapi()` schema, never run with uvicorn, and it
-targets an in-memory SQLite database so it needs no `SPEND_ANALYZER_HOME`.
+targets an in-memory SQLite database so it needs no `PFA_HOME`.
 """
 
 from __future__ import annotations
@@ -39,8 +39,8 @@ def _relativize_to_api_server(schema: dict[str, object]) -> None:
 
 def main() -> int:
     sys.path.insert(0, str(_REPO_ROOT / "src"))
-    from spend_analyzer.api.app import create_app
-    from spend_analyzer.db.session import make_engine_for_path
+    from personal_finance_analyzer.api.app import create_app
+    from personal_finance_analyzer.db.session import make_engine_for_path
 
     engine = make_engine_for_path(Path(":memory:"))
     try:

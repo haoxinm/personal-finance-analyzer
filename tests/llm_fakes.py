@@ -1,4 +1,4 @@
-"""A fake LLM endpoint for tests: replaces `spend_analyzer.llm.client._post`, records every
+"""A fake LLM endpoint for tests: replaces `personal_finance_analyzer.llm.client._post`, records every
 request body it receives, and answers in whichever wire format the config asks for. Never
 opens a socket (§6.5)."""
 
@@ -10,8 +10,8 @@ from typing import Any
 
 import pytest
 
-from spend_analyzer.config import LLMConfig
-from spend_analyzer.llm import client
+from personal_finance_analyzer.config import LLMConfig
+from personal_finance_analyzer.llm import client
 
 Reply = str | tuple[int, Any] | Callable[[dict[str, Any]], "str | tuple[int, Any]"]
 

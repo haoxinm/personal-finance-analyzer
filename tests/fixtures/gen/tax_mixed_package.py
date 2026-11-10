@@ -16,7 +16,7 @@ from typing import Any
 
 from reportlab.lib.pagesizes import landscape, letter
 
-from spend_analyzer.core.tax_types import ParsedTaxDocument, ParsedTaxForm
+from personal_finance_analyzer.core.tax_types import ParsedTaxDocument, ParsedTaxForm
 from tests.fixtures.gen import tax_1099_div as div
 from tests.fixtures.gen import tax_1099_int as interest
 from tests.fixtures.gen import tax_w2 as w2

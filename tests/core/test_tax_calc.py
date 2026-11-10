@@ -9,8 +9,8 @@ from typing import Any
 
 import pytest
 
-from spend_analyzer.core import tax_calc
-from spend_analyzer.core.tax_calc import (
+from personal_finance_analyzer.core import tax_calc
+from personal_finance_analyzer.core.tax_calc import (
     bracket_tax,
     estimate_tax_split,
     has_table,
@@ -18,7 +18,7 @@ from spend_analyzer.core.tax_calc import (
     supported_years,
     worksheet_tax,
 )
-from spend_analyzer.core.tax_params import Table, load_bundled
+from personal_finance_analyzer.core.tax_params import Table, load_bundled
 
 D = 100  # cents per dollar
 STATUSES = ("single", "mfj", "mfs", "hoh", "qss")

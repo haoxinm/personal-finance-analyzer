@@ -77,17 +77,17 @@ describe("routeInfo", () => {
   it("tolerates a trailing slash and falls back for unknown paths", () => {
     expect(routeInfo("/tax/documents/").tab?.label).toBe("Documents");
     const unknown = routeInfo("/nope");
-    expect(unknown).toMatchObject({ section: null, tab: null, userBar: true, compare: false, title: "Spend Analyzer" });
+    expect(unknown).toMatchObject({ section: null, tab: null, userBar: true, compare: false, title: "Personal Finance Analyzer" });
   });
 
   it("builds document titles, collapsing one-tab sections", () => {
-    expect(routeInfo("/spending/review").title).toBe("Review · Spending · Spend Analyzer");
-    expect(routeInfo("/tax").title).toBe("Overview · Income & tax · Spend Analyzer");
-    expect(routeInfo("/tax/estimate").title).toBe("Estimate · Income & tax · Spend Analyzer");
-    expect(routeInfo("/spending/layout-mapper").title).toBe("Layout mapper · Spending · Spend Analyzer");
-    expect(routeInfo("/net-worth").title).toBe("Overview · Net worth · Spend Analyzer");
-    expect(routeInfo("/net-worth/forecast").title).toBe("Forecast · Net worth · Spend Analyzer");
-    expect(routeInfo("/settings").title).toBe("Settings · Spend Analyzer");
+    expect(routeInfo("/spending/review").title).toBe("Review · Spending · Personal Finance Analyzer");
+    expect(routeInfo("/tax").title).toBe("Overview · Income & tax · Personal Finance Analyzer");
+    expect(routeInfo("/tax/estimate").title).toBe("Estimate · Income & tax · Personal Finance Analyzer");
+    expect(routeInfo("/spending/layout-mapper").title).toBe("Layout mapper · Spending · Personal Finance Analyzer");
+    expect(routeInfo("/net-worth").title).toBe("Overview · Net worth · Personal Finance Analyzer");
+    expect(routeInfo("/net-worth/forecast").title).toBe("Forecast · Net worth · Personal Finance Analyzer");
+    expect(routeInfo("/settings").title).toBe("Settings · Personal Finance Analyzer");
   });
 });
 

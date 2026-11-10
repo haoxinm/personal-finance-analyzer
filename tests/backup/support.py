@@ -6,9 +6,9 @@ import hashlib
 import sqlite3
 from pathlib import Path
 
-from spend_analyzer.core.paths import create_home_layout
-from spend_analyzer.db.migrate import upgrade_head
-from spend_analyzer.db.models import (
+from personal_finance_analyzer.core.paths import create_home_layout
+from personal_finance_analyzer.db.migrate import upgrade_head
+from personal_finance_analyzer.db.models import (
     Account,
     Issuer,
     Job,
@@ -17,7 +17,7 @@ from spend_analyzer.db.models import (
     Transaction,
     User,
 )
-from spend_analyzer.db.session import make_engine_for_path, make_session_factory
+from personal_finance_analyzer.db.session import make_engine_for_path, make_session_factory
 
 PASSPHRASE = "correct horse battery staple"
 SECRET_API_KEY = "sk-live-this-must-never-be-archived"
@@ -52,7 +52,7 @@ def seed_home(home: Path) -> dict[str, str]:
     """Create ``home`` as a migrated data directory holding one of everything a backup carries,
     plus the things it must leave out. Returns ``{"statement_sha": ..., "tax_sha": ...}``."""
     create_home_layout(home)
-    db_file = home / "spend.db"
+    db_file = home / "finance.db"
     upgrade_head(f"sqlite:///{db_file}")
 
     statement_pdf = pdf_bytes("statement")

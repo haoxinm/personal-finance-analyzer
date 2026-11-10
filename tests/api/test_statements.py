@@ -10,8 +10,8 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
-from spend_analyzer.api.services import gateway
-from spend_analyzer.db.models import Statement, utcnow_iso
+from personal_finance_analyzer.api.services import gateway
+from personal_finance_analyzer.db.models import Statement, utcnow_iso
 
 
 def _make_statement(session: Session, *, status: str = "awaiting_extractor") -> int:

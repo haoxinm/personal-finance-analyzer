@@ -14,7 +14,7 @@ function json(body: unknown, status = 200): Response {
 async function renderImport(path: string, legacyStickyId?: number) {
   vi.resetModules();
   if (legacyStickyId !== undefined) {
-    window.localStorage.setItem("spend-analyzer:import:sticky-user-id", String(legacyStickyId));
+    window.localStorage.setItem("pfa:import:sticky-user-id", String(legacyStickyId));
   }
   const uploads: string[] = [];
   // Record the multipart `user_id` field as the upload code appends it.

@@ -12,9 +12,9 @@ from pathlib import Path
 import pytest
 from sqlalchemy.orm import Session
 
-from spend_analyzer.core.errors import UnsupportedLayoutError
-from spend_analyzer.db.models import Account, Issuer, Transaction, User
-from spend_analyzer.ingest import pipeline
+from personal_finance_analyzer.core.errors import UnsupportedLayoutError
+from personal_finance_analyzer.db.models import Account, Issuer, Transaction, User
+from personal_finance_analyzer.ingest import pipeline
 from tests.fixtures.gen.base import format_row, render_lines_pdf
 
 _CARD_WIDTHS = (10, 32, 14)
@@ -125,7 +125,7 @@ def test_no_text_layer_produces_one_statement_and_zero_transactions(
 
     assert proposal.status == "no_text_layer"
     assert proposal.confident is False
-    from spend_analyzer.db.models import Statement
+    from personal_finance_analyzer.db.models import Statement
 
     statements = session.query(Statement).all()
     assert len(statements) == 1
@@ -170,7 +170,7 @@ def test_importing_same_file_twice_is_a_noop(session: Session, tmp_path: Path) -
     assert result2.inserted == 0
     assert result2.transaction_ids == ()
 
-    from spend_analyzer.db.models import Statement
+    from personal_finance_analyzer.db.models import Statement
 
     assert session.query(Statement).count() == 1
     assert session.query(Transaction).count() == 3
@@ -184,12 +184,12 @@ def test_confirm_import_works_from_a_fresh_process(home: Path, tmp_path: Path) -
     on-disk database — as close to "a different process" as an in-process test can get — with no
     Python object shared between the two calls beyond the statement id and the data directory.
     """
-    from spend_analyzer.classify.taxonomy import sync_taxonomy
-    from spend_analyzer.db.migrate import upgrade_head
-    from spend_analyzer.db.models import Statement
-    from spend_analyzer.db.session import make_engine_for_path, make_session_factory
+    from personal_finance_analyzer.classify.taxonomy import sync_taxonomy
+    from personal_finance_analyzer.db.migrate import upgrade_head
+    from personal_finance_analyzer.db.models import Statement
+    from personal_finance_analyzer.db.session import make_engine_for_path, make_session_factory
 
-    db_path = home / "spend.db"
+    db_path = home / "finance.db"
     upgrade_head(f"sqlite:///{db_path}")
 
     pdf_path = tmp_path / "statement.pdf"
@@ -514,7 +514,7 @@ def test_unsupported_layout_sets_status_and_reraises(session: Session, tmp_path:
             remember=True,
         )
 
-    from spend_analyzer.db.models import Statement
+    from personal_finance_analyzer.db.models import Statement
 
     statement = session.get(Statement, proposal.statement_id)
     assert statement is not None
@@ -554,8 +554,8 @@ def test_reparse_rebuilds_rows_without_duplicating(session: Session, tmp_path: P
 
 
 def test_reparse_without_stored_copy_raises(session: Session, tmp_path: Path) -> None:
-    from spend_analyzer.core.errors import SpendAnalyzerError
-    from spend_analyzer.db.models import Statement
+    from personal_finance_analyzer.core.errors import PfaError
+    from personal_finance_analyzer.db.models import Statement
 
     statement = Statement(
         file_sha256="0" * 64,
@@ -567,7 +567,7 @@ def test_reparse_without_stored_copy_raises(session: Session, tmp_path: Path) ->
     session.add(statement)
     session.flush()
 
-    with pytest.raises(SpendAnalyzerError):
+    with pytest.raises(PfaError):
         pipeline.reparse(session, statement.id, parser_id="generic_table", layout_spec_id=None)
 
 
@@ -617,7 +617,7 @@ def test_reassign_moves_rows_and_deletes_true_duplicates(session: Session, tmp_p
 
 
 def _edit_by_hand(session: Session, txn: Transaction, category: str, subcategory: str) -> None:
-    from spend_analyzer.classify import cascade
+    from personal_finance_analyzer.classify import cascade
 
     cascade.apply_user_correction(
         session,
@@ -890,8 +890,8 @@ def test_reparse_does_not_commit_so_the_caller_can_roll_it_back(
 def test_reassign_hands_a_deleted_duplicates_edit_to_the_surviving_twin(
     session: Session, tmp_path: Path
 ) -> None:
-    from spend_analyzer.db.models import Statement
-    from spend_analyzer.ingest.dedupe import DedupeKey, compute_dedupe_hash
+    from personal_finance_analyzer.db.models import Statement
+    from personal_finance_analyzer.ingest.dedupe import DedupeKey, compute_dedupe_hash
 
     pdf_path = tmp_path / "statement.pdf"
     _build_card_pdf(

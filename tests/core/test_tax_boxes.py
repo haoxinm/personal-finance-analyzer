@@ -6,7 +6,12 @@ import json
 
 import pytest
 
-from spend_analyzer.core.tax_boxes import BOX_MAP, FALLBACK_FORM_TYPES, lookup, normalize_box
+from personal_finance_analyzer.core.tax_boxes import (
+    BOX_MAP,
+    FALLBACK_FORM_TYPES,
+    lookup,
+    normalize_box,
+)
 from tests.ingest.tax_support import GOLDEN_DIR
 
 _GOLDENS = sorted(GOLDEN_DIR.glob("*/*.json"))

@@ -8,7 +8,7 @@
  * artifact/browser-storage rule this app follows generally: storage failures never break render.
  */
 
-const SKIP_CONFIRM_KEY = "spend-analyzer:import:skip-confirm-issuer-ids";
+const SKIP_CONFIRM_KEY = "pfa:import:skip-confirm-issuer-ids";
 
 function readSkipConfirmIds(): number[] {
   try {

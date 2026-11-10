@@ -17,10 +17,10 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from spend_analyzer.api.restore_gate import RestoreGate
-from spend_analyzer.backup import archive
-from spend_analyzer.backup.errors import BackupBusyError
-from spend_analyzer.db.models import Job, User
+from personal_finance_analyzer.api.restore_gate import RestoreGate
+from personal_finance_analyzer.backup import archive
+from personal_finance_analyzer.backup.errors import BackupBusyError
+from personal_finance_analyzer.db.models import Job, User
 from tests.backup.support import PASSPHRASE, USER_NAME, seed_home
 
 EXPORT = "/api/backup/export"
@@ -32,7 +32,7 @@ def other_machine_backup(tmp_path: Path) -> Path:
     """A passphrase-encrypted backup made from some other data directory."""
     other = tmp_path / "other_machine"
     seed_home(other)
-    out = tmp_path / "from_other.spendbackup"
+    out = tmp_path / "from_other.pfabackup"
     archive.create_backup(out, passphrase=PASSPHRASE, home=other)
     return out
 
@@ -75,23 +75,23 @@ def system_tmp(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 @pytest.mark.parametrize("route", [EXPORT, RESTORE])
 def test_routes_require_token_and_host(client: TestClient, route: str) -> None:
-    assert client.post(route, headers={"X-Spend-Token": ""}).status_code == 403
-    assert client.post(route, headers={"X-Spend-Token": "wrong"}).status_code == 403
+    assert client.post(route, headers={"X-PFA-Token": ""}).status_code == 403
+    assert client.post(route, headers={"X-PFA-Token": "wrong"}).status_code == 403
     assert client.post(route, headers={"Host": "evil.example"}).status_code == 403
 
 
 def test_restore_upload_without_token_is_403_and_changes_nothing(
     client: TestClient, home: Path, other_machine_backup: Path
 ) -> None:
-    before = (home / "spend.db").read_bytes()
+    before = (home / "finance.db").read_bytes()
     siblings = _siblings(home)
     response = client.post(
         RESTORE,
         content=other_machine_backup.read_bytes(),
-        headers={**_headers(PASSPHRASE), "X-Spend-Token": ""},
+        headers={**_headers(PASSPHRASE), "X-PFA-Token": ""},
     )
     assert response.status_code == 403
-    assert (home / "spend.db").read_bytes() == before
+    assert (home / "finance.db").read_bytes() == before
     assert _siblings(home) == siblings
 
 
@@ -111,10 +111,10 @@ def test_export_encrypted_downloads_an_archive_restore_can_open(
     assert response.status_code == 200
     assert response.headers["content-type"] == "application/octet-stream"
     assert response.headers["cache-control"] == "no-store"
-    assert ".spendbackup" in response.headers["content-disposition"]
+    assert ".pfabackup" in response.headers["content-disposition"]
     assert not zipfile.is_zipfile(io.BytesIO(response.content))  # sealed, not a bare zip
 
-    downloaded = tmp_path / "dl.spendbackup"
+    downloaded = tmp_path / "dl.pfabackup"
     downloaded.write_bytes(response.content)
     info = archive.inspect_backup(downloaded, passphrase=PASSPHRASE)
     assert info.encrypted
@@ -123,10 +123,10 @@ def test_export_encrypted_downloads_an_archive_restore_can_open(
 
 def seed_home_over(home: Path) -> None:
     """Put a user and a transaction into the live database the test app already has open."""
-    from spend_analyzer.db.models import Account, Issuer, Statement, Transaction
-    from spend_analyzer.db.session import make_engine_for_path, make_session_factory
+    from personal_finance_analyzer.db.models import Account, Issuer, Statement, Transaction
+    from personal_finance_analyzer.db.session import make_engine_for_path, make_session_factory
 
-    engine = make_engine_for_path(home / "spend.db")
+    engine = make_engine_for_path(home / "finance.db")
     try:
         with make_session_factory(engine)() as session:
             user = User(name=USER_NAME, is_default=True)
@@ -221,7 +221,7 @@ def test_restore_replaces_data_and_the_running_app_serves_it(
     assert body["migrated"] is False
     previous = Path(body["previous_dir"])
     assert previous.is_dir() and previous.name.endswith(".before-restore")
-    assert (previous / "spend.db").is_file()  # the old data is kept, not deleted
+    assert (previous / "finance.db").is_file()  # the old data is kept, not deleted
 
     # Same app instance, same engine object: it now reads the restored database.
     names = [u["name"] for u in client.get("/api/users").json()]
@@ -235,14 +235,14 @@ def test_restore_replaces_data_and_the_running_app_serves_it(
 def test_restore_wrong_passphrase_is_400_and_touches_nothing(
     client: TestClient, home: Path, other_machine_backup: Path
 ) -> None:
-    before = (home / "spend.db").read_bytes()
+    before = (home / "finance.db").read_bytes()
     siblings = _siblings(home)
     response = client.post(RESTORE, **_upload(other_machine_backup, "not the passphrase"))
     assert response.status_code == 400
     assert "wrong passphrase" in response.json()["detail"]
     missing = client.post(RESTORE, **_upload(other_machine_backup, None))
     assert missing.status_code == 400
-    assert (home / "spend.db").read_bytes() == before
+    assert (home / "finance.db").read_bytes() == before
     assert _siblings(home) == siblings
     assert client.get("/api/users").status_code == 200  # still serving
 
@@ -257,7 +257,7 @@ def test_restore_rejects_junk_upload(client: TestClient, home: Path) -> None:
 def test_restore_upload_over_the_cap_is_413(
     client: TestClient, home: Path, other_machine_backup: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from spend_analyzer.api.routers import backup as backup_router
+    from personal_finance_analyzer.api.routers import backup as backup_router
 
     monkeypatch.setattr(backup_router, "MAX_BACKUP_UPLOAD_BYTES", 1024)
     siblings = _siblings(home)
@@ -301,7 +301,7 @@ def test_restore_upload_over_the_cap_is_cut_off_while_streaming(
 ) -> None:
     """No Content-Length (a chunked body): the cap is enforced on the bytes actually received,
     the rest of the body is never read, and the partial file is deleted."""
-    from spend_analyzer.api.routers import backup as backup_router
+    from personal_finance_analyzer.api.routers import backup as backup_router
 
     monkeypatch.setattr(backup_router, "MAX_BACKUP_UPLOAD_BYTES", 4096)
     sizes: list[int] = []
@@ -326,14 +326,14 @@ def test_restore_upload_over_the_cap_is_cut_off_while_streaming(
     assert sizes and sizes[0] <= 4096  # never written past the cap
     assert _siblings(home) == siblings  # the partial upload's work dir is gone
     assert list(system_tmp.iterdir()) == []
-    assert (home / "spend.db").is_file()
+    assert (home / "finance.db").is_file()
     assert client.get("/api/users").status_code == 200  # nothing was quiesced or swapped
 
 
 def test_restore_announced_size_over_the_cap_is_refused_before_reading(
     client: TestClient, home: Path, other_machine_backup: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from spend_analyzer.api.routers import backup as backup_router
+    from personal_finance_analyzer.api.routers import backup as backup_router
 
     monkeypatch.setattr(backup_router, "MAX_BACKUP_UPLOAD_BYTES", 10)
     response = client.post(RESTORE, **_upload(other_machine_backup))  # Content-Length > 10
@@ -343,7 +343,7 @@ def test_restore_announced_size_over_the_cap_is_refused_before_reading(
 
 def test_restore_wants_a_raw_body_not_multipart(client: TestClient, home: Path) -> None:
     siblings = _siblings(home)
-    response = client.post(RESTORE, files={"file": ("x.spendbackup", b"data")})
+    response = client.post(RESTORE, files={"file": ("x.pfabackup", b"data")})
     assert response.status_code == 415
     assert "raw body" in response.json()["detail"]
     assert _siblings(home) == siblings
@@ -359,7 +359,7 @@ def test_restore_passphrase_header_must_be_base64(client: TestClient, home: Path
 def test_restore_passphrase_may_be_non_ascii(client: TestClient, tmp_path: Path) -> None:
     other = tmp_path / "unicode_machine"
     seed_home(other)
-    sealed = tmp_path / "unicode.spendbackup"
+    sealed = tmp_path / "unicode.pfabackup"
     archive.create_backup(sealed, passphrase="pässwörd-日本語-ok", home=other)
     response = client.post(RESTORE, **_upload(sealed, "pässwörd-日本語-ok"))
     assert response.status_code == 200, response.text
@@ -386,10 +386,10 @@ def test_restore_refused_while_a_job_is_running(
 def test_restore_refused_when_server_uses_a_different_database(
     other_machine_backup: Path, tmp_path: Path, home: Path
 ) -> None:
-    from spend_analyzer.api.app import create_app
-    from spend_analyzer.config import Settings
-    from spend_analyzer.db.migrate import upgrade_head
-    from spend_analyzer.db.session import make_engine_for_path
+    from personal_finance_analyzer.api.app import create_app
+    from personal_finance_analyzer.config import Settings
+    from personal_finance_analyzer.db.migrate import upgrade_head
+    from personal_finance_analyzer.db.session import make_engine_for_path
 
     elsewhere = tmp_path / "elsewhere.db"
     upgrade_head(f"sqlite:///{elsewhere}")
@@ -397,7 +397,7 @@ def test_restore_refused_when_server_uses_a_different_database(
     try:
         app = create_app(engine=engine, settings=Settings(), token="t")
         with TestClient(
-            app, base_url="http://127.0.0.1", headers={"Host": "127.0.0.1", "X-Spend-Token": "t"}
+            app, base_url="http://127.0.0.1", headers={"Host": "127.0.0.1", "X-PFA-Token": "t"}
         ) as other_client:
             response = other_client.post(RESTORE, **_upload(other_machine_backup))
         assert response.status_code == 409

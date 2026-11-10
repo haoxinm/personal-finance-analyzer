@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from spend_analyzer.core import paths
+from personal_finance_analyzer.core import paths
 
 
 def test_get_home_honors_env_override(home: Path) -> None:
@@ -25,7 +25,7 @@ def test_ensure_home_creates_subdirs_with_0700(home: Path) -> None:
 
 
 def test_derived_paths_live_under_home(home: Path) -> None:
-    assert paths.db_path() == home / "spend.db"
+    assert paths.db_path() == home / "finance.db"
     assert paths.config_path() == home / "config.toml"
     assert paths.statements_dir() == home / "statements"
     assert paths.extract_cache_dir() == home / "extract_cache"
@@ -38,10 +38,15 @@ def test_default_home_is_platform_specific(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.delenv("LOCALAPPDATA", raising=False)
     monkeypatch.delenv("APPDATA", raising=False)
     assert paths.default_home("darwin") == (
-        Path.home() / "Library" / "Application Support" / "SpendAnalyzer"
+        Path.home() / "Library" / "Application Support" / "PersonalFinanceAnalyzer"
     )
-    assert paths.default_home("linux") == Path.home() / ".local" / "share" / "spend-analyzer"
-    assert paths.default_home("win32") == Path.home() / "AppData" / "Local" / "SpendAnalyzer"
+    assert (
+        paths.default_home("linux")
+        == Path.home() / ".local" / "share" / "personal-finance-analyzer"
+    )
+    assert (
+        paths.default_home("win32") == Path.home() / "AppData" / "Local" / "PersonalFinanceAnalyzer"
+    )
 
 
 def test_default_home_honors_platform_env_vars(
@@ -49,5 +54,5 @@ def test_default_home_honors_platform_env_vars(
 ) -> None:
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
-    assert paths.default_home("linux") == tmp_path / "xdg" / "spend-analyzer"
-    assert paths.default_home("win32") == tmp_path / "local" / "SpendAnalyzer"
+    assert paths.default_home("linux") == tmp_path / "xdg" / "personal-finance-analyzer"
+    assert paths.default_home("win32") == tmp_path / "local" / "PersonalFinanceAnalyzer"

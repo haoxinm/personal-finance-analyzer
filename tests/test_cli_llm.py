@@ -1,4 +1,4 @@
-"""`spend-analyzer llm ...` (network-free)."""
+"""`pfa llm ...` (network-free)."""
 
 from __future__ import annotations
 
@@ -7,9 +7,9 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from spend_analyzer import config as config_module
-from spend_analyzer.cli import app
-from spend_analyzer.config import load_settings
+from personal_finance_analyzer import config as config_module
+from personal_finance_analyzer.cli import app
+from personal_finance_analyzer.config import load_settings
 from tests.llm_fakes import FakeLLM, install
 
 runner = CliRunner()
@@ -44,7 +44,7 @@ def kr(monkeypatch: pytest.MonkeyPatch) -> _Keyring:
     monkeypatch.setattr(config_module.keyring, "get_password", fake.get_password)
     monkeypatch.setattr(config_module.keyring, "set_password", fake.set_password)
     monkeypatch.setattr(config_module.keyring, "delete_password", fake.delete_password)
-    monkeypatch.delenv("SPEND_ANALYZER_LLM_API_KEY", raising=False)
+    monkeypatch.delenv("PFA_LLM_API_KEY", raising=False)
     return fake
 
 
@@ -150,7 +150,7 @@ def test_set_key_from_stdin_and_clear_key(home: Path, kr: _Keyring) -> None:
     )
     assert result.exit_code == 0, result.output
     assert secret not in result.output
-    assert kr.store[("spend-analyzer", "llm:api.example.com")] == secret
+    assert kr.store[("personal-finance-analyzer", "llm:api.example.com")] == secret
     assert not (home / "config.toml").exists()
 
     runner.invoke(app, ["llm", "set", "--base-url", "https://api.example.com"])

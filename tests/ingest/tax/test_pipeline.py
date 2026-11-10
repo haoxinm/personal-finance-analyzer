@@ -11,10 +11,10 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from spend_analyzer.config import PrivacyConfig, Settings, save_settings
-from spend_analyzer.core.paths import extract_cache_dir, statements_dir
-from spend_analyzer.db.models import IncomeItem, TaxDocument, TaxForm, TaxItem, User
-from spend_analyzer.ingest.tax.pipeline import (
+from personal_finance_analyzer.config import PrivacyConfig, Settings, save_settings
+from personal_finance_analyzer.core.paths import extract_cache_dir, statements_dir
+from personal_finance_analyzer.db.models import IncomeItem, TaxDocument, TaxForm, TaxItem, User
+from personal_finance_analyzer.ingest.tax.pipeline import (
     UNSUPPORTED_MESSAGE,
     delete_tax_document,
     import_tax_document,
@@ -221,8 +221,8 @@ def test_pdf_not_retained_by_default(session: Session) -> None:
 
 def test_staged_upload_is_removed_when_not_retained(session: Session) -> None:
     """The API saves uploads at statements_dir()/<sha>.pdf; the pipeline must delete that copy."""
-    from spend_analyzer.core.paths import ensure_home
-    from spend_analyzer.ingest.extract import sha256_file
+    from personal_finance_analyzer.core.paths import ensure_home
+    from personal_finance_analyzer.ingest.extract import sha256_file
 
     ensure_home()
     src = generated_pdf("tax_w2", "normal")
@@ -269,7 +269,9 @@ def test_logs_contain_only_ids_and_counts(
     uid = _user(session)
     _import(session, "tax_w2", "normal", uid)
     _import(session, "tax_w2", "no_box1", uid)
-    text = "\n".join(r.getMessage() for r in caplog.records if r.name.startswith("spend_analyzer"))
+    text = "\n".join(
+        r.getMessage() for r in caplog.records if r.name.startswith("personal_finance_analyzer")
+    )
     assert "tax import" in text
     assert "Pinecrest" not in text
     assert "8543210" not in text and "85,432" not in text
@@ -323,8 +325,8 @@ def test_original_name_is_scrubbed(session: Session) -> None:
 
 
 def _stage(src: Path) -> Path:
-    from spend_analyzer.core.paths import ensure_home
-    from spend_analyzer.ingest.extract import sha256_file
+    from personal_finance_analyzer.core.paths import ensure_home
+    from personal_finance_analyzer.ingest.extract import sha256_file
 
     ensure_home()
     staged = statements_dir() / f"{sha256_file(src)}.pdf"
@@ -339,7 +341,7 @@ def test_unexpected_exception_is_recorded_unstaged_and_not_raised(
     caplog: pytest.LogCaptureFixture,
     where: str,
 ) -> None:
-    from spend_analyzer.ingest.tax import pipeline
+    from personal_finance_analyzer.ingest.tax import pipeline
 
     secret = "SSN 123-45-6789 leaked"
 
@@ -369,7 +371,7 @@ def test_unexpected_exception_is_recorded_unstaged_and_not_raised(
 def test_unexpected_exception_mid_insert_rolls_back_partial_rows(
     session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from spend_analyzer.ingest.tax import pipeline
+    from personal_finance_analyzer.ingest.tax import pipeline
 
     monkeypatch.setattr(
         pipeline, "_form_fingerprint", lambda *a, **k: (_ for _ in ()).throw(KeyError("x"))

@@ -5,7 +5,14 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
-from spend_analyzer.db.models import Account, Issuer, Statement, Transaction, User, utcnow_iso
+from personal_finance_analyzer.db.models import (
+    Account,
+    Issuer,
+    Statement,
+    Transaction,
+    User,
+    utcnow_iso,
+)
 
 
 def _seed(session: Session) -> None:

@@ -6,8 +6,8 @@ import threading
 
 import pytest
 
-from spend_analyzer import config as config_module
-from spend_analyzer.core.native_locks import KEYRING_LOCK
+from personal_finance_analyzer import config as config_module
+from personal_finance_analyzer.core.native_locks import KEYRING_LOCK
 
 
 def test_keyring_calls_hold_lock_and_never_overlap(monkeypatch: pytest.MonkeyPatch) -> None:

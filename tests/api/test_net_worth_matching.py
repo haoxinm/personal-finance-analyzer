@@ -10,8 +10,8 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from spend_analyzer.analytics import net_worth_query
-from spend_analyzer.db.models import BalanceEntry
+from personal_finance_analyzer.analytics import net_worth_query
+from personal_finance_analyzer.db.models import BalanceEntry
 
 
 def _user(client: TestClient, name: str = "Alex") -> int:

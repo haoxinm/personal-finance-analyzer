@@ -7414,7 +7414,7 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        /** @description The .spendbackup archive, as the raw request body. */
+        /** @description The .pfabackup archive, as the raw request body. */
         requestBody: {
             content: {
                 "application/octet-stream": string;

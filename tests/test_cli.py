@@ -8,8 +8,8 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from spend_analyzer.cli import app
-from spend_analyzer.db.session import make_engine_for_path
+from personal_finance_analyzer.cli import app
+from personal_finance_analyzer.db.session import make_engine_for_path
 
 runner = CliRunner()
 
@@ -32,7 +32,7 @@ def _expected_report_total() -> int:
     (`classify.kinds.resolve_kind`, called with each golden's own `kind_hint`/description/amount/
     account_type) — payments, transfers, and the one `adjustment` row are excluded, and the one
     `refund` row nets in with its negative sign (I11/A7)."""
-    from spend_analyzer.classify.kinds import resolve_kind
+    from personal_finance_analyzer.classify.kinds import resolve_kind
 
     fixtures_dir = Path(__file__).resolve().parent / "fixtures" / "generated"
     total = 0
@@ -55,7 +55,7 @@ def test_migrate_creates_valid_db(home: Path) -> None:
     result = runner.invoke(app, ["migrate"])
     assert result.exit_code == 0, result.output
 
-    db_file = home / "spend.db"
+    db_file = home / "finance.db"
     assert db_file.exists()
 
     engine = make_engine_for_path(db_file)
@@ -229,11 +229,11 @@ def test_doctor_reports_pass_fail_lines(home: Path) -> None:
 def _confirm_command_args(import_output: str) -> list[str]:
     """Parse the `import <path> --user-id ... [--parser-id ...]` command `import_cmd` prints
     after an `awaiting_extractor` result, and return it as the argv `runner.invoke` takes
-    (everything after the leading `spend-analyzer`) — exactly what a terminal user would copy
+    (everything after the leading `pfa`) — exactly what a terminal user would copy
     and run."""
     import re
 
-    match = re.search(r"confirm with:\n\s+spend-analyzer (.+)", import_output)
+    match = re.search(r"confirm with:\n\s+pfa (.+)", import_output)
     assert match is not None, f"no confirm command printed:\n{import_output}"
     return _split_printed_command(match.group(1))
 
@@ -342,7 +342,7 @@ def test_import_builtin_failure_warns_and_prints_llm_retry_command(
     from tests.ingest.test_pipeline import _build_bank_pdf
     from tests.llm_fakes import install
 
-    monkeypatch.setenv("SPEND_ANALYZER_PRIVACY__STORE_PDF_COPIES", "false")
+    monkeypatch.setenv("PFA_PRIVACY__STORE_PDF_COPIES", "false")
     pdf = tmp_path / "both.pdf"
     _build_bank_pdf(
         pdf,
@@ -362,12 +362,12 @@ def test_import_builtin_failure_warns_and_prints_llm_retry_command(
     assert failed.exit_code == 1, failed.output
     assert "both the debit and credit" in failed.output
     assert "warning" in failed.output
-    match = re.search(r"spend-analyzer (import .*--parser-id llm.*)", failed.output)
+    match = re.search(r"pfa (import .*--parser-id llm.*)", failed.output)
     assert match is not None, failed.output
 
-    monkeypatch.setenv("SPEND_ANALYZER_LLM__ENABLED", "true")
-    monkeypatch.setenv("SPEND_ANALYZER_LLM__BASE_URL", "https://api.example.com")
-    monkeypatch.setenv("SPEND_ANALYZER_LLM__MODEL", "m")
+    monkeypatch.setenv("PFA_LLM__ENABLED", "true")
+    monkeypatch.setenv("PFA_LLM__BASE_URL", "https://api.example.com")
+    monkeypatch.setenv("PFA_LLM__MODEL", "m")
     install(monkeypatch).queue(
         json.dumps({"account_type": "checking", "transactions": []})  # empty is fine too
     )

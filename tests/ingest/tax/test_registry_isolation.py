@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from spend_analyzer.ingest import registry as bank_registry
-from spend_analyzer.ingest.tax import registry as tax_registry
+from personal_finance_analyzer.ingest import registry as bank_registry
+from personal_finance_analyzer.ingest.tax import registry as tax_registry
 
 
 def test_bank_discovery_contains_no_tax_parser() -> None:

@@ -204,9 +204,9 @@ describe("shell chrome", () => {
 
   it("makes the product name a link home, outside the main nav", async () => {
     await renderApp("/tax");
-    const brand = screen.getByRole("link", { name: "Spend Analyzer" });
+    const brand = screen.getByRole("link", { name: "Personal Finance Analyzer" });
     expect(brand).toHaveAttribute("href", "/");
-    expect(within(screen.getByRole("navigation", { name: "Main" })).queryByRole("link", { name: "Spend Analyzer" })).toBeNull();
+    expect(within(screen.getByRole("navigation", { name: "Main" })).queryByRole("link", { name: "Personal Finance Analyzer" })).toBeNull();
   });
 
   it("is sticky only from md up, and the nav rows scroll sideways instead of wrapping", async () => {

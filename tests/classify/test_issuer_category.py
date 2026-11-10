@@ -6,12 +6,12 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from spend_analyzer.classify import rules
-from spend_analyzer.db.models import Rule
+from personal_finance_analyzer.classify import rules
+from personal_finance_analyzer.db.models import Rule
 
 
 def test_builtin_rules_all_validate_and_self_test() -> None:
-    # Importing `spend_analyzer.classify.rules` already ran `load_builtin_rules()` at module
+    # Importing `personal_finance_analyzer.classify.rules` already ran `load_builtin_rules()` at module
     # import time (it would have raised `ConfigError` on any bad entry); re-running it here
     # exercises the same validation deterministically within this test.
     reloaded = rules.load_builtin_rules()
@@ -37,7 +37,7 @@ def test_sync_builtin_rules_is_idempotent(session: Session) -> None:
 
 
 def test_sync_builtin_rules_never_touches_a_user_rule(session: Session) -> None:
-    from spend_analyzer.db.models import Category, Subcategory
+    from personal_finance_analyzer.db.models import Category, Subcategory
 
     category = session.execute(select(Category).where(Category.key == "others")).scalar_one()
     subcategory = session.execute(

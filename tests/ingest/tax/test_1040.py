@@ -15,11 +15,11 @@ from dataclasses import asdict
 
 import pytest
 
-from spend_analyzer.core.errors import ParserError, UnsupportedLayoutError
-from spend_analyzer.core.tax_types import ParsedTaxDocument, ParsedTaxForm, TaxFormParser
-from spend_analyzer.core.types import ExtractedDoc
-from spend_analyzer.ingest.tax import estimate
-from spend_analyzer.ingest.tax.parsers.f1040 import (
+from personal_finance_analyzer.core.errors import ParserError, UnsupportedLayoutError
+from personal_finance_analyzer.core.tax_types import ParsedTaxDocument, ParsedTaxForm, TaxFormParser
+from personal_finance_analyzer.core.types import ExtractedDoc
+from personal_finance_analyzer.ingest.tax import estimate
+from personal_finance_analyzer.ingest.tax.parsers.f1040 import (
     F1040_FIELDS,
     PARSER,
     SUPPORTED_1040_YEARS,

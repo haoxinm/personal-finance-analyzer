@@ -12,8 +12,8 @@ import time
 
 import pytest
 
-from spend_analyzer.ingest import normalize as normalize_mod
-from spend_analyzer.ingest.normalize import Normalized, forbidden_hit_count, normalize
+from personal_finance_analyzer.ingest import normalize as normalize_mod
+from personal_finance_analyzer.ingest.normalize import Normalized, forbidden_hit_count, normalize
 
 
 def test_normalized_is_frozen_dataclass() -> None:

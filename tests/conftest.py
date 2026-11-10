@@ -1,6 +1,6 @@
 """Shared pytest fixtures (§0.3, P0-1).
 
-- `home`: a temporary `SPEND_ANALYZER_HOME`, isolated per test.
+- `home`: a temporary `PFA_HOME`, isolated per test.
 - Process-wide isolation from the real HOME, data directory and keychain (import time + autouse).
 - `engine` / `session`: a migrated temporary SQLite database with the taxonomy synced.
 - An autouse guard that fails any test opening a network socket to anything other than
@@ -24,17 +24,17 @@ import pytest
 from sqlalchemy import Engine
 from sqlalchemy.orm import Session
 
-from spend_analyzer.backup import crypto
-from spend_analyzer.classify.taxonomy import sync_taxonomy
-from spend_analyzer.core.paths import SPEND_ANALYZER_HOME_ENV
-from spend_analyzer.db.migrate import upgrade_head
-from spend_analyzer.db.session import make_engine_for_path, make_session_factory
+from personal_finance_analyzer.backup import crypto
+from personal_finance_analyzer.classify.taxonomy import sync_taxonomy
+from personal_finance_analyzer.core.paths import PFA_HOME_ENV
+from personal_finance_analyzer.db.migrate import upgrade_head
+from personal_finance_analyzer.db.session import make_engine_for_path, make_session_factory
 
 _LOCAL_HOSTS = {"127.0.0.1", "::1", "localhost", ""}
 
 
 def _isolate_process_from_the_real_user_profile() -> None:
-    """Point `HOME`, `SPEND_ANALYZER_HOME` and the keyring at scratch values for the whole test
+    """Point `HOME`, `PFA_HOME` and the keyring at scratch values for the whole test
     process, at conftest import.
 
     The per-test autouse fixtures below do the same per test, but module- and session-scoped
@@ -44,12 +44,12 @@ def _isolate_process_from_the_real_user_profile() -> None:
     any code that creates or moves things there) change, a developer's own data directory or
     pop a dialog from the real OS keychain.
     """
-    scratch = Path(tempfile.mkdtemp(prefix="spend-analyzer-tests-"))
+    scratch = Path(tempfile.mkdtemp(prefix="pfa-tests-"))
     atexit.register(shutil.rmtree, scratch, ignore_errors=True)
-    for name in [n for n in os.environ if n.startswith("SPEND_ANALYZER_")]:
+    for name in [n for n in os.environ if n.startswith("PFA_")]:
         del os.environ[name]
     user_home = str(scratch / "user_home")
-    os.environ["SPEND_ANALYZER_HOME"] = str(scratch / "data_home")
+    os.environ["PFA_HOME"] = str(scratch / "data_home")
     os.environ["HOME"] = user_home
     os.environ["USERPROFILE"] = user_home
     os.environ["LOCALAPPDATA"] = str(scratch / "user_home" / "AppData" / "Local")
@@ -63,10 +63,10 @@ _isolate_process_from_the_real_user_profile()
 
 @pytest.fixture
 def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """A temporary data directory, set as `SPEND_ANALYZER_HOME` for the duration of the test."""
-    data_home = tmp_path / "spend_analyzer_home"
+    """A temporary data directory, set as `PFA_HOME` for the duration of the test."""
+    data_home = tmp_path / "pfa_home"
     data_home.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setenv(SPEND_ANALYZER_HOME_ENV, str(data_home))
+    monkeypatch.setenv(PFA_HOME_ENV, str(data_home))
     return data_home
 
 
@@ -74,7 +74,7 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 def _isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Every test gets its own data directory, so code that reads optional local files (the
     tax-parameter cache and override) never sees a real user's data. `home` replaces it."""
-    monkeypatch.setenv(SPEND_ANALYZER_HOME_ENV, str(tmp_path / "auto_home"))
+    monkeypatch.setenv(PFA_HOME_ENV, str(tmp_path / "auto_home"))
     # Belt and braces: even a test that clears the override must resolve the platform default
     # under a scratch home, never the developer's own.
     fake_user_home = str(tmp_path / "fake_user_home")
@@ -123,7 +123,7 @@ def _in_memory_keyring() -> Iterator[None]:
 @pytest.fixture
 def engine(home: Path) -> Iterator[Engine]:
     """A migrated temporary SQLite database (taxonomy not yet synced)."""
-    db_file = home / "spend.db"
+    db_file = home / "finance.db"
     upgrade_head(f"sqlite:///{db_file}")
     eng = make_engine_for_path(db_file)
     try:

@@ -21,12 +21,12 @@ from pathlib import Path
 import pdfplumber
 import pytest
 
-from spend_analyzer.core.types import ExtractedDoc, PageText, StatementParser, Word
-from spend_analyzer.ingest import registry
-from spend_analyzer.ingest.parsers.layout_a_credit import LayoutACredit
-from spend_analyzer.ingest.parsers.layout_b_credit import LayoutBCreditParser
-from spend_analyzer.ingest.parsers.layout_c_credit import LayoutCCreditParser
-from spend_analyzer.ingest.parsers.layout_d_bank import LayoutDBankParser
+from personal_finance_analyzer.core.types import ExtractedDoc, PageText, StatementParser, Word
+from personal_finance_analyzer.ingest import registry
+from personal_finance_analyzer.ingest.parsers.layout_a_credit import LayoutACredit
+from personal_finance_analyzer.ingest.parsers.layout_b_credit import LayoutBCreditParser
+from personal_finance_analyzer.ingest.parsers.layout_c_credit import LayoutCCreditParser
+from personal_finance_analyzer.ingest.parsers.layout_d_bank import LayoutDBankParser
 
 _FIXTURES_DIR = Path(__file__).resolve().parent.parent / "fixtures" / "generated"
 

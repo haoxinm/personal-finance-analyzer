@@ -8,10 +8,10 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from spend_analyzer.analytics.tax_query import TaxQuery, run_tax_summary
-from spend_analyzer.db.models import IncomeItem, TaxDocument, TaxForm, TaxItem, User
-from spend_analyzer.ingest.tax import edit
-from spend_analyzer.ingest.tax.pipeline import import_tax_document
+from personal_finance_analyzer.analytics.tax_query import TaxQuery, run_tax_summary
+from personal_finance_analyzer.db.models import IncomeItem, TaxDocument, TaxForm, TaxItem, User
+from personal_finance_analyzer.ingest.tax import edit
+from personal_finance_analyzer.ingest.tax.pipeline import import_tax_document
 from tests.ingest.tax_support import generated_pdf
 
 

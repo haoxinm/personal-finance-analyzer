@@ -8,9 +8,9 @@ from typing import Any
 
 import pytest
 
-from spend_analyzer.core.errors import LLMError
-from spend_analyzer.core.tax_types import UnparsedRegion
-from spend_analyzer.llm import tax_parser as tp
+from personal_finance_analyzer.core.errors import LLMError
+from personal_finance_analyzer.core.tax_types import UnparsedRegion
+from personal_finance_analyzer.llm import tax_parser as tp
 from tests.ingest.tax_support import doc_from_lines, doc_from_pages
 from tests.llm_fakes import FakeLLM, install, remote_cfg
 
@@ -320,8 +320,8 @@ _TWO_UP = [
 
 
 def test_two_up_page_only_the_failed_form_is_sent(monkeypatch: pytest.MonkeyPatch) -> None:
-    from spend_analyzer.ingest.tax.fallback import apply_fallback
-    from spend_analyzer.ingest.tax.orchestrator import parse_document
+    from personal_finance_analyzer.ingest.tax.fallback import apply_fallback
+    from personal_finance_analyzer.ingest.tax.orchestrator import parse_document
 
     doc = doc_from_lines(_TWO_UP)
     outcome = parse_document(doc)
@@ -348,8 +348,8 @@ def test_two_up_page_only_the_failed_form_is_sent(monkeypatch: pytest.MonkeyPatc
 
 
 def test_llm_form_that_repeats_a_parsed_form_is_dropped_by_amounts_and_by_account() -> None:
-    from spend_analyzer.core.tax_types import ParsedIncomeItem, ParsedTaxForm
-    from spend_analyzer.ingest.tax.fallback import _merge_forms
+    from personal_finance_analyzer.core.tax_types import ParsedIncomeItem, ParsedTaxForm
+    from personal_finance_analyzer.ingest.tax.fallback import _merge_forms
 
     def form(amounts: list[int], acct: str | None, tin: str | None, method: str) -> ParsedTaxForm:
         return ParsedTaxForm(

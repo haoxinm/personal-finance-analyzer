@@ -148,6 +148,6 @@ def test_generated_files_are_clean(path: Path) -> None:
         json.loads(path.read_text())
         assert _problems_in(path.read_text()) == []
     elif path.suffix == ".pdf":
-        from spend_analyzer.ingest.extract import extract
+        from personal_finance_analyzer.ingest.extract import extract
 
         assert _problems_in(extract(path).full_text) == []

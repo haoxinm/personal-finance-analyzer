@@ -29,7 +29,7 @@ describe("import screen storage", () => {
   });
 
   it("survives a corrupt skip-confirmation value", () => {
-    window.localStorage.setItem("spend-analyzer:import:skip-confirm-issuer-ids", "{not json");
+    window.localStorage.setItem("pfa:import:skip-confirm-issuer-ids", "{not json");
     expect(isSkipConfirmForIssuer(1)).toBe(false);
   });
 });

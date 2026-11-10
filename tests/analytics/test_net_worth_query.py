@@ -3,12 +3,12 @@ from __future__ import annotations
 import pytest
 from sqlalchemy.orm import Session
 
-from spend_analyzer.analytics.net_worth_query import (
+from personal_finance_analyzer.analytics.net_worth_query import (
     NetWorthQuery,
     parse_period,
     run_net_worth_query,
 )
-from spend_analyzer.db.models import BalanceEntry, User
+from personal_finance_analyzer.db.models import BalanceEntry, User
 
 
 def _users(session: Session) -> tuple[int, int]:
@@ -150,7 +150,7 @@ def test_bad_period(session: Session, bad: str) -> None:
 
 
 def test_period_range_only_narrows_and_is_capped(session: Session) -> None:
-    from spend_analyzer.analytics.net_worth_query import MAX_SERIES_MONTHS
+    from personal_finance_analyzer.analytics.net_worth_query import MAX_SERIES_MONTHS
 
     u, _ = _users(session)
     _add(session, u, "checking", "C", "2025-03", 100)

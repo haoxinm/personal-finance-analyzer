@@ -13,8 +13,8 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
-from spend_analyzer.classify.kinds import resolve_kind
-from spend_analyzer.db.models import Job
+from personal_finance_analyzer.classify.kinds import resolve_kind
+from personal_finance_analyzer.db.models import Job
 
 _FIXTURE_DIR = Path(__file__).resolve().parent.parent / "fixtures" / "generated" / "layout_b_credit"
 _FIXTURE_PDF = _FIXTURE_DIR / "layout_b_credit_normal.pdf"

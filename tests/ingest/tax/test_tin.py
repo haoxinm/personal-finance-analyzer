@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from spend_analyzer.ingest.tax.tin import (
+from personal_finance_analyzer.ingest.tax.tin import (
     contains_ssn_shape,
     contains_tin_shape,
     has_long_digit_run,

@@ -9,14 +9,14 @@ import pytest
 from sqlalchemy import Engine, select
 from sqlalchemy.orm import Session
 
-from spend_analyzer.classify import cascade
-from spend_analyzer.classify.llm.batching import ClassifyResult as LlmClassifyResult
-from spend_analyzer.classify.llm.batching import ClassifyRunResult
-from spend_analyzer.classify.llm.egress import BatchResult
-from spend_analyzer.classify.llm.schema import Item
-from spend_analyzer.config import LLMConfig
-from spend_analyzer.core.errors import ConfigError
-from spend_analyzer.db.models import (
+from personal_finance_analyzer.classify import cascade
+from personal_finance_analyzer.classify.llm.batching import ClassifyResult as LlmClassifyResult
+from personal_finance_analyzer.classify.llm.batching import ClassifyRunResult
+from personal_finance_analyzer.classify.llm.egress import BatchResult
+from personal_finance_analyzer.classify.llm.schema import Item
+from personal_finance_analyzer.config import LLMConfig
+from personal_finance_analyzer.core.errors import ConfigError
+from personal_finance_analyzer.db.models import (
     Account,
     Category,
     Issuer,
@@ -27,7 +27,7 @@ from spend_analyzer.db.models import (
     Transaction,
     User,
 )
-from spend_analyzer.db.session import make_session_factory
+from personal_finance_analyzer.db.session import make_session_factory
 
 # --------------------------------------------------------------------------------------------
 # Fixture helpers.

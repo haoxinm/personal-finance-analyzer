@@ -16,10 +16,10 @@ from typing import Any
 import pdfplumber
 import pytest
 
-from spend_analyzer.core.errors import ParserError
-from spend_analyzer.core.types import ExtractedDoc, PageText, Word
-from spend_analyzer.ingest import registry
-from spend_analyzer.ingest.parsers.layout_b_credit import LayoutBCreditParser
+from personal_finance_analyzer.core.errors import ParserError
+from personal_finance_analyzer.core.types import ExtractedDoc, PageText, Word
+from personal_finance_analyzer.ingest import registry
+from personal_finance_analyzer.ingest.parsers.layout_b_credit import LayoutBCreditParser
 from tests.fixtures.gen.base import format_row, render_lines_pdf
 from tests.fixtures.gen.layout_b import layout_b
 

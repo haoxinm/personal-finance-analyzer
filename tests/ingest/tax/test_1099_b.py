@@ -7,9 +7,9 @@ import re
 
 import pytest
 
-from spend_analyzer.core.errors import ParserError
-from spend_analyzer.core.tax_types import ParsedTaxDocument
-from spend_analyzer.ingest.tax.parsers.f1099_b import PARSER, parse_b_section
+from personal_finance_analyzer.core.errors import ParserError
+from personal_finance_analyzer.core.tax_types import ParsedTaxDocument
+from personal_finance_analyzer.ingest.tax.parsers.f1099_b import PARSER, parse_b_section
 from tests.fixtures.gen.base import format_row
 from tests.fixtures.gen.tax_1099_b import Lot, section_lines
 from tests.ingest.tax_support import (

@@ -8,7 +8,7 @@ from typing import get_args
 
 import pytest
 
-from spend_analyzer.core import tax_types as tt
+from personal_finance_analyzer.core import tax_types as tt
 
 
 def test_form_role_covers_every_form_type() -> None:
@@ -75,7 +75,7 @@ def test_parsed_form_repr_has_no_ssn_shaped_value() -> None:
 
 
 def test_tax_parser_protocol_is_not_a_statement_parser() -> None:
-    from spend_analyzer.core.types import StatementParser
+    from personal_finance_analyzer.core.types import StatementParser
 
     class Fake:
         id = "tax_fake"

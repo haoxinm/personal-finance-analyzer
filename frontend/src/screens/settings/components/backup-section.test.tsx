@@ -16,7 +16,7 @@ const saveBlob = vi.fn<(blob: Blob, filename: string) => void>();
 
 vi.mock("../lib/backup", () => ({
   MIN_PASSPHRASE_LENGTH: 8,
-  backupFilename: () => "spend-analyzer-2026-01-01.spendbackup",
+  backupFilename: () => "pfa-2026-01-01.pfabackup",
   saveBlob: (blob: Blob, filename: string) => {
     saveBlob(blob, filename);
   },
@@ -81,7 +81,7 @@ describe("BackupSection", () => {
 
     const blob = new Blob(["archive"]);
     options?.onSuccess?.(blob);
-    expect(saveBlob).toHaveBeenCalledWith(blob, "spend-analyzer-2026-01-01.spendbackup");
+    expect(saveBlob).toHaveBeenCalledWith(blob, "pfa-2026-01-01.pfabackup");
     expect(await screen.findByLabelText("Backup passphrase")).toHaveValue("");
   });
 
@@ -104,7 +104,7 @@ describe("BackupSection", () => {
   it("asks for confirmation before restoring and sends the file and passphrase", async () => {
     const user = userEvent.setup();
     renderSection();
-    const file = new File(["bytes"], "mine.spendbackup", { type: "application/octet-stream" });
+    const file = new File(["bytes"], "mine.pfabackup", { type: "application/octet-stream" });
     await user.upload(screen.getByLabelText("Backup file"), file);
     await user.type(screen.getByLabelText("Restore passphrase"), PASSPHRASE);
     await user.click(screen.getByRole("button", { name: "Restore from backup" }));
@@ -120,7 +120,7 @@ describe("BackupSection", () => {
     confirm.mockReturnValue(false);
     const user = userEvent.setup();
     renderSection();
-    await user.upload(screen.getByLabelText("Backup file"), new File(["bytes"], "mine.spendbackup"));
+    await user.upload(screen.getByLabelText("Backup file"), new File(["bytes"], "mine.pfabackup"));
     await user.click(screen.getByRole("button", { name: "Restore from backup" }));
     expect(restoreMutate).not.toHaveBeenCalled();
   });
@@ -128,7 +128,7 @@ describe("BackupSection", () => {
   it("shows what was restored and where the previous data went", async () => {
     const user = userEvent.setup();
     renderSection();
-    await user.upload(screen.getByLabelText("Backup file"), new File(["bytes"], "mine.spendbackup"));
+    await user.upload(screen.getByLabelText("Backup file"), new File(["bytes"], "mine.pfabackup"));
     await user.click(screen.getByRole("button", { name: "Restore from backup" }));
 
     const [, options] = restoreMutate.mock.calls[0] ?? [];
@@ -136,7 +136,7 @@ describe("BackupSection", () => {
       created_at: "2026-10-30T10:00:00+00:00",
       counts: { users: 2, transactions: 1893 },
       migrated: true,
-      previous_dir: "/data/SpendAnalyzer.20261030T101500.before-restore",
+      previous_dir: "/data/PersonalFinanceAnalyzer.20261030T101500.before-restore",
     });
 
     const status = await screen.findByRole("status");
@@ -149,7 +149,7 @@ describe("BackupSection", () => {
   it("shows the server's error message when restore fails", async () => {
     const user = userEvent.setup();
     renderSection();
-    await user.upload(screen.getByLabelText("Backup file"), new File(["bytes"], "mine.spendbackup"));
+    await user.upload(screen.getByLabelText("Backup file"), new File(["bytes"], "mine.pfabackup"));
     await user.click(screen.getByRole("button", { name: "Restore from backup" }));
 
     const [, options] = restoreMutate.mock.calls[0] ?? [];

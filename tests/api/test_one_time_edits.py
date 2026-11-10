@@ -16,11 +16,11 @@ from fastapi.testclient import TestClient
 from sqlalchemy import Engine, select
 from sqlalchemy.orm import Session
 
-from spend_analyzer.api.services import gateway
-from spend_analyzer.classify import cascade
-from spend_analyzer.config import LLMConfig
-from spend_analyzer.db.models import MerchantMap, Rule, Transaction
-from spend_analyzer.db.session import make_session_factory
+from personal_finance_analyzer.api.services import gateway
+from personal_finance_analyzer.classify import cascade
+from personal_finance_analyzer.config import LLMConfig
+from personal_finance_analyzer.db.models import MerchantMap, Rule, Transaction
+from personal_finance_analyzer.db.session import make_session_factory
 from tests.api.seed import add_txn, base, category_ids
 
 GROCERY = ("grocery", "grocery_stores")

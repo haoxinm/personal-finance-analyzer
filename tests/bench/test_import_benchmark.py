@@ -20,8 +20,8 @@ from pathlib import Path
 import pytest
 from sqlalchemy.orm import Session
 
-from spend_analyzer.db.models import Issuer, User
-from spend_analyzer.ingest import extract, pipeline
+from personal_finance_analyzer.db.models import Issuer, User
+from personal_finance_analyzer.ingest import extract, pipeline
 from tests.fixtures.gen.base import format_row, render_lines_pdf
 
 pytestmark = pytest.mark.benchmark

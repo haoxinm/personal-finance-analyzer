@@ -6,10 +6,10 @@ from typing import Any
 
 import pytest
 
-from spend_analyzer.classify.llm import batching
-from spend_analyzer.classify.llm.egress import BatchResult
-from spend_analyzer.classify.llm.schema import Item
-from spend_analyzer.config import LLMConfig
+from personal_finance_analyzer.classify.llm import batching
+from personal_finance_analyzer.classify.llm.egress import BatchResult
+from personal_finance_analyzer.classify.llm.schema import Item
+from personal_finance_analyzer.config import LLMConfig
 
 
 def _cfg(batch_size: int = 50) -> LLMConfig:
@@ -146,7 +146,7 @@ def test_classify_all_no_provider_configured_falls_back_every_row(
 ) -> None:
     # A real classify_batch call raises LLMError("no provider configured") for mode="none";
     # exercise the same behavior at the batching layer with an LLMError-raising stub.
-    from spend_analyzer.core.errors import LLMError
+    from personal_finance_analyzer.core.errors import LLMError
 
     def _raise(descriptions: list[str], cfg: LLMConfig) -> BatchResult:
         raise LLMError("no provider configured")
@@ -164,7 +164,7 @@ def test_classify_all_no_provider_configured_falls_back_every_row(
 def test_classify_all_provider_failure_never_raises_and_falls_back(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from spend_analyzer.core.errors import LLMError
+    from personal_finance_analyzer.core.errors import LLMError
 
     def _raise(descriptions: list[str], cfg: LLMConfig) -> BatchResult:
         raise LLMError("network timeout")

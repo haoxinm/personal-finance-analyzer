@@ -1,4 +1,4 @@
-"""Tests for `spend_analyzer.llm.client`: per-format request building, response parsing, errors.
+"""Tests for `personal_finance_analyzer.llm.client`: per-format request building, response parsing, errors.
 Never opens a socket: `client._post` is faked (or an `httpx.MockTransport` is used)."""
 
 from __future__ import annotations
@@ -8,9 +8,9 @@ from typing import Any
 import httpx
 import pytest
 
-from spend_analyzer.config import LLMConfig
-from spend_analyzer.core.errors import LLMError
-from spend_analyzer.llm import client
+from personal_finance_analyzer.config import LLMConfig
+from personal_finance_analyzer.core.errors import LLMError
+from personal_finance_analyzer.llm import client
 from tests.llm_fakes import FakeLLM, install, remote_cfg, wrap_text
 
 FORMATS = ["openai_chat", "openai_responses", "anthropic_messages"]
@@ -19,7 +19,7 @@ SCHEMA = {"type": "object", "properties": {"x": {"type": "integer"}}}
 
 @pytest.fixture(autouse=True)
 def _api_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("SPEND_ANALYZER_LLM_API_KEY", "sk-test-123")
+    monkeypatch.setenv("PFA_LLM_API_KEY", "sk-test-123")
 
 
 @pytest.fixture
@@ -86,8 +86,8 @@ def test_anthropic_headers(fake: FakeLLM) -> None:
 
 
 def test_no_key_sends_no_auth_header(fake: FakeLLM, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("SPEND_ANALYZER_LLM_API_KEY")
-    monkeypatch.setattr("spend_analyzer.config.keyring.get_password", lambda *a: None)
+    monkeypatch.delenv("PFA_LLM_API_KEY")
+    monkeypatch.setattr("personal_finance_analyzer.config.keyring.get_password", lambda *a: None)
     _run(fake, remote_cfg(base_url="http://localhost:11434"))
     assert "Authorization" not in fake.headers[0]
 

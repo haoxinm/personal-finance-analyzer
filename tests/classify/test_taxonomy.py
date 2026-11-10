@@ -4,9 +4,9 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from spend_analyzer.classify import taxonomy
-from spend_analyzer.core.errors import ConfigError
-from spend_analyzer.db.models import (
+from personal_finance_analyzer.classify import taxonomy
+from personal_finance_analyzer.core.errors import ConfigError
+from personal_finance_analyzer.db.models import (
     Account,
     Category,
     Issuer,

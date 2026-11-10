@@ -243,7 +243,7 @@ describe("ImportScreen", () => {
   it("carries every file of a multi-file drop through upload and auto-confirmed extraction, not just the last", async () => {
     // "Don't ask again" for issuer 3 makes a confident proposal import with no click, so all
     // three uploads and all three extracts are in flight on the screen's two shared mutations.
-    window.localStorage.setItem("spend-analyzer:import:skip-confirm-issuer-ids", JSON.stringify([3]));
+    window.localStorage.setItem("pfa:import:skip-confirm-issuer-ids", JSON.stringify([3]));
     let uploads = 0;
     const extractedStatementIds: number[] = [];
     const fetchMock = vi.fn<typeof fetch>(async (input) => {

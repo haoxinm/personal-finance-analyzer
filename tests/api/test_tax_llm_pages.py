@@ -13,8 +13,8 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
-from spend_analyzer.config import IngestConfig, PrivacyConfig, Settings, save_settings
-from spend_analyzer.db.models import User
+from personal_finance_analyzer.config import IngestConfig, PrivacyConfig, Settings, save_settings
+from personal_finance_analyzer.db.models import User
 from tests.fixtures.gen.base import render_lines_pdf
 from tests.ingest.tax_support import generated_pdf
 from tests.llm_fakes import FakeLLM, install, remote_cfg
@@ -266,7 +266,7 @@ def test_send_needs_a_configured_llm_and_valid_pages(
 
 
 def test_deleting_a_document_removes_its_kept_pdf(client: TestClient, doc: dict[str, Any]) -> None:
-    from spend_analyzer.core.paths import statements_dir
+    from personal_finance_analyzer.core.paths import statements_dir
 
     assert list(statements_dir().glob("*.pdf")) != []
     assert client.delete(f"/api/tax/documents/{doc['id']}").status_code == 204
@@ -337,8 +337,8 @@ def test_default_preview_never_includes_1040_pages(
 def test_load_plan_without_pages_drops_excluded_default_pages(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from spend_analyzer.core.tax_types import UnparsedRegion
-    from spend_analyzer.ingest.tax import on_demand
+    from personal_finance_analyzer.core.tax_types import UnparsedRegion
+    from personal_finance_analyzer.ingest.tax import on_demand
 
     region = UnparsedRegion("unknown", (1,), "unreadable")
     monkeypatch.setattr(on_demand, "fallback_targets", lambda *a, **k: ((region,), 2024))

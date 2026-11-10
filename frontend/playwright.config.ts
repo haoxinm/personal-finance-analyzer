@@ -3,8 +3,8 @@ import { defineConfig, devices } from "@playwright/test";
 /**
  * D9's one Playwright happy path (§2, §5 Phase 3 Gate 3): import a generated fixture PDF,
  * confirm the extractor, see the review queue, and read a chart on the Spending overview — against the
- * real backend, booted by `e2e/global-setup.ts` (temp `SPEND_ANALYZER_HOME`, LLM mode "none"),
- * serving whatever is built into `src/spend_analyzer/web/` (`npm run build` first — CI does).
+ * real backend, booted by `e2e/global-setup.ts` (temp `PFA_HOME`, LLM mode "none"),
+ * serving whatever is built into `src/personal_finance_analyzer/web/` (`npm run build` first — CI does).
  * `baseURL` is set per-test from `process.env.E2E_BASE_URL`, which global setup reads off the
  * server's own printed URL, so this file hard-codes no port.
  *

@@ -2,7 +2,7 @@
 
 `LayoutBuilder` is the protocol every layout's fixture generator implements (P1-B and P1-B1…B4).
 This module also provides the shared `reportlab` rendering helpers so every builder produces PDFs
-with the same, predictable text-layout properties that `spend_analyzer.ingest.layout` expects:
+with the same, predictable text-layout properties that `personal_finance_analyzer.ingest.layout` expects:
 one visual row per logical line, and column alignment via fixed-width padding in a monospaced font
 so that word x-coordinates are deterministic and reproducible across runs.
 
@@ -69,7 +69,7 @@ def render_lines_pdf(
 ) -> None:
     """Render ``pages`` (each a sequence of full text lines) to a PDF at ``path``, one physical
     line per logical line. `pdfplumber` recovers exactly one visual row per line via
-    `spend_analyzer.ingest.layout.cluster_rows`, and word x-coordinates follow directly from
+    `personal_finance_analyzer.ingest.layout.cluster_rows`, and word x-coordinates follow directly from
     `font_name`'s (monospaced) character advance, so `format_row`'s fixed-width padding produces
     predictable column positions.
     """

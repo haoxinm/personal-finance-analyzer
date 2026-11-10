@@ -15,7 +15,7 @@ from typing import Any
 
 from reportlab.lib.pagesizes import landscape, letter
 
-from spend_analyzer.core.tax_types import (
+from personal_finance_analyzer.core.tax_types import (
     ParsedIncomeItem,
     ParsedTaxDocument,
     ParsedTaxForm,

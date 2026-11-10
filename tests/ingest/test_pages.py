@@ -4,9 +4,14 @@ from __future__ import annotations
 
 import pytest
 
-from spend_analyzer.core.errors import SpendAnalyzerError
-from spend_analyzer.core.types import ExtractedDoc, PageText
-from spend_analyzer.ingest.pages import dump_pages, load_pages, parse_page_spec, validate_pages
+from personal_finance_analyzer.core.errors import PfaError
+from personal_finance_analyzer.core.types import ExtractedDoc, PageText
+from personal_finance_analyzer.ingest.pages import (
+    dump_pages,
+    load_pages,
+    parse_page_spec,
+    validate_pages,
+)
 
 
 def _doc(char_counts: list[int]) -> ExtractedDoc:
@@ -55,11 +60,11 @@ def test_parse_page_spec_rejects_bad_input(spec: str) -> None:
 
 def test_validate_pages() -> None:
     assert validate_pages([3, 1, 3], 3) == [1, 3]
-    with pytest.raises(SpendAnalyzerError):
+    with pytest.raises(PfaError):
         validate_pages([], 3)
-    with pytest.raises(SpendAnalyzerError):
+    with pytest.raises(PfaError):
         validate_pages([4], 3)
-    with pytest.raises(SpendAnalyzerError):
+    with pytest.raises(PfaError):
         validate_pages([0], 3)
 
 

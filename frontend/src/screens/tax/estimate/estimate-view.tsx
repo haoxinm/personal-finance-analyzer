@@ -167,7 +167,7 @@ function EstimateProblem({
           <Link to="/settings#tax-parameters" className="underline underline-offset-2">
             Settings › Tax parameters
           </Link>
-          . You can also import your own parameter file with <code>spend-analyzer tax params import</code>.
+          . You can also import your own parameter file with <code>pfa tax params import</code>.
         </p>
       </div>
     );

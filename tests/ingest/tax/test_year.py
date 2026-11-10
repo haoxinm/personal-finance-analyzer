@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from spend_analyzer.ingest.tax.year import detect_tax_year
+from personal_finance_analyzer.ingest.tax.year import detect_tax_year
 from tests.ingest.tax_support import doc_from_lines
 
 

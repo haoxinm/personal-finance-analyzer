@@ -5,8 +5,8 @@ from __future__ import annotations
 
 from sqlalchemy.orm import Session
 
-from spend_analyzer.analytics.tax_estimate import run_tax_estimate
-from spend_analyzer.analytics.tax_query import (
+from personal_finance_analyzer.analytics.tax_estimate import run_tax_estimate
+from personal_finance_analyzer.analytics.tax_query import (
     TaxQuery,
     run_income_by_payer,
     run_tax_summary,
