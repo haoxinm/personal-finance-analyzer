@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 import sqlite3
 import stat
@@ -475,7 +476,7 @@ def test_rewrite_changes_only_paths_under_the_old_directory(tmp_path: Path) -> N
         con.executemany(
             f"INSERT INTO {table} (stored_path) VALUES (?)",
             [
-                (f"{old}/statements/a.pdf",),
+                (f"{old}{os.sep}statements/a.pdf",),
                 (f"{old}X/statements/sibling.pdf",),  # a sibling directory sharing the prefix
                 ("/elsewhere/statements/b.pdf",),
                 (None,),
@@ -487,7 +488,7 @@ def test_rewrite_changes_only_paths_under_the_old_directory(tmp_path: Path) -> N
     assert paths.rewrite_stored_paths(db, old, new) == 2
     for table_rows in _stored_paths(db).values():
         assert table_rows == [
-            f"{new}/statements/a.pdf",
+            f"{new}{os.sep}statements/a.pdf",
             f"{old}X/statements/sibling.pdf",
             "/elsewhere/statements/b.pdf",
             None,
@@ -512,18 +513,22 @@ def test_rewrite_failure_is_logged_and_leaves_the_rows_unchanged(
     db = tmp_path / "x.db"
     con = sqlite3.connect(db)
     con.execute("CREATE TABLE statements (id INTEGER PRIMARY KEY, stored_path TEXT)")
-    con.execute("INSERT INTO statements (stored_path) VALUES (?)", (f"{old}/statements/a.pdf",))
+    con.execute(
+        "INSERT INTO statements (stored_path) VALUES (?)", (f"{old}{os.sep}statements/a.pdf",)
+    )
     con.execute("CREATE TABLE tax_documents (id INTEGER PRIMARY KEY, stored_path TEXT)")
     con.execute(
         "CREATE TRIGGER fail BEFORE UPDATE ON tax_documents BEGIN SELECT RAISE(ABORT, 'no'); END"
     )
-    con.execute("INSERT INTO tax_documents (stored_path) VALUES (?)", (f"{old}/statements/b.pdf",))
+    con.execute(
+        "INSERT INTO tax_documents (stored_path) VALUES (?)", (f"{old}{os.sep}statements/b.pdf",)
+    )
     con.commit()
     con.close()
 
     assert paths.rewrite_stored_paths(db, old, new) == 0
     # The statements update ran first in the same transaction, and was rolled back with it.
-    assert _stored_paths(db)["statements"] == [f"{old}/statements/a.pdf"]
+    assert _stored_paths(db)["statements"] == [f"{old}{os.sep}statements/a.pdf"]
     assert any("could not update the recorded PDF paths" in m for m in warnings_logged)
 
 
