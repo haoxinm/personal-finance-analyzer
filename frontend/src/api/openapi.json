@@ -1529,6 +1529,89 @@
         }
       }
     },
+    "/review/accept": {
+      "post": {
+        "tags": [
+          "review"
+        ],
+        "summary": "Accept Review",
+        "operationId": "accept_review_api_review_accept_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviewAcceptRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewAcceptResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/review/undo": {
+      "post": {
+        "tags": [
+          "review"
+        ],
+        "summary": "Undo Review",
+        "description": "Reverse one accept (or one rule application) from its undo token. `restored` is how many\ntransactions went back; `skipped` lists the ones left alone because they changed afterwards,\nand `rule_skipped` says the accept's rule was left alone for the same reason.",
+        "operationId": "undo_review_api_review_undo_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AcceptUndo"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewUndoResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/classify/run": {
       "post": {
         "tags": [
@@ -3082,6 +3165,92 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Rule"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/rules/{rule_id}/apply-preview": {
+      "get": {
+        "tags": [
+          "rules"
+        ],
+        "summary": "Preview Apply Rule",
+        "description": "What applying a user rule to existing transactions would change right now (nothing is\nchanged): how many rows, how many users own them, how many would get a different kind. A rule\nwith no owner applies across every user's transactions.",
+        "operationId": "preview_apply_rule_api_rules__rule_id__apply_preview_get",
+        "parameters": [
+          {
+            "name": "rule_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Rule Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RuleApplyPreview"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/rules/{rule_id}/apply": {
+      "post": {
+        "tags": [
+          "rules"
+        ],
+        "summary": "Apply Rule",
+        "description": "Apply a user rule to the transactions that already exist (rules otherwise only affect\nfuture classification). Never overwrites a hand-corrected transaction or one a\nhigher-priority rule claims; `updated` is how many rows changed. `undo` is a token for\n`POST /review/undo` that puts those rows back (rows edited since are skipped).",
+        "operationId": "apply_rule_api_rules__rule_id__apply_post",
+        "parameters": [
+          {
+            "name": "rule_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Rule Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RuleApplyResponse"
                 }
               }
             }
@@ -5599,6 +5768,33 @@
   },
   "components": {
     "schemas": {
+      "AcceptUndo": {
+        "properties": {
+          "transactions": {
+            "items": {
+              "$ref": "#/components/schemas/TransactionSnapshot"
+            },
+            "type": "array",
+            "title": "Transactions"
+          },
+          "rule": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RuleSnapshot"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "transactions"
+        ],
+        "title": "AcceptUndo",
+        "description": "Opaque undo token for one Review accept or one \"apply rule to existing\" (everything it\nchanged): each patched transaction before and after and, for an \"always categorize\" accept,\nthe merchant's rule. Held by the client and validated on use."
+      },
       "Account": {
         "properties": {
           "id": {
@@ -6142,7 +6338,8 @@
         "required": [
           "transaction_ids"
         ],
-        "title": "BulkUpdateRequest"
+        "title": "BulkUpdateRequest",
+        "description": "Edit every listed transaction one time each (no rule, no merchant memory)."
       },
       "BulkUpdateResponse": {
         "properties": {
@@ -6243,6 +6440,11 @@
           "group_id": {
             "type": "string",
             "title": "Group Id"
+          },
+          "transaction_count": {
+            "type": "integer",
+            "title": "Transaction Count",
+            "default": 0
           }
         },
         "type": "object",
@@ -7001,6 +7203,28 @@
               }
             ],
             "title": "Skipped Duplicates"
+          },
+          "restored_edits": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Restored Edits"
+          },
+          "unmatched_edits": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unmatched Edits"
           }
         },
         "type": "object",
@@ -7843,6 +8067,90 @@
         ],
         "title": "PrivacySettings"
       },
+      "ReviewAcceptRequest": {
+        "properties": {
+          "transaction_id": {
+            "type": "integer",
+            "title": "Transaction Id"
+          },
+          "category_key": {
+            "type": "string",
+            "title": "Category Key"
+          },
+          "subcategory_key": {
+            "type": "string",
+            "title": "Subcategory Key"
+          },
+          "create_rule": {
+            "type": "boolean",
+            "title": "Create Rule",
+            "default": false
+          },
+          "similar_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Similar Ids"
+          }
+        },
+        "type": "object",
+        "required": [
+          "transaction_id",
+          "category_key",
+          "subcategory_key"
+        ],
+        "title": "ReviewAcceptRequest"
+      },
+      "ReviewAcceptResponse": {
+        "properties": {
+          "transaction": {
+            "$ref": "#/components/schemas/Transaction"
+          },
+          "similar_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Similar Ids"
+          },
+          "undo": {
+            "$ref": "#/components/schemas/AcceptUndo"
+          }
+        },
+        "type": "object",
+        "required": [
+          "transaction",
+          "similar_ids",
+          "undo"
+        ],
+        "title": "ReviewAcceptResponse"
+      },
+      "ReviewUndoResponse": {
+        "properties": {
+          "restored": {
+            "type": "integer",
+            "title": "Restored"
+          },
+          "skipped": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Skipped"
+          },
+          "rule_skipped": {
+            "type": "boolean",
+            "title": "Rule Skipped",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "restored"
+        ],
+        "title": "ReviewUndoResponse"
+      },
       "Rule": {
         "properties": {
           "id": {
@@ -7874,6 +8182,27 @@
           "source": {
             "type": "string",
             "title": "Source"
+          },
+          "match_type": {
+            "type": "string",
+            "title": "Match Type",
+            "default": "contains"
+          },
+          "priority": {
+            "type": "integer",
+            "title": "Priority",
+            "default": 100
+          },
+          "existing_matches": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Existing Matches"
           }
         },
         "type": "object",
@@ -7885,6 +8214,52 @@
           "source"
         ],
         "title": "Rule"
+      },
+      "RuleApplyPreview": {
+        "properties": {
+          "matches": {
+            "type": "integer",
+            "title": "Matches"
+          },
+          "user_count": {
+            "type": "integer",
+            "title": "User Count"
+          },
+          "kind_changes": {
+            "type": "integer",
+            "title": "Kind Changes"
+          },
+          "all_users": {
+            "type": "boolean",
+            "title": "All Users"
+          }
+        },
+        "type": "object",
+        "required": [
+          "matches",
+          "user_count",
+          "kind_changes",
+          "all_users"
+        ],
+        "title": "RuleApplyPreview",
+        "description": "What `POST /rules/{id}/apply` would do right now, for the confirmation step."
+      },
+      "RuleApplyResponse": {
+        "properties": {
+          "updated": {
+            "type": "integer",
+            "title": "Updated"
+          },
+          "undo": {
+            "$ref": "#/components/schemas/AcceptUndo"
+          }
+        },
+        "type": "object",
+        "required": [
+          "updated",
+          "undo"
+        ],
+        "title": "RuleApplyResponse"
       },
       "RuleCreate": {
         "properties": {
@@ -7928,6 +8303,67 @@
           "subcategory_key"
         ],
         "title": "RuleCreate"
+      },
+      "RuleSnapshot": {
+        "properties": {
+          "rule_id": {
+            "type": "integer",
+            "title": "Rule Id"
+          },
+          "before": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RuleState"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "after": {
+            "$ref": "#/components/schemas/RuleState"
+          }
+        },
+        "type": "object",
+        "required": [
+          "rule_id",
+          "after"
+        ],
+        "title": "RuleSnapshot",
+        "description": "The merchant's exact rule around an accept: `before=None` means the accept created it."
+      },
+      "RuleState": {
+        "properties": {
+          "category_id": {
+            "type": "integer",
+            "title": "Category Id"
+          },
+          "subcategory_id": {
+            "type": "integer",
+            "title": "Subcategory Id"
+          },
+          "kind_override": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Kind"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled",
+            "default": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "category_id",
+          "subcategory_id"
+        ],
+        "title": "RuleState"
       },
       "RuleUpdate": {
         "properties": {
@@ -10158,7 +10594,128 @@
           }
         },
         "type": "object",
-        "title": "TransactionPatch"
+        "title": "TransactionPatch",
+        "description": "A one-time edit of one transaction: it changes only that transaction and always wins over\nevery rule and re-run. Nothing is remembered about the merchant unless `create_rule` is set."
+      },
+      "TransactionSnapshot": {
+        "properties": {
+          "transaction_id": {
+            "type": "integer",
+            "title": "Transaction Id"
+          },
+          "before": {
+            "$ref": "#/components/schemas/TransactionState"
+          },
+          "after": {
+            "$ref": "#/components/schemas/TransactionState"
+          },
+          "dedupe_hash": {
+            "type": "string",
+            "title": "Dedupe Hash"
+          }
+        },
+        "type": "object",
+        "required": [
+          "transaction_id",
+          "before",
+          "after",
+          "dedupe_hash"
+        ],
+        "title": "TransactionSnapshot",
+        "description": "One transaction as the operation found it (`before`) and left it (`after`); sent back\nunchanged to `POST /review/undo`, which restores `before` only if the row still equals\n`after`."
+      },
+      "TransactionState": {
+        "properties": {
+          "category_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Category Id"
+          },
+          "subcategory_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subcategory Id"
+          },
+          "confidence": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 1.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confidence"
+          },
+          "classified_by": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "cache",
+                  "user_rule",
+                  "builtin_rule",
+                  "issuer",
+                  "llm",
+                  "user",
+                  "kind"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Classified By"
+          },
+          "needs_review": {
+            "type": "boolean",
+            "title": "Needs Review"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/Kind"
+          },
+          "is_spend": {
+            "type": "boolean",
+            "title": "Is Spend"
+          },
+          "merchant_canonical": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Merchant Canonical"
+          }
+        },
+        "type": "object",
+        "required": [
+          "category_id",
+          "subcategory_id",
+          "classified_by",
+          "needs_review",
+          "kind",
+          "is_spend",
+          "merchant_canonical"
+        ],
+        "title": "TransactionState",
+        "description": "The classification fields one accept (or \"apply to existing\") can change on a\ntransaction. Values are validated: a token naming an unknown kind or `classified_by` is\nrejected."
       },
       "User": {
         "properties": {

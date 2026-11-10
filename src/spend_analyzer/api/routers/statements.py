@@ -309,7 +309,12 @@ def reparse_statement(
                 raise
             job_session.commit()
         progress.update(1, 1)
-        return {"inserted": result.inserted, "transaction_ids": list(result.transaction_ids)}
+        return {
+            "inserted": result.inserted,
+            "transaction_ids": list(result.transaction_ids),
+            "restored_edits": result.restored_edits,
+            "unmatched_edits": result.unmatched_edits,
+        }
 
     job_id = runner.run_job(kind="import", task=task)
     return schemas.JobIdResponse(job_id=job_id)

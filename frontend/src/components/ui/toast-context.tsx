@@ -6,6 +6,8 @@ export interface ToastRecord {
   description?: React.ReactNode;
   variant?: "default" | "destructive" | "success";
   duration?: number;
+  /** An inline button (e.g. "Undo"); clicking it also dismisses the toast. */
+  action?: { label: string; onClick: () => void };
 }
 
 export type ToastInput = Omit<ToastRecord, "id">;

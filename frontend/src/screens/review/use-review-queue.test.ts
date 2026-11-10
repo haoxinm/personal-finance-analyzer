@@ -1,7 +1,7 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { createApiFetchMock, jsonResponse, makeTransaction } from "./test-support";
+import { createApiFetchMock, jsonResponse, makeTransaction, type AcceptBody } from "./test-support";
 import type { Transaction } from "./types";
 
 /**
@@ -14,14 +14,43 @@ import type { Transaction } from "./types";
  */
 async function setup(options: {
   transactions: Transaction[];
-  patchBehavior?: (id: number, body: unknown) => Response;
+  acceptBehavior?: (body: AcceptBody) => Response;
+  undoBehavior?: Parameters<typeof createApiFetchMock>[0]["undoBehavior"];
 }) {
   vi.resetModules();
-  const fetchMock = vi.fn(createApiFetchMock({ transactions: options.transactions, patchTransactionBehavior: options.patchBehavior }));
+  const fetchMock = vi.fn(
+    createApiFetchMock({
+      transactions: options.transactions,
+      acceptBehavior: options.acceptBehavior,
+      undoBehavior: options.undoBehavior,
+    }),
+  );
   vi.stubGlobal("fetch", fetchMock);
   const { useReviewQueue } = await import("./use-review-queue");
   const { ToastContextProvider } = await import("@/components/ui/toast-provider");
-  return { fetchMock, useReviewQueue, wrapper: ToastContextProvider };
+  const { QueryClient, QueryClientProvider } = await import("@tanstack/react-query");
+  const React = await import("react");
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const wrapper = ({ children }: { children: React.ReactNode }) =>
+    React.createElement(
+      QueryClientProvider,
+      { client: queryClient },
+      React.createElement(ToastContextProvider, null, children),
+    );
+  return { fetchMock, useReviewQueue, wrapper, queryClient };
+}
+
+type FetchMock = Awaited<ReturnType<typeof setup>>["fetchMock"];
+
+function callsTo(fetchMock: FetchMock, method: string, pathname: string): Request[] {
+  return fetchMock.mock.calls
+    .map((call) => call[0] as Request)
+    .filter((request) => request.method === method && new URL(request.url).pathname === pathname);
+}
+
+async function bodyOf(request: Request | undefined): Promise<Record<string, unknown>> {
+  if (!request) throw new Error("expected a request");
+  return JSON.parse(await request.clone().text()) as Record<string, unknown>;
 }
 
 describe("useReviewQueue", () => {
@@ -82,14 +111,14 @@ describe("useReviewQueue", () => {
     expect(result.current.queue).toHaveLength(0);
     expect(result.current.canUndo).toBe(true);
 
-    const patchCall = fetchMock.mock.calls.find((call) => (call[0] as Request).method === "PATCH");
-    expect(patchCall).toBeDefined();
-    const patchRequest = patchCall?.[0] as Request;
-    const body = JSON.parse(await patchRequest.clone().text()) as Record<string, unknown>;
-    expect(body).toMatchObject({
+    const acceptCalls = callsTo(fetchMock, "POST", "/api/review/accept");
+    expect(acceptCalls).toHaveLength(1);
+    expect(await bodyOf(acceptCalls[0])).toMatchObject({
+      transaction_id: 1,
       category_key: "dining",
       subcategory_key: "restaurants",
       create_rule: false,
+      similar_ids: [],
     });
   });
 
@@ -120,12 +149,11 @@ describe("useReviewQueue", () => {
       await result.current.accept({ createRule: true });
     });
 
-    const patchRequest = fetchMock.mock.calls.find((call) => (call[0] as Request).method === "PATCH")?.[0] as Request;
-    const body = JSON.parse(await patchRequest.clone().text()) as Record<string, unknown>;
+    const body = await bodyOf(callsTo(fetchMock, "POST", "/api/review/accept")[0]);
     expect(body.create_rule).toBe(true);
   });
 
-  it("refuses to accept when there is no category to accept, without calling PATCH", async () => {
+  it("refuses to accept when there is no category to accept, without calling the server", async () => {
     const { fetchMock, useReviewQueue, wrapper } = await setup({
       transactions: [makeTransaction({ id: 1, category_key: null, subcategory_key: null })],
     });
@@ -138,7 +166,7 @@ describe("useReviewQueue", () => {
     });
 
     expect(result.current.queue).toHaveLength(1); // still there
-    expect(fetchMock.mock.calls.some((call) => (call[0] as Request).method === "PATCH")).toBe(false);
+    expect(callsTo(fetchMock, "POST", "/api/review/accept")).toHaveLength(0);
   });
 
   it("rolls back an accept that fails: the row reappears at its original position", async () => {
@@ -148,10 +176,7 @@ describe("useReviewQueue", () => {
         makeTransaction({ id: 2, category_key: "groceries", subcategory_key: "supermarket" }),
         makeTransaction({ id: 3 }),
       ],
-      patchBehavior: (id) => {
-        if (id === 2) return jsonResponse({ detail: "server exploded" }, 500);
-        return jsonResponse(makeTransaction({ id, needs_review: false }));
-      },
+      acceptBehavior: () => jsonResponse({ detail: "server exploded" }, 500),
     });
 
     const { result } = renderHook(() => useReviewQueue(), { wrapper });
@@ -168,13 +193,13 @@ describe("useReviewQueue", () => {
     expect(result.current.queue.map((t) => t.id)).toEqual([1, 2, 3]);
     expect(result.current.current?.id).toBe(2);
     expect(result.current.canUndo).toBe(false);
-    expect(fetchMock.mock.calls.filter((call) => (call[0] as Request).method === "PATCH")).toHaveLength(1);
+    expect(callsTo(fetchMock, "POST", "/api/review/accept")).toHaveLength(1);
   });
 
-  it("undo reverts the most recent accept and reinserts the row", async () => {
+  it("undo asks the server to revert the accept with its token and reinserts the row", async () => {
     const { fetchMock, useReviewQueue, wrapper } = await setup({
       transactions: [
-        makeTransaction({ id: 1, category_key: "others", subcategory_key: "uncategorized", kind: "purchase" }),
+        makeTransaction({ id: 1, category_key: null, subcategory_key: null, kind: "purchase" }),
         makeTransaction({ id: 2 }),
       ],
     });
@@ -192,19 +217,157 @@ describe("useReviewQueue", () => {
       await result.current.undo();
     });
 
+    // Back in the queue, still flagged for review — including a row that had no category at all.
     expect(result.current.queue.map((t) => t.id)).toEqual([1, 2]);
+    expect(result.current.queue[0]).toMatchObject({ category_key: null, needs_review: true });
     expect(result.current.canUndo).toBe(false);
 
-    const patchCalls = fetchMock.mock.calls.filter((call) => (call[0] as Request).method === "PATCH");
-    const undoBody = JSON.parse(await (patchCalls.at(-1)?.[0] as Request).clone().text()) as Record<
-      string,
-      unknown
-    >;
-    expect(undoBody).toMatchObject({
-      category_key: "others",
-      subcategory_key: "uncategorized",
-      kind: "purchase",
+    // The server's own undo token went back verbatim, not a client-side PATCH approximation.
+    const accepted = callsTo(fetchMock, "POST", "/api/review/accept");
+    const undone = callsTo(fetchMock, "POST", "/api/review/undo");
+    expect(undone).toHaveLength(1);
+    const undoBody = await bodyOf(undone[0]);
+    expect(undoBody.transactions).toHaveLength(1);
+    expect((undoBody.transactions as unknown[])[0]).toMatchObject({
+      transaction_id: 1,
+      before: { needs_review: true },
+      after: { needs_review: false },
     });
+    expect(accepted).toHaveLength(1);
+    expect(fetchMock.mock.calls.some((call) => (call[0] as Request).method === "PATCH")).toBe(false);
+  });
+
+  it("offers to apply an accept to the merchant's other queue rows, and undo restores them all", async () => {
+    const { fetchMock, useReviewQueue, wrapper } = await setup({
+      transactions: [
+        makeTransaction({ id: 1, merchant_key: "trader joes", category_key: "groceries", subcategory_key: "supermarket" }),
+        makeTransaction({ id: 2, merchant_key: "shell" }),
+        makeTransaction({ id: 3, merchant_key: "trader joes" }),
+        makeTransaction({ id: 4, merchant_key: "trader joes" }),
+        makeTransaction({ id: 5, merchant_key: "" }),
+        makeTransaction({ id: 6, merchant_key: "" }),
+      ],
+    });
+
+    const { result } = renderHook(() => useReviewQueue(), { wrapper });
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    // Same non-empty merchant only: rows with no merchant key never group together.
+    expect(result.current.similarForCurrent.map((t) => t.id)).toEqual([3, 4]);
+    expect(result.current.applyToSimilar).toBe(true);
+
+    await act(async () => {
+      await result.current.accept();
+    });
+
+    expect((await bodyOf(callsTo(fetchMock, "POST", "/api/review/accept")[0])).similar_ids).toEqual([3, 4]);
+    expect(result.current.queue.map((t) => t.id)).toEqual([2, 5, 6]);
+
+    await act(async () => {
+      await result.current.undo();
+    });
+    expect(result.current.queue.map((t) => t.id)).toEqual([1, 2, 3, 4, 5, 6]);
+  });
+
+  it("does not re-queue a row the server skipped because it was edited after the accept", async () => {
+    const { useReviewQueue, wrapper } = await setup({
+      transactions: [
+        makeTransaction({ id: 1, merchant_key: "trader joes", category_key: "groceries", subcategory_key: "supermarket" }),
+        makeTransaction({ id: 2, merchant_key: "trader joes" }),
+        makeTransaction({ id: 3, merchant_key: "trader joes" }),
+      ],
+      // Row 3 was re-categorized elsewhere after the accept: the server leaves it as it is.
+      undoBehavior: () => ({ restored: 2, skipped: [3], rule_skipped: false }),
+    });
+    const { ToastContext } = await import("@/components/ui/toast-context");
+    const React = await import("react");
+
+    const { result } = renderHook(
+      () => ({ queue: useReviewQueue(), toasts: React.useContext(ToastContext)?.toasts ?? [] }),
+      { wrapper },
+    );
+    await waitFor(() => expect(result.current.queue.status).toBe("ready"));
+    await act(async () => {
+      await result.current.queue.accept();
+    });
+    expect(result.current.queue.queue).toEqual([]);
+
+    await act(async () => {
+      await result.current.queue.undo();
+    });
+
+    expect(result.current.queue.queue.map((t) => t.id)).toEqual([1, 2]);
+    const last = result.current.toasts.at(-1);
+    expect(last?.title).toBe("Undone — 2 transactions restored");
+    const description = typeof last?.description === "string" ? last.description : "";
+    expect(description).toContain("1 transaction was edited since");
+  });
+
+  it("refreshes the Transactions and analytics caches after an accept and after an undo", async () => {
+    const { useReviewQueue, wrapper, queryClient } = await setup({
+      transactions: [makeTransaction({ id: 1 }), makeTransaction({ id: 2 })],
+    });
+    const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+
+    const { result } = renderHook(() => useReviewQueue(), { wrapper });
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    act(() => result.current.stage("dining", "restaurants"));
+    await act(async () => {
+      await result.current.accept();
+    });
+    const keys = () => invalidate.mock.calls.map((call) => JSON.stringify(call[0]?.queryKey));
+    expect(keys()).toEqual(expect.arrayContaining(['["transactions"]', '["analytics"]']));
+
+    invalidate.mockClear();
+    await act(async () => {
+      await result.current.undo();
+    });
+    expect(keys()).toEqual(expect.arrayContaining(['["transactions"]', '["analytics"]']));
+  });
+
+  it("leaves the other rows alone when apply-to-similar is switched off", async () => {
+    const { fetchMock, useReviewQueue, wrapper } = await setup({
+      transactions: [
+        makeTransaction({ id: 1, merchant_key: "trader joes", category_key: "groceries", subcategory_key: "supermarket" }),
+        makeTransaction({ id: 2, merchant_key: "trader joes" }),
+      ],
+    });
+
+    const { result } = renderHook(() => useReviewQueue(), { wrapper });
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    act(() => result.current.setApplyToSimilar(false));
+
+    await act(async () => {
+      await result.current.accept();
+    });
+
+    expect((await bodyOf(callsTo(fetchMock, "POST", "/api/review/accept")[0])).similar_ids).toEqual([]);
+    expect(result.current.queue.map((t) => t.id)).toEqual([2]);
+  });
+
+  it("keeps rows the server declined to apply in the queue", async () => {
+    const { useReviewQueue, wrapper } = await setup({
+      transactions: [
+        makeTransaction({ id: 1, merchant_key: "trader joes", category_key: "groceries", subcategory_key: "supermarket" }),
+        makeTransaction({ id: 2, merchant_key: "trader joes" }),
+        makeTransaction({ id: 3, merchant_key: "trader joes" }),
+      ],
+      // Row 3 was corrected elsewhere in the meantime: the server only applies to row 2.
+      acceptBehavior: () =>
+        jsonResponse({
+          transaction: makeTransaction({ id: 1, needs_review: false }),
+          similar_ids: [2],
+          undo: { transactions: [], rule: null },
+        }),
+    });
+
+    const { result } = renderHook(() => useReviewQueue(), { wrapper });
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    await act(async () => {
+      await result.current.accept();
+    });
+
+    expect(result.current.queue.map((t) => t.id)).toEqual([3]);
   });
 
   it("passes user_ids to the query and refetches when they change", async () => {

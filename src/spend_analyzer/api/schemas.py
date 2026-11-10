@@ -208,6 +208,10 @@ class Job(_Model):
     #: transaction was already present (e.g. from an overlapping statement). `None` otherwise.
     inserted: int | None = None
     skipped_duplicates: int | None = None
+    #: On a finished re-parse job: hand edits (category/kind or notes) kept on the rebuilt rows,
+    #: and edits dropped because no single rebuilt row could be matched to them. `None` otherwise.
+    restored_edits: int | None = None
+    unmatched_edits: int | None = None
 
 
 # --- Transactions ----------------------------------------------------------------------------------
@@ -244,14 +248,103 @@ class TransactionIds(_Model):
 
 
 class TransactionPatch(_Model):
+    """A one-time edit of one transaction: it changes only that transaction and always wins over
+    every rule and re-run. Nothing is remembered about the merchant unless `create_rule` is set."""
+
     category_key: str | None = None
     subcategory_key: str | None = None
     kind: Kind | None = None
     notes: str | None = None
+    #: Also save an exact user rule for this transaction's merchant ("always categorize this
+    #: merchant this way"), for future transactions. Needs a category and subcategory. Off by
+    #: default: an edit is otherwise a one-time patch.
     create_rule: bool = False
 
 
+ClassifiedBy = Literal["cache", "user_rule", "builtin_rule", "issuer", "llm", "user", "kind"]
+
+
+class TransactionState(_Model):
+    """The classification fields one accept (or "apply to existing") can change on a
+    transaction. Values are validated: a token naming an unknown kind or `classified_by` is
+    rejected."""
+
+    category_id: int | None
+    subcategory_id: int | None
+    confidence: float | None = Field(default=None, ge=0, le=1)
+    classified_by: ClassifiedBy | None
+    needs_review: bool
+    kind: Kind
+    is_spend: bool
+    merchant_canonical: str | None
+
+
+class TransactionSnapshot(_Model):
+    """One transaction as the operation found it (`before`) and left it (`after`); sent back
+    unchanged to `POST /review/undo`, which restores `before` only if the row still equals
+    `after`."""
+
+    transaction_id: int
+    before: TransactionState
+    after: TransactionState
+    #: The row's dedupe hash; undo skips a row whose hash differs (its id was reused).
+    dedupe_hash: str
+
+
+class RuleState(_Model):
+    category_id: int
+    subcategory_id: int
+    kind_override: Kind | None = None
+    enabled: bool = True
+
+
+class RuleSnapshot(_Model):
+    """The merchant's exact rule around an accept: `before=None` means the accept created it."""
+
+    rule_id: int
+    before: RuleState | None = None
+    after: RuleState
+
+
+class AcceptUndo(_Model):
+    """Opaque undo token for one Review accept or one "apply rule to existing" (everything it
+    changed): each patched transaction before and after and, for an "always categorize" accept,
+    the merchant's rule. Held by the client and validated on use."""
+
+    transactions: list[TransactionSnapshot]
+    rule: RuleSnapshot | None = None
+
+
+class ReviewAcceptRequest(_Model):
+    transaction_id: int
+    category_key: str
+    subcategory_key: str
+    #: Also make this the merchant's standing exact rule ("always categorize this way").
+    create_rule: bool = False
+    #: Other pending rows of the same merchant to categorize the same way; ids that do not
+    #: qualify (different merchant, no longer pending, hand-corrected) are skipped.
+    similar_ids: list[int] = Field(default_factory=list)
+
+
+class ReviewAcceptResponse(_Model):
+    transaction: Transaction
+    #: The `similar_ids` actually applied (its length is the "Applied to N more" count).
+    similar_ids: list[int]
+    undo: AcceptUndo
+
+
+class ReviewUndoResponse(_Model):
+    restored: int
+    #: Transactions left as they are because they changed (or were deleted) after the operation
+    #: being undone: a later edit is never reverted.
+    skipped: list[int] = Field(default_factory=list)
+    #: The accept's rule was left alone because it was edited, deleted or replaced since.
+    rule_skipped: bool = False
+
+
 class BulkUpdateRequest(_Model):
+    """Edit every listed transaction one time each (no rule, no merchant memory)."""
+
     transaction_ids: list[int]
     category_key: str | None = None
     subcategory_key: str | None = None
@@ -268,12 +361,17 @@ class BulkUpdateResponse(_Model):
 class ClassifyRunRequest(_Model):
     user_id: int | None = None
     statement_id: int | None = None
+    #: Only reconsider rows with no category, parked in `others/uncategorized`, or still flagged
+    #: `needs_review`; `False` reconsiders everything. Either way a transaction the user
+    #: corrected by hand is never touched.
     only_unclassified: bool = True
 
 
 class ClassifyRunResponse(_Model):
     job_id: str
     group_id: str
+    #: How many transactions this run will reconsider.
+    transaction_count: int = 0
 
 
 class ClassifyPreviewRow(_Model):
@@ -459,6 +557,32 @@ class Rule(_Model):
     subcategory_key: str
     kind: Kind | None = None
     source: str
+    #: `exact`, `contains` or `regex`, matched against the merchant key.
+    match_type: str = "contains"
+    #: Lower runs first. Among user rules, `priority` then `id` decides which one matches.
+    priority: int = 100
+    #: Only on `POST /rules`: how many existing transactions applying the new rule would change
+    #: (`POST /rules/{id}/apply` applies it). `None` everywhere else.
+    existing_matches: int | None = None
+
+
+class RuleApplyResponse(_Model):
+    updated: int
+    #: Hand to `POST /review/undo` to reverse this application (rows edited since are skipped).
+    undo: AcceptUndo
+
+
+class RuleApplyPreview(_Model):
+    """What `POST /rules/{id}/apply` would do right now, for the confirmation step."""
+
+    #: Existing transactions that would change.
+    matches: int
+    #: How many distinct users own them.
+    user_count: int
+    #: How many of them would get a different `kind` from the rule's kind override.
+    kind_changes: int
+    #: The rule has no owner, so it applies to every user's transactions.
+    all_users: bool
 
 
 class RuleCreate(_Model):

@@ -5,6 +5,9 @@ export interface JobEvent {
   progress: number; // 0..1
   message?: string;
   error_detail?: string;
+  /** Finished re-parse job: hand edits kept on the rebuilt rows / dropped for lack of a match. */
+  restored_edits?: number | null;
+  unmatched_edits?: number | null;
 }
 
 export interface UseJobProgressResult {

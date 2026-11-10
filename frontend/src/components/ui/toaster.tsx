@@ -1,5 +1,6 @@
 import {
   Toast,
+  ToastAction,
   ToastClose,
   ToastDescription,
   ToastProvider,
@@ -14,7 +15,7 @@ export function Toaster() {
 
   return (
     <ToastProvider>
-      {toasts.map(({ id, title, description, variant, duration }) => (
+      {toasts.map(({ id, title, description, variant, duration, action }) => (
         <Toast
           key={id}
           variant={variant}
@@ -26,6 +27,11 @@ export function Toaster() {
           <div className="grid gap-1">
             {title ? <ToastTitle>{title}</ToastTitle> : null}
             {description ? <ToastDescription>{description}</ToastDescription> : null}
+            {action ? (
+              <ToastAction altText={action.label} onClick={action.onClick}>
+                {action.label}
+              </ToastAction>
+            ) : null}
           </div>
           <ToastClose />
         </Toast>

@@ -609,3 +609,359 @@ def test_reassign_moves_rows_and_deletes_true_duplicates(session: Session, tmp_p
     moved = session.query(Transaction).filter_by(statement_id=proposal.statement_id).all()
     assert {t.account_id for t in moved} == {other_account.id}
     assert {t.user_id for t in moved} == {other_user.id}
+
+
+# --------------------------------------------------------------------------------------------
+# One-time user edits survive re-import, reparse and reassign
+# --------------------------------------------------------------------------------------------
+
+
+def _edit_by_hand(session: Session, txn: Transaction, category: str, subcategory: str) -> None:
+    from spend_analyzer.classify import cascade
+
+    cascade.apply_user_correction(
+        session,
+        txn.id,
+        category_key=category,
+        subcategory_key=subcategory,
+        kind=None,
+        create_rule=False,
+    )
+    session.commit()
+
+
+def _rows(session: Session, statement_id: int) -> dict[str, Transaction]:
+    session.expire_all()
+    return {
+        t.description_raw: t
+        for t in session.query(Transaction).filter_by(statement_id=statement_id).all()
+    }
+
+
+def test_overlapping_reimport_leaves_a_hand_edited_row_exactly_as_it_was(
+    session: Session, tmp_path: Path
+) -> None:
+    user = _make_user(session)
+    issuer = _make_issuer(session, "Edit Bank")
+    pdf1 = tmp_path / "edit1.pdf"
+    _build_card_pdf(
+        pdf1,
+        [
+            ("01/03/2026", "GROCERY MART", "45.10"),
+            ("01/05/2026", "COFFEE SHOP", "12.34"),
+            ("01/06/2026", "HARDWARE STORE", "8.00"),
+        ],
+        closing="65.44",
+    )
+    p1, _r1 = _propose_and_confirm(session, pdf1, user_id=user.id, issuer_id=issuer.id)
+    coffee = _rows(session, p1.statement_id)["COFFEE SHOP"]
+    _edit_by_hand(session, coffee, "travel", "hotels")
+    before = (coffee.id, coffee.category_id, coffee.subcategory_id, coffee.classified_by)
+
+    # A later statement overlaps the first: the edited row collides and is skipped, untouched.
+    pdf2 = tmp_path / "edit2.pdf"
+    _build_card_pdf(
+        pdf2,
+        [
+            ("01/03/2026", "GROCERY MART", "45.10"),
+            ("01/05/2026", "COFFEE SHOP", "12.34"),
+            ("01/06/2026", "HARDWARE STORE", "8.00"),
+            ("01/09/2026", "ONLINE BOOKSTORE", "29.99"),
+        ],
+        closing="95.43",
+    )
+    _p2, r2 = _propose_and_confirm(
+        session, pdf2, user_id=user.id, issuer_id=issuer.id, original_name="edit2.pdf"
+    )
+    assert r2.inserted == 1
+
+    session.expire_all()
+    after = session.get(Transaction, coffee.id)
+    assert after is not None
+    assert (after.id, after.category_id, after.subcategory_id, after.classified_by) == before
+    assert coffee.id not in r2.transaction_ids  # so the follow-up classify never sees it
+
+
+def test_reparse_restores_hand_edits_onto_the_rebuilt_rows(
+    session: Session, tmp_path: Path
+) -> None:
+    pdf_path = tmp_path / "statement.pdf"
+    _build_card_pdf(
+        pdf_path,
+        [
+            ("01/03/2026", "GROCERY MART", "45.10"),
+            ("01/05/2026", "COFFEE SHOP", "12.34"),
+            ("01/09/2026", "ONLINE BOOKSTORE", "29.99"),
+        ],
+        closing="87.43",
+    )
+    user = _make_user(session)
+    issuer = _make_issuer(session, "Reparse Edit Bank")
+    proposal, _result = _propose_and_confirm(
+        session, pdf_path, user_id=user.id, issuer_id=issuer.id
+    )
+    rows = _rows(session, proposal.statement_id)
+    _edit_by_hand(session, rows["COFFEE SHOP"], "travel", "hotels")
+    expected = (rows["COFFEE SHOP"].category_id, rows["COFFEE SHOP"].subcategory_id)
+
+    pipeline.reparse(session, proposal.statement_id, parser_id="generic_table", layout_spec_id=None)
+    session.commit()
+
+    rebuilt = _rows(session, proposal.statement_id)
+    assert len(rebuilt) == 3
+    coffee = rebuilt["COFFEE SHOP"]
+    assert (coffee.category_id, coffee.subcategory_id) == expected
+    assert coffee.classified_by == "user" and coffee.needs_review is False
+    assert coffee.confidence == 1.0
+    # Rows nobody edited come back blank, ready to classify.
+    assert rebuilt["GROCERY MART"].classified_by is None
+    assert rebuilt["GROCERY MART"].category_id is None
+
+
+def _import_three_rows(session: Session, tmp_path: Path, name: str) -> tuple[int, User]:
+    pdf_path = tmp_path / f"{name}.pdf"
+    _build_card_pdf(
+        pdf_path,
+        [
+            ("01/03/2026", "GROCERY MART", "45.10"),
+            ("01/05/2026", "COFFEE SHOP", "12.34"),
+            ("01/09/2026", "ONLINE BOOKSTORE", "29.99"),
+        ],
+        closing="87.43",
+    )
+    user = _make_user(session)
+    issuer = _make_issuer(session, f"{name} Bank")
+    proposal, _result = _propose_and_confirm(
+        session, pdf_path, user_id=user.id, issuer_id=issuer.id
+    )
+    return proposal.statement_id, user
+
+
+def test_reparse_reports_how_many_edits_were_restored(session: Session, tmp_path: Path) -> None:
+    statement_id, _user = _import_three_rows(session, tmp_path, "report")
+    _edit_by_hand(session, _rows(session, statement_id)["COFFEE SHOP"], "travel", "hotels")
+
+    result = pipeline.reparse(session, statement_id, parser_id="generic_table", layout_spec_id=None)
+    assert (result.restored_edits, result.unmatched_edits) == (1, 0)
+
+
+def test_reparse_matches_an_edit_by_date_amount_and_merchant_when_the_hash_changed(
+    session: Session, tmp_path: Path
+) -> None:
+    """A parser change (here: different whitespace in the description) changes `dedupe_hash`; the
+    edit must still find its row rather than vanish silently."""
+    statement_id, _user = _import_three_rows(session, tmp_path, "fallback")
+    coffee = _rows(session, statement_id)["COFFEE SHOP"]
+    _edit_by_hand(session, coffee, "travel", "hotels")
+    expected = (coffee.category_id, coffee.subcategory_id)
+    coffee.dedupe_hash = "an-older-parsers-hash"
+    coffee.description_raw = "COFFEE  SHOP"
+    session.commit()
+
+    result = pipeline.reparse(session, statement_id, parser_id="generic_table", layout_spec_id=None)
+    assert (result.restored_edits, result.unmatched_edits) == (1, 0)
+    rebuilt = _rows(session, statement_id)["COFFEE SHOP"]
+    assert (rebuilt.category_id, rebuilt.subcategory_id) == expected
+    assert rebuilt.classified_by == "user"
+
+
+def test_reparse_does_not_guess_between_same_day_twins_and_reports_the_loss(
+    session: Session, tmp_path: Path
+) -> None:
+    """Two identical same-day rows are told apart only by position. If the rebuilt statement has
+    twins the old one did not, the edit cannot be attached to the right one: drop it and say so."""
+    pdf_path = tmp_path / "twins.pdf"
+    _build_card_pdf(
+        pdf_path,
+        [
+            ("01/05/2026", "COFFEE SHOP", "4.00"),
+            ("01/05/2026", "COFFEE SHOP", "4.00"),
+            ("01/09/2026", "ONLINE BOOKSTORE", "29.99"),
+        ],
+        closing="37.99",
+    )
+    user = _make_user(session)
+    issuer = _make_issuer(session, "Twin Bank")
+    proposal, result = _propose_and_confirm(session, pdf_path, user_id=user.id, issuer_id=issuer.id)
+    assert result.inserted == 3
+    coffees = (
+        session.query(Transaction)
+        .filter_by(statement_id=proposal.statement_id, description_raw="COFFEE SHOP")
+        .order_by(Transaction.id)
+        .all()
+    )
+    # Equal twin counts before and after (2 and 2): the hash still pins the edited twin.
+    _edit_by_hand(session, coffees[1], "travel", "hotels")
+    edited_hash = coffees[1].dedupe_hash
+    ok = pipeline.reparse(
+        session, proposal.statement_id, parser_id="generic_table", layout_spec_id=None
+    )
+    assert (ok.restored_edits, ok.unmatched_edits) == (1, 0)
+    session.expire_all()
+    pinned = session.query(Transaction).filter_by(dedupe_hash=edited_hash).one()
+    assert pinned.classified_by == "user"
+
+    # Now pretend the earlier import had only one coffee (the other twin is "new"): the edited
+    # row could be either rebuilt twin.
+    session.query(Transaction).filter(
+        Transaction.statement_id == proposal.statement_id,
+        Transaction.classified_by.is_(None),
+        Transaction.description_raw == "COFFEE SHOP",
+    ).delete()
+    session.commit()
+    result2 = pipeline.reparse(
+        session, proposal.statement_id, parser_id="generic_table", layout_spec_id=None
+    )
+    assert (result2.restored_edits, result2.unmatched_edits) == (0, 1)
+    rebuilt = (
+        session.query(Transaction)
+        .filter_by(statement_id=proposal.statement_id, description_raw="COFFEE SHOP")
+        .all()
+    )
+    assert len(rebuilt) == 2 and all(t.classified_by is None for t in rebuilt)
+
+
+def test_reparse_fallback_refuses_an_ambiguous_identity(session: Session, tmp_path: Path) -> None:
+    """Hash changed *and* two rebuilt rows share the edit's date, amount and merchant: no guess."""
+    pdf_path = tmp_path / "ambiguous.pdf"
+    _build_card_pdf(
+        pdf_path,
+        [
+            ("01/05/2026", "COFFEE SHOP", "4.00"),
+            ("01/05/2026", "COFFEE SHOP", "4.00"),
+            ("01/09/2026", "ONLINE BOOKSTORE", "29.99"),
+        ],
+        closing="37.99",
+    )
+    user = _make_user(session)
+    issuer = _make_issuer(session, "Ambiguous Bank")
+    proposal, _result = _propose_and_confirm(
+        session, pdf_path, user_id=user.id, issuer_id=issuer.id
+    )
+    first = (
+        session.query(Transaction)
+        .filter_by(statement_id=proposal.statement_id)
+        .order_by(Transaction.id)
+        .first()
+    )
+    assert first is not None
+    _edit_by_hand(session, first, "travel", "hotels")
+    first.dedupe_hash = "an-older-parsers-hash"
+    session.commit()
+
+    result = pipeline.reparse(
+        session, proposal.statement_id, parser_id="generic_table", layout_spec_id=None
+    )
+    assert (result.restored_edits, result.unmatched_edits) == (0, 1)
+
+
+def test_reparse_keeps_notes_typed_on_otherwise_automatic_rows(
+    session: Session, tmp_path: Path
+) -> None:
+    statement_id, _user = _import_three_rows(session, tmp_path, "notes")
+    grocery = _rows(session, statement_id)["GROCERY MART"]
+    grocery.notes = "weekly shop"
+    session.commit()
+
+    result = pipeline.reparse(session, statement_id, parser_id="generic_table", layout_spec_id=None)
+    assert (result.restored_edits, result.unmatched_edits) == (1, 0)
+    rebuilt = _rows(session, statement_id)["GROCERY MART"]
+    assert rebuilt.notes == "weekly shop"
+    assert rebuilt.classified_by is None  # a note is not a classification lock
+
+
+def test_reparse_does_not_commit_so_the_caller_can_roll_it_back(
+    session: Session, tmp_path: Path
+) -> None:
+    statement_id, _user = _import_three_rows(session, tmp_path, "nocommit")
+    coffee = _rows(session, statement_id)["COFFEE SHOP"]
+    _edit_by_hand(session, coffee, "travel", "hotels")
+    original_id = coffee.id
+
+    pipeline.reparse(session, statement_id, parser_id="generic_table", layout_spec_id=None)
+    session.rollback()
+
+    session.expire_all()
+    still = session.get(Transaction, original_id)
+    assert still is not None and still.classified_by == "user"
+    assert session.query(Transaction).filter_by(statement_id=statement_id).count() == 3
+
+
+def test_reassign_hands_a_deleted_duplicates_edit_to_the_surviving_twin(
+    session: Session, tmp_path: Path
+) -> None:
+    from spend_analyzer.db.models import Statement
+    from spend_analyzer.ingest.dedupe import DedupeKey, compute_dedupe_hash
+
+    pdf_path = tmp_path / "statement.pdf"
+    _build_card_pdf(
+        pdf_path,
+        [
+            ("01/03/2026", "GROCERY MART", "45.10"),
+            ("01/05/2026", "COFFEE SHOP", "12.34"),
+            ("01/09/2026", "ONLINE BOOKSTORE", "29.99"),
+        ],
+        closing="87.43",
+    )
+    user = _make_user(session)
+    issuer = _make_issuer(session, "Dup Bank")
+    proposal, _result = _propose_and_confirm(
+        session, pdf_path, user_id=user.id, issuer_id=issuer.id
+    )
+    edited = _rows(session, proposal.statement_id)["COFFEE SHOP"]
+    _edit_by_hand(session, edited, "travel", "hotels")
+
+    other_user = _make_user(session, "bob")
+    target = Account(
+        user_id=other_user.id,
+        issuer_id=issuer.id,
+        account_type="credit",
+        display_name="Bob's card",
+        mask="9999",
+    )
+    session.add(target)
+    session.flush()
+    # Bob's account already holds the very same transaction, unedited (a true duplicate).
+    twin_hash = compute_dedupe_hash(
+        DedupeKey(
+            account_id=target.id,
+            posted_date=edited.posted_date,
+            amount_minor=edited.amount_minor,
+            description_raw=edited.description_raw,
+        ),
+        0,
+    )
+    twin_statement = Statement(
+        file_sha256="1" * 64, original_name="bob.pdf", status="parsed", ingested_at="now"
+    )
+    session.add(twin_statement)
+    session.flush()
+    twin = Transaction(
+        statement_id=twin_statement.id,
+        account_id=target.id,
+        user_id=other_user.id,
+        posted_date=edited.posted_date,
+        description_raw=edited.description_raw,
+        description_clean=edited.description_clean,
+        merchant_key=edited.merchant_key,
+        amount_minor=edited.amount_minor,
+        currency=edited.currency,
+        kind=edited.kind,
+        is_spend=edited.is_spend,
+        dedupe_hash=twin_hash,
+    )
+    session.add(twin)
+    session.commit()
+    twin_id, edited_category = twin.id, (edited.category_id, edited.subcategory_id)
+
+    moved, deleted = pipeline.reassign(
+        session, proposal.statement_id, user_id=other_user.id, account_id=target.id
+    )
+    session.commit()
+
+    assert (moved, deleted) == (2, 1)
+    session.expire_all()
+    survivor = session.get(Transaction, twin_id)
+    assert survivor is not None
+    assert (survivor.category_id, survivor.subcategory_id) == edited_category
+    assert survivor.classified_by == "user"

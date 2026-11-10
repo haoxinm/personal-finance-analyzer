@@ -17,6 +17,10 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Literal, Protocol, runtime_checkable
 
+#: `Transaction.classified_by` for a one-time edit by the user. A transaction carrying it is final:
+#: no rule, re-run, cache or LLM pass may change it (I6). It is never used for a merchant rule.
+USER_CLASSIFIED = "user"
+
 #: Minimum median page character count for a document to be considered to have a text layer.
 TEXT_LAYER_MIN_CHARS = 50
 

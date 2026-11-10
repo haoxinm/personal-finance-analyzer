@@ -35,6 +35,72 @@ export function useCreateRule() {
   });
 }
 
+export type RuleApplyPreview = components["schemas"]["RuleApplyPreview"];
+export type RuleApplyResult = {
+  updated: number;
+  /** Hand to `useUndoApply` to put the changed rows back. */
+  undo: components["schemas"]["AcceptUndo"];
+};
+
+/**
+ * `GET /rules/{id}/apply-preview`: what applying the rule to the transactions already imported
+ * would change right now (row count, owning users, kind changes) — nothing is changed. A
+ * mutation, not a query: it is asked once per click, and the answer must not be a stale cache.
+ */
+export function useRuleApplyPreview() {
+  return useMutation({
+    mutationFn: async (id: number): Promise<RuleApplyPreview> => {
+      const { data, error } = await apiClient.GET("/rules/{rule_id}/apply-preview", {
+        params: { path: { rule_id: id } },
+      });
+      throwIfError(error);
+      if (!data) throw new Error("apply preview returned no body");
+      return data;
+    },
+  });
+}
+
+/**
+ * `POST /rules/{id}/apply`: apply a rule to the transactions already imported (a new rule otherwise
+ * only affects future classification). Skips anything the user categorized by hand and anything a
+ * higher-priority rule claims. Resolves to how many rows changed and an undo token.
+ */
+export function useApplyRule() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (id: number): Promise<RuleApplyResult> => {
+      const { data, error } = await apiClient.POST("/rules/{rule_id}/apply", {
+        params: { path: { rule_id: id } },
+      });
+      throwIfError(error);
+      if (!data) throw new Error("apply returned no body");
+      return { updated: data.updated, undo: data.undo };
+    },
+    onSuccess: () => {
+      // Every screen's cached transactions, review queue and analytics are now stale.
+      void queryClient.invalidateQueries();
+    },
+  });
+}
+
+/**
+ * `POST /review/undo` with the token `useApplyRule` returned: puts the changed rows back, except
+ * any edited since (the server skips and reports those).
+ */
+export function useUndoApply() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (undo: RuleApplyResult["undo"]) => {
+      const { data, error } = await apiClient.POST("/review/undo", { body: undo });
+      throwIfError(error);
+      return { restored: data?.restored ?? 0, skipped: data?.skipped ?? [] };
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries();
+    },
+  });
+}
+
 export function useUpdateRule() {
   const queryClient = useQueryClient();
   return useMutation({

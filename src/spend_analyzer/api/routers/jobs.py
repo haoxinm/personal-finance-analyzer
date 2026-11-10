@@ -62,6 +62,8 @@ def _job_response(job: Job, session: Session | None = None) -> schemas.Job:
 
     inserted = payload.get("inserted")
     skipped_duplicates = payload.get("skipped_duplicates")
+    restored_edits = payload.get("restored_edits")
+    unmatched_edits = payload.get("unmatched_edits")
 
     return schemas.Job(
         id=job.id,
@@ -76,6 +78,8 @@ def _job_response(job: Job, session: Session | None = None) -> schemas.Job:
         needs_review=needs_review,
         inserted=inserted if isinstance(inserted, int) else None,
         skipped_duplicates=skipped_duplicates if isinstance(skipped_duplicates, int) else None,
+        restored_edits=restored_edits if isinstance(restored_edits, int) else None,
+        unmatched_edits=unmatched_edits if isinstance(unmatched_edits, int) else None,
     )
 
 

@@ -1,6 +1,8 @@
+import { useQuery } from "@tanstack/react-query";
 import * as React from "react";
+import { Link } from "react-router-dom";
 
-import { useTaxonomy } from "@/api/hooks";
+import { useSettings, useTaxonomy } from "@/api/hooks";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -9,10 +11,12 @@ import { CategoryBadge } from "@/components/primitives/category-badge";
 import { Money } from "@/components/primitives/money";
 import { usePaneShortcutsEnabled, useSelectedUser } from "@/hooks/use-selected-user";
 
+import { fetchUncategorizedCount } from "./api";
 import { buildCategoryChoices } from "./components/category-choices";
 import { CategoryPicker } from "./components/category-picker";
 import { PendingStores } from "./components/pending-stores";
 import { usePendingSubcategories } from "./use-pending-subcategories";
+import { useReclassify } from "./use-reclassify";
 import { useReviewQueue } from "./use-review-queue";
 import type { Transaction } from "./types";
 
@@ -27,9 +31,17 @@ import type { Transaction } from "./types";
  *   - `1`-`9`       stage that quick-pick category (and its default subcategory) on the
  *                   current transaction — click a chip afterwards to refine the subcategory
  *   - `Enter`       accept the current transaction: the staged pick, or the cascade's own
- *                   proposal if nothing was staged
- *   - `r`           accept, and also promote it into a rule (`TransactionPatch.create_rule`)
- *   - `u`           undo the single most recent accept
+ *                   proposal if nothing was staged. A one-time edit of this transaction only:
+ *                   nothing is remembered about the merchant
+ *   - `r`           accept, and also make it the merchant's standing rule ("always categorize
+ *                   this merchant this way": future imports follow it with no review)
+ *   - `u`           undo the single most recent accept (rows, and the rule if it created one)
+ *
+ * An accept also applies, as further one-time edits, to the other queue rows from the same
+ * merchant (a checkbox on the card, on by default), and "Re-classify uncategorized" in the header
+ * re-runs the cascade over rows that are still uncategorized, which is how a rule or model set up
+ * after an import reaches the transactions already imported. A transaction you accepted yourself
+ * is never changed by a re-classify or by any rule.
  *
  * The queue is built via `GET /transactions?needs_review=true` (`api.ts`'s
  * `fetchNeedsReviewQueue`); `description_raw` renders alongside `description_clean` (see
@@ -44,6 +56,17 @@ export default function ReviewScreen() {
   const queue = useReviewQueue(sel.userIds, !sel.isLoading);
   const taxonomy = useTaxonomy();
   const pendingSubcategories = usePendingSubcategories();
+  const settings = useSettings();
+  const reclassify = useReclassify(sel.selectedUserId, queue.refetch);
+  // Resolved only once the settings load: an unknown setting never shows the "LLM is off" hint.
+  const llmOff = settings.data !== undefined && settings.data.llm.mode === "none";
+  const userKey = sel.userIds?.join(",");
+  const uncategorized = useQuery({
+    queryKey: ["review", "uncategorized-count", userKey],
+    enabled: !sel.isLoading,
+    queryFn: () => fetchUncategorizedCount(sel.userIds),
+  });
+  const uncategorizedCount = uncategorized.data ?? 0;
 
   const categories = React.useMemo(() => taxonomy.data ?? [], [taxonomy.data]);
   const choices = React.useMemo(() => buildCategoryChoices(categories), [categories]);
@@ -111,11 +134,36 @@ export default function ReviewScreen() {
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-3">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={reclassify.running || queue.isMutating}
+            title="Re-runs your rules and the classifier over uncategorized and flagged transactions. Anything you categorized yourself is left alone."
+            onClick={reclassify.start}
+          >
+            {reclassify.running ? "Re-classifying…" : "Re-classify uncategorized"}
+          </Button>
           <Button type="button" variant="outline" size="sm" disabled={!queue.canUndo || queue.isMutating} onClick={() => void queue.undo()}>
             Undo (u)
           </Button>
         </div>
       </header>
+
+      {llmOff && uncategorizedCount >= MANY_UNCATEGORIZED ? (
+        <p
+          role="note"
+          data-testid="llm-off-hint"
+          className="rounded-md border border-amber-500/50 bg-amber-500/10 p-3 text-sm text-foreground"
+        >
+          No LLM is set up, so {uncategorizedCount.toLocaleString()} transactions could not be
+          categorized automatically. Add a rule for a recurring merchant, work through them here, or{" "}
+          <Link to="/settings" className="underline">
+            connect a local or remote model in Settings
+          </Link>{" "}
+          and then re-classify.
+        </p>
+      ) : null}
 
       <section aria-label="Transaction queue">
         {queue.status === "loading" ? <LoadingState rows={4} /> : null}
@@ -127,7 +175,20 @@ export default function ReviewScreen() {
           />
         ) : null}
         {queue.status === "ready" && queue.queue.length === 0 ? (
-          <EmptyState title="Nothing needs review" description="Every transaction has a confident category." />
+          <EmptyState
+            title="Nothing needs review"
+            description="Every transaction has a confident category."
+            action={
+              <div className="flex flex-wrap justify-center gap-2 pt-1">
+                <Button asChild size="sm" variant="outline">
+                  <Link to="/spending/import">Import statements</Link>
+                </Button>
+                <Button asChild size="sm" variant="outline">
+                  <Link to="/spending/transactions">Browse transactions</Link>
+                </Button>
+              </div>
+            }
+          />
         ) : null}
         {queue.status === "ready" && queue.current ? (
           <TransactionCard
@@ -138,6 +199,9 @@ export default function ReviewScreen() {
             stagedCategoryKey={queue.stagedForCurrent?.categoryKey}
             stagedSubcategoryKey={queue.stagedForCurrent?.subcategoryKey}
             onStage={queue.stage}
+            similarCount={queue.similarForCurrent.length}
+            applyToSimilar={queue.applyToSimilar}
+            onApplyToSimilarChange={queue.setApplyToSimilar}
             onAccept={() => void queue.accept()}
             onAcceptAndCreateRule={() => void queue.accept({ createRule: true })}
             disabled={queue.isMutating}
@@ -156,6 +220,9 @@ export default function ReviewScreen() {
 
 export const screenMeta = { path: "/spending/review", title: "Review" };
 
+/** How many uncategorized transactions it takes before the header explains that no LLM is set up. */
+const MANY_UNCATEGORIZED = 10;
+
 interface TransactionCardProps {
   transaction: Transaction;
   position: number;
@@ -164,6 +231,10 @@ interface TransactionCardProps {
   stagedCategoryKey?: string;
   stagedSubcategoryKey?: string;
   onStage: (categoryKey: string, subcategoryKey: string) => void;
+  /** Other queue rows from the same merchant, and whether accepting also applies to them. */
+  similarCount: number;
+  applyToSimilar: boolean;
+  onApplyToSimilarChange: (apply: boolean) => void;
   onAccept: () => void;
   onAcceptAndCreateRule: () => void;
   disabled: boolean;
@@ -177,12 +248,17 @@ function TransactionCard({
   stagedCategoryKey,
   stagedSubcategoryKey,
   onStage,
+  similarCount,
+  applyToSimilar,
+  onApplyToSimilarChange,
   onAccept,
   onAcceptAndCreateRule,
   disabled,
 }: TransactionCardProps) {
   const effectiveCategoryKey = stagedCategoryKey ?? transaction.category_key ?? undefined;
   const effectiveSubcategoryKey = stagedSubcategoryKey ?? transaction.subcategory_key ?? undefined;
+  // A rule matches on the merchant key; a row without one has nothing to build a rule from.
+  const ruleLabel = transaction.merchant_key;
 
   return (
     <Card>
@@ -211,14 +287,41 @@ function TransactionCard({
           onPick={onStage}
           disabled={disabled}
         />
-        <div className="flex gap-2">
-          <Button type="button" onClick={onAccept} disabled={disabled}>
+        {similarCount > 0 ? (
+          <label className="flex items-center gap-2 text-sm text-muted-foreground">
+            <input
+              type="checkbox"
+              checked={applyToSimilar}
+              onChange={(event) => onApplyToSimilarChange(event.target.checked)}
+            />
+            Also apply to {similarCount} other pending transaction{similarCount === 1 ? "" : "s"} from
+            this merchant
+          </label>
+        ) : null}
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            type="button"
+            onClick={onAccept}
+            disabled={disabled}
+            title="Accepts this transaction only. Nothing is remembered about the merchant."
+          >
             Accept (Enter)
           </Button>
-          <Button type="button" variant="secondary" onClick={onAcceptAndCreateRule} disabled={disabled}>
-            Accept + create rule (r)
+          <Button
+            type="button"
+            variant="secondary"
+            onClick={onAcceptAndCreateRule}
+            disabled={disabled || ruleLabel === ""}
+            title="Accepts this one and saves a rule: every future import of this merchant is categorized this way automatically. Transactions you already edited by hand are never changed by it."
+          >
+            {ruleLabel === "" ? "Always categorize this way (r)" : `Always categorize “${ruleLabel}” this way (r)`}
           </Button>
         </div>
+        <p className="text-xs text-muted-foreground">
+          Accept (Enter) changes this transaction only; nothing is remembered about the merchant. The
+          second button also saves a rule, so future imports of this merchant need no review (see
+          Rules). Transactions you accept yourself are never changed by a rule or a re-classify.
+        </p>
       </CardContent>
     </Card>
   );

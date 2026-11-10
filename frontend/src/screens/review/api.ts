@@ -1,8 +1,9 @@
 import { apiClient, throwIfError, type components } from "@/api/client";
 
-import type { Transaction } from "./types";
+import type { AcceptUndoToken, Transaction } from "./types";
 
 export type TransactionPatchBody = components["schemas"]["TransactionPatch"];
+export type ReviewAcceptResponse = components["schemas"]["ReviewAcceptResponse"];
 
 /**
  * The largest page the backend will hand back in one request (`crud.list_transactions` clamps
@@ -46,19 +47,97 @@ export async function fetchNeedsReviewQueue(userIds?: number[]): Promise<Transac
 }
 
 /**
- * `PATCH /transactions/{id}` (§3.12). A `category_key`/`subcategory_key` pair routes through
- * `apply_user_correction` server-side, which both clears `needs_review` and writes
- * `merchant_map(source='user')` (I6) — this is what "accept" and "undo" both call.
+ * `POST /review/accept`: accept one queue row as `categoryKey/subcategoryKey` — a one-time edit
+ * of that transaction only (it clears `needs_review`, is marked as the user's own, and writes no
+ * rule or merchant memory, I6) — optionally also as the merchant's standing rule
+ * (`createRule`, "always categorize this merchant this way"), and for `similarIds` — other
+ * pending rows of the same merchant — as further one-time edits. The response's `undo` token goes
+ * back to `undoReview` to reverse all of it.
  */
-export async function patchTransaction(
-  id: number,
-  body: TransactionPatchBody,
-): Promise<Transaction> {
-  const { data, error } = await apiClient.PATCH("/transactions/{id}", {
-    params: { path: { id } },
-    body,
+export async function acceptReview(body: {
+  transactionId: number;
+  categoryKey: string;
+  subcategoryKey: string;
+  createRule: boolean;
+  similarIds: number[];
+}): Promise<ReviewAcceptResponse> {
+  const { data, error } = await apiClient.POST("/review/accept", {
+    body: {
+      transaction_id: body.transactionId,
+      category_key: body.categoryKey,
+      subcategory_key: body.subcategoryKey,
+      create_rule: body.createRule,
+      similar_ids: body.similarIds,
+    },
   });
   throwIfError(error);
-  if (!data) throw new Error(`PATCH /transactions/${id} returned no body`);
+  if (!data) throw new Error("accept returned no body");
   return data;
+}
+
+export interface UndoOutcome {
+  /** Transactions put back. */
+  restored: number;
+  /** Transaction ids left alone because they were edited (or deleted) after the accept. */
+  skipped: number[];
+  /** The accept's rule was left alone because it was edited or deleted since. */
+  ruleSkipped: boolean;
+}
+
+/**
+ * `POST /review/undo`: put back everything one accept (or one "apply rule to existing") changed,
+ * except what was edited since: the server skips and reports those rather than overwrite them.
+ */
+export async function undoReview(undo: AcceptUndoToken): Promise<UndoOutcome> {
+  const { data, error } = await apiClient.POST("/review/undo", { body: undo });
+  throwIfError(error);
+  return {
+    restored: data?.restored ?? 0,
+    skipped: data?.skipped ?? [],
+    ruleSkipped: data?.rule_skipped ?? false,
+  };
+}
+
+/**
+ * `POST /classify/run`: re-run the cascade over every transaction that is uncategorized, parked
+ * in `others/uncategorized`, or still flagged for review (never one the user categorized
+ * themselves). Resolves to the background job to watch.
+ */
+export async function startReclassify(
+  userId: number | null,
+): Promise<{ jobId: string; transactionCount: number }> {
+  const { data, error } = await apiClient.POST("/classify/run", {
+    body: { user_id: userId, only_unclassified: true },
+  });
+  throwIfError(error);
+  if (!data) throw new Error("classify run returned no body");
+  return { jobId: data.job_id, transactionCount: data.transaction_count };
+}
+
+export async function fetchJobStatus(jobId: string) {
+  const { data, error } = await apiClient.GET("/jobs/{job_id}", {
+    params: { path: { job_id: jobId } },
+  });
+  throwIfError(error);
+  if (!data) throw new Error("job lookup returned no body");
+  return data;
+}
+
+/** How many transactions are uncategorized (no category, or `others/uncategorized`), via
+ * `GET /transactions?uncategorized=true` read as `total`. Payments/transfers are included: they
+ * are never uncategorized (the cascade files them) so that does not inflate the count. */
+export async function fetchUncategorizedCount(userIds?: number[]): Promise<number> {
+  const { data, error } = await apiClient.GET("/transactions", {
+    params: {
+      query: {
+        uncategorized: true,
+        include_non_spend: true,
+        page: 1,
+        page_size: 1,
+        user_ids: userIds,
+      },
+    },
+  });
+  throwIfError(error);
+  return data?.total ?? 0;
 }

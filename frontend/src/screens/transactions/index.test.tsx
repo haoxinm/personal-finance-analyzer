@@ -180,6 +180,40 @@ describe("TransactionsScreen", () => {
     expect(body).toMatchObject({ category_key: "groceries", subcategory_key: "supermarket" });
   });
 
+  it("sends create_rule: false for a plain edit and true only when the rule box is ticked", async () => {
+    const user = userEvent.setup();
+    const fetchMock = await mountWithFetch((request) => {
+      if (request.url.includes("/api/taxonomy")) return jsonResponse(CATEGORIES);
+      if (request.method === "GET" && request.url.includes("/api/transactions")) {
+        return jsonResponse({ items: TRANSACTIONS, total: 2 });
+      }
+      if (request.method === "PATCH" && request.url.includes("/api/transactions/1")) {
+        return jsonResponse(TRANSACTIONS[0]);
+      }
+      throw new Error(`unexpected fetch: ${request.method} ${request.url}`);
+    });
+
+    await screen.findByText("Corner Store");
+    for (const ticked of [false, true]) {
+      await user.click(screen.getByRole("button", { name: "Uncategorized" }));
+      const dialog = await screen.findByRole("dialog", { name: "Edit transaction 1" });
+      expect(within(dialog).getByTestId("edit-scope-note")).toHaveTextContent("this transaction only");
+      await user.selectOptions(within(dialog).getByLabelText("Category"), "groceries");
+      await user.selectOptions(within(dialog).getByLabelText("Subcategory"), "supermarket");
+      if (ticked) await user.click(within(dialog).getByRole("checkbox", { name: /Also create a rule/ }));
+      await user.click(within(dialog).getByRole("button", { name: "Save" }));
+      await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    }
+
+    const patchCalls = callsTo(fetchMock, "PATCH", "/api/transactions/1");
+    expect(patchCalls).toHaveLength(2);
+    const bodies = await Promise.all(
+      patchCalls.map((call) => call.clone().json() as Promise<Record<string, unknown>>),
+    );
+    expect(bodies[0]).toMatchObject({ category_key: "groceries", create_rule: false });
+    expect(bodies[1]).toMatchObject({ category_key: "groceries", create_rule: true });
+  });
+
   it("bulk-applies a label to selected rows", async () => {
     const user = userEvent.setup();
     const fetchMock = await mountWithFetch((request) => {

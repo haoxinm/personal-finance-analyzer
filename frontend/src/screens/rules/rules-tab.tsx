@@ -16,6 +16,7 @@ import {
   useTaxonomy,
   useUpdateRule,
 } from "./hooks";
+import { useApplyRuleFlow } from "./use-apply-rule-flow";
 import { MAX_PATTERN_LENGTH, type RuleMatchType, validatePattern } from "./rule-matching";
 import { useRuleMatchPreview } from "./use-rule-match-preview";
 
@@ -113,8 +114,16 @@ function CategorySubcategorySelect({
 
 function RuleCreateForm({ options }: { options: CategoryOption[] }) {
   const [form, setForm] = React.useState<RuleFormState>(EMPTY_FORM);
+  // A just-created rule that would change transactions already imported: offer to apply it.
+  const [offer, setOffer] = React.useState<{
+    id: number;
+    pattern: string;
+    kind: string | null;
+    matches: number;
+  } | null>(null);
   const createRule = useCreateRule();
   const { toast } = useToast();
+  const applyFlow = useApplyRuleFlow(() => setOffer(null));
 
   const validation = validatePattern(form.pattern, form.matchType);
   const canSubmit = validation.valid && form.categorySubcategory !== "";
@@ -133,9 +142,15 @@ function RuleCreateForm({ options }: { options: CategoryOption[] }) {
         kind: form.kind === "" ? null : form.kind,
       },
       {
-        onSuccess: () => {
+        onSuccess: (rule) => {
           toast({ title: "Rule created", variant: "success" });
           setForm(EMPTY_FORM);
+          const matches = rule?.existing_matches ?? 0;
+          setOffer(
+            rule && matches > 0
+              ? { id: rule.id, pattern: rule.pattern, kind: rule.kind ?? null, matches }
+              : null,
+          );
         },
         onError: (err) => {
           toast({
@@ -199,6 +214,31 @@ function RuleCreateForm({ options }: { options: CategoryOption[] }) {
           {createRule.isPending ? "Adding…" : "Add rule"}
         </Button>
       </div>
+      {offer ? (
+        <div
+          role="status"
+          data-testid="apply-offer"
+          className="flex flex-wrap items-center gap-3 rounded-md border border-border bg-muted/40 p-3 text-sm"
+        >
+          <span>
+            &ldquo;{offer.pattern}&rdquo; also matches {offer.matches} transaction
+            {offer.matches === 1 ? "" : "s"} you already have. Rules only apply to new imports unless
+            you apply them. Transactions you categorized yourself are never changed.
+          </span>
+          <Button
+            type="button"
+            size="sm"
+            disabled={applyFlow.busy}
+            onClick={() => applyFlow.start(offer)}
+          >
+            {applyFlow.busy ? "Checking…" : `Apply to ${offer.matches} existing`}
+          </Button>
+          <Button type="button" size="sm" variant="ghost" onClick={() => setOffer(null)}>
+            Not now
+          </Button>
+        </div>
+      ) : null}
+      {applyFlow.dialog}
     </form>
   );
 }
@@ -211,6 +251,7 @@ function RuleRow({ rule, options }: { rule: Rule; options: CategoryOption[] }) {
   );
   const updateRule = useUpdateRule();
   const deleteRule = useDeleteRule();
+  const applyFlow = useApplyRuleFlow();
   const { toast } = useToast();
 
   const editable = rule.source === "user";
@@ -279,7 +320,8 @@ function RuleRow({ rule, options }: { rule: Rule; options: CategoryOption[] }) {
   }
 
   return (
-    <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border py-3 last:border-b-0">
+    <div className="flex flex-col gap-2 border-b border-border py-3 last:border-b-0">
+    <div className="flex flex-wrap items-center justify-between gap-2">
       <div className="flex flex-col gap-1">
         <div className="flex items-center gap-2">
           <span className="font-mono text-sm">{rule.pattern}</span>
@@ -289,9 +331,21 @@ function RuleRow({ rule, options }: { rule: Rule; options: CategoryOption[] }) {
         <span className="text-xs text-muted-foreground">
           → {rule.category_key} / {rule.subcategory_key}
         </span>
+        <span className="text-xs text-muted-foreground" data-testid="rule-precedence">
+          {rule.match_type} match · priority {rule.priority}
+        </span>
       </div>
       {editable ? (
         <div className="flex gap-2">
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => applyFlow.start(rule)}
+            disabled={applyFlow.busy}
+            title="Apply this rule to transactions you have already imported"
+          >
+            Apply to existing
+          </Button>
           <Button size="sm" variant="outline" onClick={startEdit}>
             Edit
           </Button>
@@ -302,6 +356,8 @@ function RuleRow({ rule, options }: { rule: Rule; options: CategoryOption[] }) {
       ) : (
         <span className="text-xs text-muted-foreground">Built-in rules are managed in the corpus, not here.</span>
       )}
+    </div>
+      {applyFlow.dialog}
     </div>
   );
 }
@@ -349,6 +405,16 @@ export function RulesTab() {
       <Card>
         <CardHeader>
           <CardTitle>Rules ({filtered.length}{filtered.length !== allRules.length ? ` of ${allRules.length}` : ""})</CardTitle>
+          <p className="text-sm text-muted-foreground" data-testid="precedence-note">
+            Order of precedence: one-time edits to a transaction &gt; your own rules (lower priority
+            number wins; ties go to the older rule) &gt; built-in rules &gt; issuer category and merchant
+            cache &gt; LLM. A rule applies to future imports; use &ldquo;Apply to existing&rdquo; to change
+            transactions you already have. A transaction you edited by hand is never changed by a rule.
+            Rules only see purchases, fees and interest: rows detected as a payment or transfer are
+            filed under Payments &amp; transfers before rules run, so correct a misdetected one by
+            editing its kind. A kind override stays on the transactions it already changed if you
+            delete the rule.
+          </p>
         </CardHeader>
         <CardContent className={cn(rulesQuery.data && rulesQuery.data.length > 0 ? "" : undefined)}>
           {rulesQuery.isLoading ? <LoadingState rows={4} /> : null}

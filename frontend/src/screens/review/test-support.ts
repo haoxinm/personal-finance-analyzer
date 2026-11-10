@@ -36,15 +36,37 @@ export function jsonResponse(body: unknown, status = 200): Response {
 }
 
 /**
- * A `fetch` stub covering every endpoint this screen calls: `GET`/`PATCH /transactions[/{id}]`
- * (§3.12, paginated the way the real backend does) and `GET /taxonomy` plus its subcategory
+ * A `fetch` stub covering every endpoint this screen calls: `GET /transactions` (§3.12,
+ * paginated the way the real backend does), `POST /review/accept` and `/review/undo`, settings,
+ * `POST /classify/run` and its job, and `GET /taxonomy` plus its subcategory
  * `approve`/`merge` actions. Pass only the state a given test needs; unhandled requests throw,
  * so a test that reaches an unmocked call fails loudly instead of hanging.
  */
+export interface AcceptBody {
+  transaction_id: number;
+  category_key: string;
+  subcategory_key: string;
+  create_rule: boolean;
+  similar_ids: number[];
+}
+
 export function createApiFetchMock(state: {
   transactions?: Transaction[];
   categories?: Category[];
-  patchTransactionBehavior?: (id: number, body: unknown) => Response;
+  /** Override `POST /review/accept` (default: applies to every requested `similar_ids` row that
+   *  is a pending row of the same merchant, like the real endpoint). */
+  acceptBehavior?: (body: AcceptBody) => Response;
+  /** Override the body of `POST /review/undo` (default: restores every transaction in the token). */
+  undoBehavior?: (body: { transactions: unknown[] }) => {
+    restored: number;
+    skipped: number[];
+    rule_skipped: boolean;
+  };
+  settings?: { llm: { mode: string } };
+  /** What `GET /transactions?uncategorized=true` reports as `total`. */
+  uncategorizedTotal?: number;
+  /** `POST /classify/run` replies with this many transactions to reconsider (default 3). */
+  reclassifyCount?: number;
   approveBehavior?: (subcategoryId: number) => Response;
   mergeBehavior?: (subcategoryId: number, intoId: number) => Response;
   users?: Array<{ id: number; name: string; is_default: boolean }>;
@@ -69,22 +91,77 @@ export function createApiFetchMock(state: {
       const start = (page - 1) * pageSize;
       return jsonResponse({
         items: filtered.slice(start, start + pageSize),
-        total: filtered.length,
+        total:
+          url.searchParams.get("uncategorized") === "true" && state.uncategorizedTotal !== undefined
+            ? state.uncategorizedTotal
+            : filtered.length,
       });
     }
 
-    const patchMatch = /^\/api\/transactions\/(\d+)$/.exec(url.pathname);
-    if (request.method === "PATCH" && patchMatch) {
-      const id = Number(patchMatch[1]);
+    if (request.method === "POST" && url.pathname === "/api/review/accept") {
       // Clone before reading: the caller may want to inspect the request body afterwards
       // (`fetchMock.mock.calls`), and a `Request`'s body stream can only be read once.
-      const body: unknown = await request.clone().json();
-      if (state.patchTransactionBehavior) return state.patchTransactionBehavior(id, body);
-      return jsonResponse({
-        ...makeTransaction({ id }),
-        needs_review: false,
-        ...(body as Partial<Transaction>),
+      const body = (await request.clone().json()) as AcceptBody;
+      if (state.acceptBehavior) return state.acceptBehavior(body);
+      const accepted = transactions.find((txn) => txn.id === body.transaction_id);
+      const applied = transactions.filter(
+        (txn) =>
+          body.similar_ids.includes(txn.id) &&
+          txn.needs_review &&
+          accepted !== undefined &&
+          txn.merchant_key === accepted.merchant_key,
+      );
+      const stateOf = (txn: Transaction, needsReview: boolean) => ({
+        category_id: null,
+        subcategory_id: null,
+        confidence: null,
+        classified_by: null,
+        needs_review: needsReview,
+        kind: txn.kind,
+        is_spend: true,
+        merchant_canonical: null,
       });
+      const snapshot = (txn: Transaction) => ({
+        transaction_id: txn.id,
+        before: stateOf(txn, txn.needs_review),
+        after: stateOf(txn, false),
+      });
+      const primary = accepted ?? makeTransaction({ id: body.transaction_id });
+      return jsonResponse({
+        transaction: {
+          ...primary,
+          needs_review: false,
+          category_key: body.category_key,
+          subcategory_key: body.subcategory_key,
+        },
+        similar_ids: applied.map((txn) => txn.id),
+        undo: {
+          transactions: [primary, ...applied].map(snapshot),
+          rule: null,
+        },
+      });
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/review/undo") {
+      const body = (await request.clone().json()) as { transactions: unknown[] };
+      return jsonResponse(
+        state.undoBehavior?.(body) ?? { restored: body.transactions.length, skipped: [], rule_skipped: false },
+      );
+    }
+
+    if (request.method === "GET" && url.pathname === "/api/settings") {
+      return jsonResponse(state.settings ?? { llm: { mode: "remote" } });
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/classify/run") {
+      return jsonResponse(
+        { job_id: "job-reclassify", group_id: "g", transaction_count: state.reclassifyCount ?? 3 },
+        202,
+      );
+    }
+
+    if (request.method === "GET" && url.pathname === "/api/jobs/job-reclassify") {
+      return jsonResponse({ id: "job-reclassify", kind: "classify", status: "done", progress: 1 });
     }
 
     if (request.method === "GET" && url.pathname === "/api/taxonomy") {
