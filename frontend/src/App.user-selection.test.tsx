@@ -143,7 +143,7 @@ describe("global user bar", () => {
     const urls = fetchMock.mock.calls.map(([r]) => (r as Request).url);
     expect(urls.some((u) => u.includes("/api/transactions") && /user_ids=2/.test(u))).toBe(true);
     // One selector only: screens no longer render their own.
-    expect(screen.getAllByRole("radiogroup")).toHaveLength(1);
+    expect(screen.getAllByRole("radiogroup").filter((g) => g.getAttribute("aria-label") !== "Colour theme")).toHaveLength(1);
   });
 
   it("says rules are global on the Rules screen", async () => {

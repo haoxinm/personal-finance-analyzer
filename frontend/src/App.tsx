@@ -1,6 +1,7 @@
 import * as React from "react";
 import { Link, NavLink, Route, Routes, useLocation } from "react-router-dom";
 
+import { ThemeToggle } from "@/components/shell/theme-toggle";
 import { Toaster } from "@/components/ui/toaster";
 import { ToastContextProvider } from "@/components/ui/toast-provider";
 import { ErrorBoundary } from "@/components/primitives/error-boundary";
@@ -152,6 +153,7 @@ function Shell() {
                 );
               })}
             </nav>
+            <ThemeToggle />
             <SignOutButton />
           </div>
         </div>

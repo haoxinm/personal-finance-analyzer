@@ -5,6 +5,7 @@ import { Page, PageHeader } from "@/components/primitives/page";
 import { ErrorState, LoadingState } from "@/components/primitives/states";
 import { useToast } from "@/components/ui/use-toast";
 
+import { AppearanceSection } from "./components/appearance-section";
 import { BackupSection } from "./components/backup-section";
 import { EgressPreviewSection } from "./components/egress-preview-section";
 import { FolderImportsSection } from "./components/folder-imports-section";
@@ -24,6 +25,7 @@ import {
 
 /** The sections in page order: `id` is the anchor (`/settings#users`), `label` the in-page nav text. */
 const SECTION_LINKS = [
+  { id: "appearance", label: "Appearance" },
   { id: "users", label: "Users and accounts" },
   { id: "llm", label: "LLM provider" },
   { id: "privacy", label: "Privacy" },
@@ -63,7 +65,7 @@ function SettingsScreen() {
   const header = (
     <PageHeader
       title="Settings"
-      description="Users, accounts, the LLM provider, privacy, folder imports, tax parameters, exactly what would be sent to the LLM, and backup & restore."
+      description="Appearance, users, accounts, the LLM provider, privacy, folder imports, tax parameters, exactly what would be sent to the LLM, and backup & restore."
     />
   );
 
@@ -148,6 +150,9 @@ function SettingsScreen() {
           </a>
         ))}
       </nav>
+      <Anchor id="appearance">
+        <AppearanceSection />
+      </Anchor>
       <Anchor id="users">
         <UsersAccountsSection />
       </Anchor>

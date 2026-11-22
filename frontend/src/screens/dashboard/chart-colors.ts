@@ -1,23 +1,23 @@
 /**
- * Chart fill colours. Recharts renders to SVG, which needs concrete colour values rather than
- * the design system's `hsl(var(--token))` custom properties, so this is a small hex palette
- * chosen to echo `CategoryBadge`'s hue set (§ P1-F) without depending on it — a stable hash of
- * the category key picks a colour deterministically, so a category keeps the same colour across
- * charts and sessions.
+ * Chart fill colours, as `hsl(var(--chart-*))` strings. Recharts writes them into SVG attributes
+ * where `var()` resolves, and the tokens (index.css) have light and dark values, so a theme switch
+ * recolours charts with no re-render. The hues echo `CategoryBadge`'s set (§ P1-F) without
+ * depending on it — a stable hash of the category key picks a colour deterministically, so a
+ * category keeps the same colour across charts and sessions.
  */
 const PALETTE: readonly string[] = [
-  "#e11d48", // rose
-  "#d97706", // amber
-  "#65a30d", // lime
-  "#059669", // emerald
-  "#0891b2", // cyan
-  "#0284c7", // sky
-  "#7c3aed", // violet
-  "#c026d3", // fuchsia
-  "#4f46e5", // indigo
-  "#475569", // slate
-  "#ca8a04", // yellow
-  "#be185d", // pink
+  "hsl(var(--chart-rose))",
+  "hsl(var(--chart-amber))",
+  "hsl(var(--chart-lime))",
+  "hsl(var(--chart-emerald))",
+  "hsl(var(--chart-cyan))",
+  "hsl(var(--chart-sky))",
+  "hsl(var(--chart-violet))",
+  "hsl(var(--chart-fuchsia))",
+  "hsl(var(--chart-indigo))",
+  "hsl(var(--chart-slate))",
+  "hsl(var(--chart-yellow))",
+  "hsl(var(--chart-pink))",
 ];
 
 function hashKey(key: string): number {
@@ -47,5 +47,5 @@ export function colorByIndex(index: number): string {
   return PALETTE[index % PALETTE.length] ?? PALETTE[0]!;
 }
 
-export const CHART_OUTFLOW = "#c2410c"; // matches --outflow
-export const CHART_INFLOW = "#0f766e"; // matches --inflow
+export const CHART_OUTFLOW = "hsl(var(--outflow))";
+export const CHART_INFLOW = "hsl(var(--inflow))";

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { colorMapForKeys } from "./chart-colors";
+import { CHART_INFLOW, CHART_OUTFLOW, colorByIndex, colorMapForKeys } from "./chart-colors";
 
 describe("colorMapForKeys", () => {
   it("gives every visible series a distinct colour", () => {
@@ -13,5 +13,11 @@ describe("colorMapForKeys", () => {
     const a = colorMapForKeys(["cash", "others", "rent"]);
     const b = colorMapForKeys(["rent", "others", "cash"]);
     expect([...a.entries()].sort()).toEqual([...b.entries()].sort());
+  });
+  it("uses theme tokens, not literal colours", () => {
+    for (const colour of [...colorMapForKeys(["a", "b", "c"]).values(), CHART_OUTFLOW, CHART_INFLOW]) {
+      expect(colour).toMatch(/^hsl\(var\(--[a-z-]+\)\)$/);
+    }
+    expect(colorByIndex(0)).toBe("hsl(var(--chart-rose))");
   });
 });

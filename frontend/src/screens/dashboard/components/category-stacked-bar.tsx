@@ -10,6 +10,12 @@ import {
   YAxis,
 } from "recharts";
 
+import {
+  CHART_AXIS_PROPS,
+  CHART_GRID_PROPS,
+  CHART_LEGEND_STYLE,
+  CHART_TOOLTIP_PROPS,
+} from "@/lib/chart-theme";
 import { EmptyState } from "@/components/primitives/states";
 
 import { colorMapForKeys } from "../chart-colors";
@@ -61,14 +67,15 @@ export function CategoryStackedBar({ rows, currency }: CategoryStackedBarProps) 
     <div className="h-72 w-full" data-testid="category-stacked-bar">
       <ResponsiveContainer width="100%" height="100%">
         <BarChart data={data} margin={{ top: 8, right: 8, bottom: 0, left: 8 }}>
-          <CartesianGrid strokeDasharray="3 3" vertical={false} className="stroke-border" />
-          <XAxis dataKey="period" tickFormatter={formatPeriodTick} fontSize={12} />
-          <YAxis tickFormatter={(v: number) => format(v)} width={80} fontSize={12} />
+          <CartesianGrid {...CHART_GRID_PROPS} />
+          <XAxis dataKey="period" tickFormatter={formatPeriodTick} {...CHART_AXIS_PROPS} />
+          <YAxis tickFormatter={(v: number) => format(v)} width={80} {...CHART_AXIS_PROPS} />
           <Tooltip
+            {...CHART_TOOLTIP_PROPS}
             formatter={(value: number, name: string) => [format(value), name]}
             labelFormatter={(label: string) => `Period: ${label}`}
           />
-          <Legend wrapperStyle={{ fontSize: 12 }} />
+          <Legend wrapperStyle={CHART_LEGEND_STYLE} />
           {categories.map((category) => (
             <Bar
               key={category}

@@ -81,6 +81,7 @@ describe("SettingsScreen", () => {
     renderScreen(SettingsScreen);
     expect(screen.getByRole("heading", { level: 1, name: "Settings" })).toBeInTheDocument();
     for (const title of [
+      "Appearance",
       "Users and accounts",
       "LLM provider",
       "Privacy",
@@ -99,6 +100,7 @@ describe("SettingsScreen", () => {
     const nav = screen.getByRole("navigation", { name: "On this page" });
     const links = within(nav).getAllByRole("link");
     expect(links.map((a) => a.textContent)).toEqual([
+      "Appearance",
       "Users and accounts",
       "LLM provider",
       "Privacy",

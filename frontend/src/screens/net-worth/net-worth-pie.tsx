@@ -4,6 +4,7 @@ import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from "recharts";
 import type { components } from "@/api/client";
 import { Money } from "@/components/primitives/money";
 import { EmptyState } from "@/components/primitives/states";
+import { CHART_TOOLTIP_PROPS } from "@/lib/chart-theme";
 
 import { NET_WORTH_CATEGORY_COLORS } from "./chart-colors";
 import { pieSlices } from "./logic";
@@ -57,13 +58,7 @@ export function NetWorthPie({ snapshot, currency }: NetWorthPieProps) {
             </Pie>
             <Tooltip
               formatter={(value: number, name: string) => [format(value), name]}
-              contentStyle={{
-                background: "hsl(var(--card))",
-                color: "hsl(var(--card-foreground))",
-                border: "1px solid hsl(var(--border))",
-                borderRadius: 6,
-              }}
-              itemStyle={{ color: "hsl(var(--card-foreground))" }}
+              {...CHART_TOOLTIP_PROPS}
             />
           </PieChart>
         </ResponsiveContainer>
