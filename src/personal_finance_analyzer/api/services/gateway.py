@@ -60,6 +60,7 @@ class ImportResult:
     warnings: tuple[str, ...]
     restored_edits: int = 0
     unmatched_edits: int = 0
+    discarded_edits: int = 0
 
 
 @dataclass(frozen=True)
@@ -177,6 +178,7 @@ def reparse(
     parser_id: str | None,
     layout_spec_id: int | None,
     pages: Sequence[int] | None = None,
+    discard_edits: bool = False,
 ) -> ImportResult:
     """Re-run extraction with a different extractor, rebuilding the statement's rows.
 
@@ -192,6 +194,7 @@ def reparse(
             parser_id=parser_id,
             layout_spec_id=layout_spec_id,
             pages=pages,
+            discard_edits=discard_edits,
         ),
     )
 

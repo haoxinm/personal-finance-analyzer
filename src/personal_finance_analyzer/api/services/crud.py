@@ -512,6 +512,68 @@ def update_transaction_fields(
     return transaction
 
 
+def apply_field_corrections(
+    session: Session,
+    txn: Transaction,
+    *,
+    posted_date: str | None,
+    description_clean: str | None,
+    amount_minor: int | None,
+    revert_fields: Sequence[str] = (),
+) -> None:
+    """Correct (or put back) a transaction's date, amount and cleaned description.
+
+    ``orig_X`` non-NULL means "the user corrected X and this is the imported value"; the live
+    column always holds what analytics, exports and the grid show.
+
+    * **Set** (``posted_date`` ISO text, ``amount_minor`` signed minor units with positive =
+      money out, ``description_clean``): if ``orig_X`` is NULL it first takes the current value;
+      then ``X`` is overwritten. Setting a field back to its imported value clears the correction.
+    * **Revert** (names in ``revert_fields``): ``X`` returns to ``orig_X`` and ``orig_X`` is cleared;
+      a field that is not corrected is left alone.
+    * An amount change moves ``statement.parsed_total_minor`` (when set) by the difference, so the
+      reconciliation delta follows the corrected figures.
+
+    Never touches ``dedupe_hash``, ``description_raw``, ``merchant_key``, ``classified_by``,
+    ``needs_review``, ``kind`` or ``is_spend``: a correction is not a category decision and must
+    not change what an overlapping re-import is deduplicated against. Flushes, does not commit.
+    """
+    old_amount = txn.amount_minor
+    if posted_date is not None and posted_date != txn.posted_date:
+        if txn.orig_posted_date is None:
+            txn.orig_posted_date = txn.posted_date
+        txn.posted_date = posted_date
+        if txn.posted_date == txn.orig_posted_date:
+            txn.orig_posted_date = None
+    if description_clean is not None and description_clean != txn.description_clean:
+        if txn.orig_description_clean is None:
+            txn.orig_description_clean = txn.description_clean
+        txn.description_clean = description_clean
+        if txn.description_clean == txn.orig_description_clean:
+            txn.orig_description_clean = None
+    if amount_minor is not None and amount_minor != txn.amount_minor:
+        if txn.orig_amount_minor is None:
+            txn.orig_amount_minor = txn.amount_minor
+        txn.amount_minor = amount_minor
+        if txn.amount_minor == txn.orig_amount_minor:
+            txn.orig_amount_minor = None
+    if "posted_date" in revert_fields and txn.orig_posted_date is not None:
+        txn.posted_date = txn.orig_posted_date
+        txn.orig_posted_date = None
+    if "description_clean" in revert_fields and txn.orig_description_clean is not None:
+        txn.description_clean = txn.orig_description_clean
+        txn.orig_description_clean = None
+    if "amount_minor" in revert_fields and txn.orig_amount_minor is not None:
+        txn.amount_minor = txn.orig_amount_minor
+        txn.orig_amount_minor = None
+    if txn.amount_minor != old_amount:
+        statement = txn.statement
+        if statement.parsed_total_minor is not None:
+            statement.parsed_total_minor += txn.amount_minor - old_amount
+    txn.updated_at = utcnow_iso()
+    session.flush()
+
+
 def merchant_display_names(session: Session, merchant_keys: Sequence[str]) -> dict[str, str]:
     """A friendlier label for each `merchant_key` in `merchant_keys`, for
     `GET /api/analytics/top-merchants` (never egressed — `description_clean` is egress-eligible

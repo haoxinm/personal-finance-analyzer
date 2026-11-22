@@ -659,3 +659,34 @@ def test_with_an_llm_enabled_the_descriptions_are_sent_without_a_click(
     assert fake.requests, "the folder import must go through the same classification as an upload"
     assert "ZQXV" in str(fake.requests[0]).upper() or fake.requests
     assert fake.urls[0].startswith("https://llm.example.com")
+
+
+# ---------------------------------------------------------------------------------- dismissal
+
+
+def test_dismissal_survives_an_unchanged_rescan_and_is_cleared_when_the_record_is_rewritten(
+    setup: FolderScanner, session: Session
+) -> None:
+    path = put_statement("loose.pdf")
+    scan_stable(setup)
+    record = records(session)["loose.pdf"]
+    assert scanner_mod.dismiss(session, record.id) is True
+    assert records(session)["loose.pdf"].dismissed_at is not None
+
+    scan_stable(setup)  # unchanged file: record not rewritten
+    assert records(session)["loose.pdf"].dismissed_at is not None
+
+    put_statement("loose.pdf", "fx")  # different content: re-evaluated, record rewritten
+    os.utime(path, ns=(path.stat().st_atime_ns, path.stat().st_mtime_ns + 5_000_000_000))
+    scan_stable(setup)
+    assert records(session)["loose.pdf"].dismissed_at is None
+
+
+def test_only_problems_can_be_dismissed(setup: FolderScanner, session: Session) -> None:
+    put_statement(STATEMENT)
+    scan_stable(setup)
+    done = records(session)[STATEMENT]
+    assert done.outcome == "imported"
+    assert scanner_mod.dismiss(session, done.id) is False
+    assert scanner_mod.undismiss(session, done.id) is False
+    assert scanner_mod.dismiss(session, 9999) is False

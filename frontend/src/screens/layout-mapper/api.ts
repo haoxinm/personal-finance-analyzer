@@ -247,7 +247,7 @@ export function useTestLayoutSpec() {
       if (alreadyParsed) {
         const { data, error } = await apiClient.POST("/statements/{statement_id}/reparse", {
           params: { path: { statement_id: statementId } },
-          body: { issuer_id: issuerId, layout_spec_id: layoutSpecId, parser_id: null, remember: false },
+          body: { issuer_id: issuerId, layout_spec_id: layoutSpecId, parser_id: null, remember: false, discard_edits: false },
         });
         throwIfError(error);
         return data;

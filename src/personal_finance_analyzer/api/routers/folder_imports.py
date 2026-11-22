@@ -8,10 +8,10 @@ runs in the background; `POST /watch/scan` returns at once and the page polls `G
 from __future__ import annotations
 
 import json
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
-from sqlalchemy import func, select
+from sqlalchemy import ColumnElement, and_, func, select
 
 from personal_finance_analyzer.api import schemas
 from personal_finance_analyzer.api.deps import SessionDep
@@ -82,6 +82,7 @@ def _file(record: WatchedFile) -> schemas.WatchFile:
         statement_id=record.statement_id,
         tax_document_id=record.tax_document_id,
         warnings=_warnings(record),
+        dismissed_at=record.dismissed_at,
         first_seen=record.first_seen,
         last_seen=record.last_seen,
     )
@@ -104,21 +105,52 @@ def scan_now(request: Request) -> schemas.WatchScanStarted:
 @router.get("/watch/files", response_model=schemas.WatchFileList)
 def list_files(
     session: SessionDep,
-    view: Annotated[Literal["recent", "problems"], Query()] = "recent",
+    view: Annotated[Literal["recent", "problems", "dismissed"], Query()] = "recent",
     limit: Annotated[int, Query(ge=1, le=500)] = 50,
 ) -> schemas.WatchFileList:
     """``recent``: the newest imports (and files that were already in the app). ``problems``:
-    files that need attention (failed, or not in a folder the app imports from)."""
-    outcomes = ("imported", "known") if view == "recent" else ("failed", "ignored")
-    where = WatchedFile.outcome.in_(outcomes)
+    files that need attention (failed, or not in a folder the app imports from) and were not
+    dismissed. ``dismissed``: the problems the user dismissed (newest dismissal first)."""
+    where: ColumnElement[bool]
+    order: tuple[ColumnElement[Any], ...]
+    if view == "recent":
+        where = WatchedFile.outcome.in_(("imported", "known"))
+        order = (WatchedFile.last_seen.desc(), WatchedFile.id.desc())
+    elif view == "problems":
+        where = and_(
+            WatchedFile.outcome.in_(("failed", "ignored")), WatchedFile.dismissed_at.is_(None)
+        )
+        order = (WatchedFile.last_seen.desc(), WatchedFile.id.desc())
+    else:
+        where = and_(
+            WatchedFile.outcome.in_(("failed", "ignored")), WatchedFile.dismissed_at.is_not(None)
+        )
+        order = (WatchedFile.dismissed_at.desc(), WatchedFile.id.desc())
     total = session.scalar(select(func.count()).select_from(WatchedFile).where(where)) or 0
-    rows = session.scalars(
-        select(WatchedFile)
-        .where(where)
-        .order_by(WatchedFile.last_seen.desc(), WatchedFile.id.desc())
-        .limit(limit)
-    ).all()
+    rows = session.scalars(select(WatchedFile).where(where).order_by(*order).limit(limit)).all()
     return schemas.WatchFileList(items=[_file(r) for r in rows], total=total)
+
+
+@router.post("/watch/files/dismiss-all", response_model=schemas.WatchDismissAllResponse)
+def dismiss_all_files(session: SessionDep) -> schemas.WatchDismissAllResponse:
+    """Dismiss every problem that is showing. They show again if their file changes."""
+    return schemas.WatchDismissAllResponse(dismissed=scanner.dismiss_all(session))
+
+
+@router.post("/watch/files/{file_id}/dismiss", status_code=204, response_class=Response)
+def dismiss_file(file_id: int, session: SessionDep) -> Response:
+    """Hide a problem from "needs attention". It shows again if the file changes or on Retry."""
+    if not scanner.dismiss(session, file_id):
+        raise HTTPException(status_code=404, detail="no such problem to dismiss")
+    return Response(status_code=204)
+
+
+@router.post("/watch/files/{file_id}/undismiss", status_code=204, response_class=Response)
+def undismiss_file(file_id: int, session: SessionDep) -> Response:
+    """Show a dismissed problem again."""
+    if not scanner.undismiss(session, file_id):
+        raise HTTPException(status_code=404, detail="no such dismissed problem")
+    return Response(status_code=204)
 
 
 @router.post("/watch/files/{file_id}/retry", status_code=204, response_class=Response)

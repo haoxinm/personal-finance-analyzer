@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from personal_finance_analyzer.api.services import gateway
 from personal_finance_analyzer.config import LLMConfig
+from personal_finance_analyzer.core.errors import PfaError
 from personal_finance_analyzer.jobs.runner import JobProgress, JobRunner
 
 
@@ -72,6 +73,65 @@ def enqueue_import_then_classify(
         }
 
     return runner.run_job(kind="import", task=import_task)
+
+
+def enqueue_reparse_then_classify(
+    runner: JobRunner,
+    session_factory: sessionmaker[Session],
+    *,
+    statement_id: int,
+    parser_id: str | None,
+    layout_spec_id: int | None,
+    pages: Sequence[int] | None,
+    discard_edits: bool,
+    cfg: LLMConfig,
+) -> str:
+    """Enqueue a re-import of `statement_id` (rebuild its rows from the kept PDF); on success,
+    enqueue a classify job for the rebuilt rows. Rows with a hand edit are skipped by the
+    cascade (`classified_by='user'`). Returns the import job's id immediately."""
+
+    def reparse_task(progress: JobProgress) -> dict[str, Any]:
+        with session_factory() as session:
+            try:
+                result = gateway.reparse(
+                    session,
+                    statement_id,
+                    parser_id=parser_id,
+                    layout_spec_id=layout_spec_id,
+                    pages=pages,
+                    discard_edits=discard_edits,
+                )
+            except PfaError:
+                # `reparse` records `status='error'` + `error_detail` on the row but leaves the
+                # commit to its caller; persist that so the failure surfaces on the statement.
+                session.commit()
+                raise
+            session.commit()
+        progress.update(1, 1)
+        classify_job_id: str | None = None
+        if result.transaction_ids:
+            classify_job_id = runner.run_job(
+                kind="classify",
+                task=_classify_task(
+                    session_factory,
+                    transaction_ids=result.transaction_ids,
+                    cfg=cfg,
+                    group_id=str(uuid.uuid4()),
+                ),
+            )
+        return {
+            "inserted": result.inserted,
+            "skipped_duplicates": result.skipped_duplicates,
+            "transaction_ids": list(result.transaction_ids),
+            "restored_edits": result.restored_edits,
+            "unmatched_edits": result.unmatched_edits,
+            "discarded_edits": result.discarded_edits,
+            "layout_drift": result.layout_drift,
+            "warnings": list(result.warnings),
+            "classify_job_id": classify_job_id,
+        }
+
+    return runner.run_job(kind="import", task=reparse_task)
 
 
 def _classify_task(

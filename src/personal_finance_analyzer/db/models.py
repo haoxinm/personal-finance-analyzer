@@ -256,6 +256,11 @@ class Transaction(Base):
 
     dedupe_hash: Mapped[str] = mapped_column(Text, nullable=False)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # User corrections: non-NULL = the user corrected this field and this holds the imported value
+    # (the live column holds the corrected one). `dedupe_hash` is never recomputed.
+    orig_posted_date: Mapped[str | None] = mapped_column(Text, nullable=True)
+    orig_amount_minor: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    orig_description_clean: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[str] = mapped_column(Text, nullable=False, default=utcnow_iso)
     updated_at: Mapped[str] = mapped_column(Text, nullable=False, default=utcnow_iso)
 
@@ -733,5 +738,7 @@ class WatchedFile(Base):
         Integer, ForeignKey("tax_documents.id", ondelete="SET NULL"), nullable=True
     )
     warnings: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON list[str]
+    # Set when the user dismissed a failed/ignored record; cleared whenever the record is rewritten.
+    dismissed_at: Mapped[str | None] = mapped_column(Text, nullable=True)
     first_seen: Mapped[str] = mapped_column(Text, nullable=False, default=utcnow_iso)
     last_seen: Mapped[str] = mapped_column(Text, nullable=False, default=utcnow_iso)

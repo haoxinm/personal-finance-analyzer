@@ -140,6 +140,8 @@ class ImportResult:
     #: those that could not be attached to exactly one rebuilt row and were therefore dropped.
     restored_edits: int = 0
     unmatched_edits: int = 0
+    #: `reparse(discard_edits=True)` only: hand-edited rows whose edits were deliberately dropped.
+    discarded_edits: int = 0
 
 
 # ------------------------------------------------------------------------------------------------
@@ -985,6 +987,7 @@ def reparse(
     parser_id: str | None,
     layout_spec_id: int | None,
     pages: Sequence[int] | None = None,
+    discard_edits: bool = False,
 ) -> ImportResult:
     """Re-run a *previously confirmed* statement with a different extractor, rebuilding its rows
     (the API surface's ``POST /api/statements/{id}/reparse``).
@@ -997,7 +1000,11 @@ def reparse(
 
     Hand edits survive the rebuild where they can be matched to exactly one rebuilt row (see
     `_restore_user_edits`); `ImportResult.restored_edits` / `unmatched_edits` report how many were
-    kept and how many had to be dropped because the match was missing or ambiguous.
+    kept and how many had to be dropped because the match was missing or ambiguous. Field
+    corrections (date, amount, description) are carried over the same way; the correction is
+    dropped when the new parse already equals the corrected value. With ``discard_edits=True``
+    nothing is restored (the rebuilt rows are plain parses) and
+    `ImportResult.discarded_edits` counts the edited rows that were thrown away.
 
     Raises:
         PfaError: the statement was not found, has no account yet (never confirmed), or
@@ -1050,6 +1057,10 @@ def reparse(
     # below only ever collides with *other* statements' rows on the same account (§3.5). A row the
     # user edited by hand is remembered first and restored onto its rebuilt twin afterwards.
     kept_edits = _user_edits_of_statement(session, statement.id)
+    discarded = 0
+    if discard_edits:
+        discarded = len(kept_edits)
+        kept_edits = []
     session.execute(delete(Transaction).where(Transaction.statement_id == statement.id))
     session.flush()
 
@@ -1071,7 +1082,9 @@ def reparse(
             statement.id,
             unmatched,
         )
-    return replace(result, restored_edits=restored, unmatched_edits=unmatched)
+    return replace(
+        result, restored_edits=restored, unmatched_edits=unmatched, discarded_edits=discarded
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -1090,6 +1103,11 @@ class _UserEdit:
     merchant_canonical: str | None
     notes: str | None
     locked: bool = True
+    #: Field corrections (the corrected values; None = not corrected). The identity fields below
+    #: always hold the *imported* values, so a rebuilt row is found by what the parser produced.
+    fix_posted_date: str | None = None
+    fix_amount_minor: int | None = None
+    fix_description_clean: str | None = None
     # Identity (used by `reparse` only).
     dedupe_hash: str = ""
     posted_date: str = ""
@@ -1113,12 +1131,30 @@ def _user_edit_of(txn: Transaction) -> _UserEdit:
         merchant_canonical=txn.merchant_canonical,
         notes=txn.notes,
         locked=txn.classified_by == USER_CLASSIFIED,
+        fix_posted_date=txn.posted_date if txn.orig_posted_date is not None else None,
+        fix_amount_minor=txn.amount_minor if txn.orig_amount_minor is not None else None,
+        fix_description_clean=(
+            txn.description_clean if txn.orig_description_clean is not None else None
+        ),
         dedupe_hash=txn.dedupe_hash,
-        posted_date=txn.posted_date,
-        amount_minor=txn.amount_minor,
+        posted_date=_imported(txn.orig_posted_date, txn.posted_date),
+        amount_minor=_imported(txn.orig_amount_minor, txn.amount_minor),
         description_raw=txn.description_raw,
-        description_clean=txn.description_clean,
+        description_clean=_imported(txn.orig_description_clean, txn.description_clean),
         merchant_key=txn.merchant_key,
+    )
+
+
+def _imported[T](original: T | None, live: T) -> T:
+    """The value the statement was imported with: `orig_X` when the user corrected the field."""
+    return live if original is None else original
+
+
+def _has_corrections(txn: Transaction) -> bool:
+    return (
+        txn.orig_posted_date is not None
+        or txn.orig_amount_minor is not None
+        or txn.orig_description_clean is not None
     )
 
 
@@ -1134,6 +1170,24 @@ def _apply_user_edit(txn: Transaction, edit: _UserEdit) -> None:
         txn.classified_by = USER_CLASSIFIED
     if edit.notes is not None:
         txn.notes = edit.notes
+    # Corrections: re-applied onto the freshly parsed row, which keeps the newly parsed value as
+    # the "imported" one; a correction the new parse already satisfies is simply not needed.
+    # `dedupe_hash` is never touched. An amount fix moves the statement's parsed total with it.
+    if edit.fix_posted_date is not None and edit.fix_posted_date != txn.posted_date:
+        txn.orig_posted_date = txn.posted_date
+        txn.posted_date = edit.fix_posted_date
+    if (
+        edit.fix_description_clean is not None
+        and edit.fix_description_clean != txn.description_clean
+    ):
+        txn.orig_description_clean = txn.description_clean
+        txn.description_clean = edit.fix_description_clean
+    if edit.fix_amount_minor is not None and edit.fix_amount_minor != txn.amount_minor:
+        statement = txn.statement
+        if statement.parsed_total_minor is not None:
+            statement.parsed_total_minor += edit.fix_amount_minor - txn.amount_minor
+        txn.orig_amount_minor = txn.amount_minor
+        txn.amount_minor = edit.fix_amount_minor
     txn.updated_at = _utcnow_iso()
 
 
@@ -1143,32 +1197,35 @@ _MACHINE_NOTES_PREFIX = '{"transfer_pair_id"'
 
 
 def _user_edits_of_statement(session: Session, statement_id: int) -> list[_UserEdit]:
-    """The statement's hand-edited rows: those marked `classified_by='user'`, plus rows that only
-    carry a note the user typed. Each remembers how many twins (same date, amount and raw
+    """The statement's hand-edited rows: those marked `classified_by='user'`, rows that only
+    carry a note the user typed, and rows with a field correction. Each remembers how many twins (same date, amount and raw
     description) it had, for `_restore_user_edits`' ambiguity check."""
     rows = list(
         session.execute(
             select(Transaction).where(Transaction.statement_id == statement_id)
         ).scalars()
     )
+
+    def twin_key(txn: Transaction) -> tuple[str, int, str]:
+        return (
+            _imported(txn.orig_posted_date, txn.posted_date),
+            _imported(txn.orig_amount_minor, txn.amount_minor),
+            txn.description_raw,
+        )
+
     twins: dict[tuple[str, int, str], int] = {}
     for txn in rows:
-        key = (txn.posted_date, txn.amount_minor, txn.description_raw)
-        twins[key] = twins.get(key, 0) + 1
+        twins[twin_key(txn)] = twins.get(twin_key(txn), 0) + 1
     edits: list[_UserEdit] = []
     for txn in sorted(rows, key=lambda t: t.id):
         is_locked = txn.classified_by == USER_CLASSIFIED
         has_user_note = txn.notes is not None and not txn.notes.startswith(_MACHINE_NOTES_PREFIX)
-        if not is_locked and not has_user_note:
+        if not is_locked and not has_user_note and not _has_corrections(txn):
             continue
         edit = _user_edit_of(txn)
         if not has_user_note:
             edit = replace(edit, notes=None)
-        edits.append(
-            replace(
-                edit, twin_count=twins[(txn.posted_date, txn.amount_minor, txn.description_raw)]
-            )
-        )
+        edits.append(replace(edit, twin_count=twins[twin_key(txn)]))
     return edits
 
 
@@ -1314,12 +1371,15 @@ def reassign(
             .first()
         )
         if collision is not None:
-            if txn.classified_by == USER_CLASSIFIED:
+            if txn.classified_by == USER_CLASSIFIED or _has_corrections(txn):
                 # The surviving twin is the same real transaction: it inherits the user's edit
-                # unless it carries one of its own.
+                # (and field corrections) unless it carries one of its own.
                 survivor = session.get(Transaction, collision)
                 if survivor is not None and survivor.classified_by != USER_CLASSIFIED:
-                    _apply_user_edit(survivor, _user_edit_of(txn))
+                    handed = _user_edit_of(txn)
+                    if txn.classified_by != USER_CLASSIFIED:
+                        handed = replace(handed, locked=False, notes=None)
+                    _apply_user_edit(survivor, handed)
             session.delete(txn)
             duplicates_deleted += 1
             continue

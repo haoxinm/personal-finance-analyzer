@@ -26,6 +26,9 @@ function makeStatement(overrides: Partial<Statement> = {}): Statement {
     shape_warnings: null,
     error_detail: null,
     created_at: "2024-02-01T00:00:00Z",
+    original_name: "statement.pdf",
+    has_pdf: true,
+    pdf_in_place: false,
     ...overrides,
   };
 }

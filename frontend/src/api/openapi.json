@@ -778,6 +778,7 @@
           "statements"
         ],
         "summary": "Reparse Statement",
+        "description": "Rebuild a statement's transactions from its kept PDF (\"re-import\"), then classify them.\n\nWith no extractor in the body the statement's recorded one is used (its layout spec, else\nits parser). The user's edits are restored onto the rebuilt rows unless `discard_edits`.\nProblems that can be known up front are synchronous 4xx errors rather than failed jobs.",
         "operationId": "reparse_statement_api_statements__statement_id__reparse_post",
         "parameters": [
           {
@@ -795,7 +796,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/ExtractRequest"
+                "$ref": "#/components/schemas/ReparseRequest"
               }
             }
           }
@@ -6970,7 +6971,7 @@
           "folder-imports"
         ],
         "summary": "List Files",
-        "description": "``recent``: the newest imports (and files that were already in the app). ``problems``:\nfiles that need attention (failed, or not in a folder the app imports from).",
+        "description": "``recent``: the newest imports (and files that were already in the app). ``problems``:\nfiles that need attention (failed, or not in a folder the app imports from) and were not\ndismissed. ``dismissed``: the problems the user dismissed (newest dismissal first).",
         "operationId": "list_files_api_watch_files_get",
         "parameters": [
           {
@@ -6980,7 +6981,8 @@
             "schema": {
               "enum": [
                 "recent",
-                "problems"
+                "problems",
+                "dismissed"
               ],
               "type": "string",
               "default": "recent",
@@ -7010,6 +7012,100 @@
                 }
               }
             }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/watch/files/dismiss-all": {
+      "post": {
+        "tags": [
+          "folder-imports"
+        ],
+        "summary": "Dismiss All Files",
+        "description": "Dismiss every problem that is showing. They show again if their file changes.",
+        "operationId": "dismiss_all_files_api_watch_files_dismiss_all_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WatchDismissAllResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/watch/files/{file_id}/dismiss": {
+      "post": {
+        "tags": [
+          "folder-imports"
+        ],
+        "summary": "Dismiss File",
+        "description": "Hide a problem from \"needs attention\". It shows again if the file changes or on Retry.",
+        "operationId": "dismiss_file_api_watch_files__file_id__dismiss_post",
+        "parameters": [
+          {
+            "name": "file_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "File Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/watch/files/{file_id}/undismiss": {
+      "post": {
+        "tags": [
+          "folder-imports"
+        ],
+        "summary": "Undismiss File",
+        "description": "Show a dismissed problem again.",
+        "operationId": "undismiss_file_api_watch_files__file_id__undismiss_post",
+        "parameters": [
+          {
+            "name": "file_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "File Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
           },
           "422": {
             "description": "Validation Error",
@@ -9362,6 +9458,17 @@
               }
             ],
             "title": "Unmatched Edits"
+          },
+          "discarded_edits": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Discarded Edits"
           }
         },
         "type": "object",
@@ -10298,6 +10405,70 @@
         ],
         "title": "PrivacySettings"
       },
+      "ReparseRequest": {
+        "properties": {
+          "issuer_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Issuer Id"
+          },
+          "layout_spec_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Layout Spec Id"
+          },
+          "parser_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parser Id"
+          },
+          "remember": {
+            "type": "boolean",
+            "title": "Remember",
+            "default": false
+          },
+          "pages": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "integer"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pages"
+          },
+          "discard_edits": {
+            "type": "boolean",
+            "title": "Discard Edits",
+            "default": false
+          }
+        },
+        "type": "object",
+        "title": "ReparseRequest",
+        "description": "`POST /api/statements/{id}/reparse`. With neither `parser_id` nor `layout_spec_id` the\nstatement's recorded extractor is used."
+      },
       "RevertToAutomaticResponse": {
         "properties": {
           "transaction": {
@@ -11057,6 +11228,21 @@
               }
             ],
             "title": "Selected Pages"
+          },
+          "original_name": {
+            "type": "string",
+            "title": "Original Name",
+            "default": ""
+          },
+          "has_pdf": {
+            "type": "boolean",
+            "title": "Has Pdf",
+            "default": false
+          },
+          "pdf_in_place": {
+            "type": "boolean",
+            "title": "Pdf In Place",
+            "default": false
           }
         },
         "type": "object",
@@ -14084,6 +14270,16 @@
             "type": "boolean",
             "title": "Needs Review"
           },
+          "corrections": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TransactionCorrections"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "candidates": {
             "anyOf": [
               {
@@ -14226,6 +14422,47 @@
         "title": "TransactionCandidates",
         "description": "`GET /api/transactions/{id}/candidates`: what each layer would say, in precedence order."
       },
+      "TransactionCorrections": {
+        "properties": {
+          "posted_date": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Posted Date"
+          },
+          "amount_minor": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Amount Minor"
+          },
+          "description_clean": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description Clean"
+          }
+        },
+        "type": "object",
+        "title": "TransactionCorrections",
+        "description": "The *imported* values of the fields the user corrected (None = not corrected)."
+      },
       "TransactionIds": {
         "properties": {
           "ids": {
@@ -14313,6 +14550,53 @@
               }
             ],
             "title": "Notes"
+          },
+          "posted_date": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Posted Date"
+          },
+          "amount_minor": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Amount Minor"
+          },
+          "description_clean": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 200
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description Clean"
+          },
+          "revert_fields": {
+            "items": {
+              "type": "string",
+              "enum": [
+                "posted_date",
+                "amount_minor",
+                "description_clean"
+              ]
+            },
+            "type": "array",
+            "title": "Revert Fields"
           },
           "create_rule": {
             "type": "boolean",
@@ -14554,6 +14838,19 @@
         ],
         "title": "ValidationError"
       },
+      "WatchDismissAllResponse": {
+        "properties": {
+          "dismissed": {
+            "type": "integer",
+            "title": "Dismissed"
+          }
+        },
+        "type": "object",
+        "required": [
+          "dismissed"
+        ],
+        "title": "WatchDismissAllResponse"
+      },
       "WatchFile": {
         "properties": {
           "id": {
@@ -14672,6 +14969,17 @@
             },
             "type": "array",
             "title": "Warnings"
+          },
+          "dismissed_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dismissed At"
           },
           "first_seen": {
             "type": "string",

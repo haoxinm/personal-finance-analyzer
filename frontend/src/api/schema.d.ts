@@ -228,7 +228,14 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Reparse Statement */
+        /**
+         * Reparse Statement
+         * @description Rebuild a statement's transactions from its kept PDF ("re-import"), then classify them.
+         *
+         *     With no extractor in the body the statement's recorded one is used (its layout spec, else
+         *     its parser). The user's edits are restored onto the rebuilt rows unless `discard_edits`.
+         *     Problems that can be known up front are synchronous 4xx errors rather than failed jobs.
+         */
         post: operations["reparse_statement_api_statements__statement_id__reparse_post"];
         delete?: never;
         options?: never;
@@ -1688,11 +1695,72 @@ export interface paths {
         /**
          * List Files
          * @description ``recent``: the newest imports (and files that were already in the app). ``problems``:
-         *     files that need attention (failed, or not in a folder the app imports from).
+         *     files that need attention (failed, or not in a folder the app imports from) and were not
+         *     dismissed. ``dismissed``: the problems the user dismissed (newest dismissal first).
          */
         get: operations["list_files_api_watch_files_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/watch/files/dismiss-all": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Dismiss All Files
+         * @description Dismiss every problem that is showing. They show again if their file changes.
+         */
+        post: operations["dismiss_all_files_api_watch_files_dismiss_all_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/watch/files/{file_id}/dismiss": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Dismiss File
+         * @description Hide a problem from "needs attention". It shows again if the file changes or on Retry.
+         */
+        post: operations["dismiss_file_api_watch_files__file_id__dismiss_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/watch/files/{file_id}/undismiss": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Undismiss File
+         * @description Show a dismissed problem again.
+         */
+        post: operations["undismiss_file_api_watch_files__file_id__undismiss_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2456,6 +2524,8 @@ export interface components {
             restored_edits?: number | null;
             /** Unmatched Edits */
             unmatched_edits?: number | null;
+            /** Discarded Edits */
+            discarded_edits?: number | null;
         };
         /** JobIdResponse */
         JobIdResponse: {
@@ -2844,6 +2914,31 @@ export interface components {
             pii_terms: string[];
         };
         /**
+         * ReparseRequest
+         * @description `POST /api/statements/{id}/reparse`. With neither `parser_id` nor `layout_spec_id` the
+         *     statement's recorded extractor is used.
+         */
+        ReparseRequest: {
+            /** Issuer Id */
+            issuer_id?: number | null;
+            /** Layout Spec Id */
+            layout_spec_id?: number | null;
+            /** Parser Id */
+            parser_id?: string | null;
+            /**
+             * Remember
+             * @default false
+             */
+            remember: boolean;
+            /** Pages */
+            pages?: number[] | null;
+            /**
+             * Discard Edits
+             * @default false
+             */
+            discard_edits: boolean;
+        };
+        /**
          * RevertToAutomaticResponse
          * @description `POST /transactions/{id}/revert-to-automatic`: the row, handed back to automatic
          *     classification (never an LLM call), and the same undo token an accept carries
@@ -3122,6 +3217,21 @@ export interface components {
             page_count?: number | null;
             /** Selected Pages */
             selected_pages?: number[] | null;
+            /**
+             * Original Name
+             * @default
+             */
+            original_name: string;
+            /**
+             * Has Pdf
+             * @default false
+             */
+            has_pdf: boolean;
+            /**
+             * Pdf In Place
+             * @default false
+             */
+            pdf_in_place: boolean;
         };
         /**
          * StatementPageInfo
@@ -4212,6 +4322,7 @@ export interface components {
             notes: string | null;
             /** Needs Review */
             needs_review: boolean;
+            corrections?: components["schemas"]["TransactionCorrections"] | null;
             /** Candidates */
             candidates?: components["schemas"]["TransactionCandidate"][] | null;
             /** Conflict */
@@ -4258,6 +4369,18 @@ export interface components {
             conflict: boolean;
         };
         /**
+         * TransactionCorrections
+         * @description The *imported* values of the fields the user corrected (None = not corrected).
+         */
+        TransactionCorrections: {
+            /** Posted Date */
+            posted_date?: string | null;
+            /** Amount Minor */
+            amount_minor?: number | null;
+            /** Description Clean */
+            description_clean?: string | null;
+        };
+        /**
          * TransactionIds
          * @description `GET /api/transactions/ids`: every id matching the filters (not one page of them).
          */
@@ -4287,6 +4410,14 @@ export interface components {
             kind?: components["schemas"]["Kind"] | null;
             /** Notes */
             notes?: string | null;
+            /** Posted Date */
+            posted_date?: string | null;
+            /** Amount Minor */
+            amount_minor?: number | null;
+            /** Description Clean */
+            description_clean?: string | null;
+            /** Revert Fields */
+            revert_fields?: ("posted_date" | "amount_minor" | "description_clean")[];
             /**
              * Create Rule
              * @default false
@@ -4369,6 +4500,11 @@ export interface components {
             /** Context */
             ctx?: Record<string, never>;
         };
+        /** WatchDismissAllResponse */
+        WatchDismissAllResponse: {
+            /** Dismissed */
+            dismissed: number;
+        };
         /** WatchFile */
         WatchFile: {
             /** Id */
@@ -4398,6 +4534,8 @@ export interface components {
             tax_document_id?: number | null;
             /** Warnings */
             warnings?: string[];
+            /** Dismissed At */
+            dismissed_at?: string | null;
             /** First Seen */
             first_seen: string;
             /** Last Seen */
@@ -5032,7 +5170,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["ExtractRequest"];
+                "application/json": components["schemas"]["ReparseRequest"];
             };
         };
         responses: {
@@ -8153,7 +8291,7 @@ export interface operations {
     list_files_api_watch_files_get: {
         parameters: {
             query?: {
-                view?: "recent" | "problems";
+                view?: "recent" | "problems" | "dismissed";
                 limit?: number;
             };
             header?: never;
@@ -8170,6 +8308,84 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["WatchFileList"];
                 };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    dismiss_all_files_api_watch_files_dismiss_all_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WatchDismissAllResponse"];
+                };
+            };
+        };
+    };
+    dismiss_file_api_watch_files__file_id__dismiss_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                file_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    undismiss_file_api_watch_files__file_id__undismiss_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                file_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {

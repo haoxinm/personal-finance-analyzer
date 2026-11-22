@@ -23,7 +23,7 @@ from personal_finance_analyzer.api.deps import (
     SessionFactoryDep,
     SettingsDep,
 )
-from personal_finance_analyzer.api.services import crud, gateway, statement_preview
+from personal_finance_analyzer.api.services import crud, gateway, job_tasks, statement_preview
 from personal_finance_analyzer.api.services.job_tasks import enqueue_import_then_classify
 from personal_finance_analyzer.api.services.uploads import (
     read_pdf_upload,
@@ -34,7 +34,6 @@ from personal_finance_analyzer.core.errors import PfaError
 from personal_finance_analyzer.db.models import Statement
 from personal_finance_analyzer.ingest.extract import extract
 from personal_finance_analyzer.ingest.pages import load_pages, parse_page_spec
-from personal_finance_analyzer.jobs.runner import JobProgress
 
 router = APIRouter(tags=["statements"])
 
@@ -58,6 +57,9 @@ def _statement_response(session: Session, statement: Statement) -> schemas.State
         shape_warnings=statement.shape_warnings,
         error_detail=statement.error_detail,
         created_at=statement.ingested_at,
+        original_name=statement.original_name,
+        has_pdf=statement.stored_path is not None,
+        pdf_in_place=statement.pdf_in_place,
     )
 
 
@@ -315,38 +317,54 @@ def extract_statement(
 )
 def reparse_statement(
     statement_id: int,
-    body: schemas.ExtractRequest,
+    body: schemas.ReparseRequest,
     session: SessionDep,
     runner: JobRunnerDep,
     session_factory: SessionFactoryDep,
+    settings: SettingsDep,
 ) -> schemas.JobIdResponse:
+    """Rebuild a statement's transactions from its kept PDF ("re-import"), then classify them.
+
+    With no extractor in the body the statement's recorded one is used (its layout spec, else
+    its parser). The user's edits are restored onto the rebuilt rows unless `discard_edits`.
+    Problems that can be known up front are synchronous 4xx errors rather than failed jobs.
+    """
     statement = crud.get_statement(session, statement_id)
     if statement is None:
         raise HTTPException(status_code=404, detail="statement not found")
+    if body.parser_id is not None and body.layout_spec_id is not None:
+        raise HTTPException(
+            status_code=400, detail="give either parser_id or layout_spec_id, not both"
+        )
+    parser_id, layout_spec_id = body.parser_id, body.layout_spec_id
+    if parser_id is None and layout_spec_id is None:
+        layout_spec_id = statement.layout_spec_id
+        if layout_spec_id is None:
+            parser_id = statement.parser_id
+        if layout_spec_id is None and parser_id is None:
+            raise HTTPException(
+                status_code=400,
+                detail="this statement has no extractor on record; choose one",
+            )
+    if statement.account_id is None:
+        raise HTTPException(
+            status_code=409,
+            detail="this statement was never imported; finish it on the Import page",
+        )
+    if statement.stored_path is None:
+        raise HTTPException(
+            status_code=409,
+            detail="no copy of this statement's PDF was kept; delete it and import the PDF again",
+        )
 
-    def task(progress: JobProgress) -> dict[str, object]:
-        with session_factory() as job_session:
-            try:
-                result = gateway.reparse(
-                    job_session,
-                    statement_id,
-                    parser_id=body.parser_id,
-                    layout_spec_id=body.layout_spec_id,
-                    pages=body.pages,
-                )
-            except PfaError:
-                # `reparse` records `status='error'` + `error_detail` on the row but leaves the
-                # commit to its caller; persist that so the failure surfaces on the statement.
-                job_session.commit()
-                raise
-            job_session.commit()
-        progress.update(1, 1)
-        return {
-            "inserted": result.inserted,
-            "transaction_ids": list(result.transaction_ids),
-            "restored_edits": result.restored_edits,
-            "unmatched_edits": result.unmatched_edits,
-        }
-
-    job_id = runner.run_job(kind="import", task=task)
+    job_id = job_tasks.enqueue_reparse_then_classify(
+        runner,
+        session_factory,
+        statement_id=statement_id,
+        parser_id=parser_id,
+        layout_spec_id=layout_spec_id,
+        pages=body.pages,
+        discard_edits=body.discard_edits,
+        cfg=settings.llm,
+    )
     return schemas.JobIdResponse(job_id=job_id)

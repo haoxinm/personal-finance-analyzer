@@ -26,7 +26,7 @@ for many) drops the edit and re-runs the deterministic cascade for those rows, n
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import date
+from datetime import date, timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -38,6 +38,9 @@ from personal_finance_analyzer.api.services import crud, gateway
 from personal_finance_analyzer.classify import candidates as suggestions
 from personal_finance_analyzer.classify import cascade
 from personal_finance_analyzer.db.models import Transaction
+
+#: Earliest date a corrected `posted_date` may take.
+_MIN_POSTED_DATE = date(1970, 1, 1)
 
 router = APIRouter(tags=["transactions"])
 
@@ -58,6 +61,20 @@ def _candidates_response(
         )
         for c in candidate_set.candidates
     ]
+
+
+def _corrections_response(txn: Transaction) -> schemas.TransactionCorrections | None:
+    if (
+        txn.orig_posted_date is None
+        and txn.orig_amount_minor is None
+        and txn.orig_description_clean is None
+    ):
+        return None
+    return schemas.TransactionCorrections(
+        posted_date=txn.orig_posted_date,
+        amount_minor=txn.orig_amount_minor,
+        description_clean=txn.orig_description_clean,
+    )
 
 
 def _transaction_response(
@@ -83,6 +100,7 @@ def _transaction_response(
         merchant_key=txn.merchant_key,
         notes=txn.notes,
         needs_review=txn.needs_review,
+        corrections=_corrections_response(txn),
         candidates=_candidates_response(candidate_set)
         if candidate_set is not None and with_candidates
         else None,
@@ -224,6 +242,24 @@ def patch_transaction(
     if txn is None:
         raise HTTPException(status_code=404, detail="transaction not found")
 
+    if body.posted_date is not None and not (
+        _MIN_POSTED_DATE <= body.posted_date <= date.today() + timedelta(days=366)
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="posted_date must be between 1970-01-01 and a year from today",
+        )
+    given = {
+        "posted_date": body.posted_date,
+        "amount_minor": body.amount_minor,
+        "description_clean": body.description_clean,
+    }
+    clash = sorted(f for f in set(body.revert_fields) if given[f] is not None)
+    if clash:
+        raise HTTPException(
+            status_code=400, detail=f"cannot both set and revert: {', '.join(clash)}"
+        )
+
     if body.category_key is not None or body.subcategory_key is not None:
         category_key = body.category_key or crud.category_key_of(session, txn)
         subcategory_key = body.subcategory_key or crud.subcategory_key_of(session, txn)
@@ -248,6 +284,17 @@ def patch_transaction(
     )
     if remaining_kind is not None or body.notes is not None:
         crud.update_transaction_fields(session, txn, kind=remaining_kind, notes=body.notes)
+        session.commit()
+
+    if body.revert_fields or any(v is not None for v in given.values()):
+        crud.apply_field_corrections(
+            session,
+            txn,
+            posted_date=body.posted_date.isoformat() if body.posted_date is not None else None,
+            description_clean=body.description_clean,
+            amount_minor=body.amount_minor,
+            revert_fields=body.revert_fields,
+        )
         session.commit()
 
     return _transaction_response(session, txn)

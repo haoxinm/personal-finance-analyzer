@@ -12,11 +12,19 @@ Amounts are minor units everywhere (I5). `mask` never appears here (A12/export l
 
 from __future__ import annotations
 
+import unicodedata
 from datetime import date, datetime
 from enum import StrEnum
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
 
 from personal_finance_analyzer.core.forecast import (
     MAX_AMOUNT_MINOR,
@@ -111,6 +119,10 @@ class AccountUpdate(_Model):
 # --- Statements ----------------------------------------------------------------------------------
 
 
+#: Largest absolute amount a user may type for a corrected transaction (1,000,000,000.00).
+MAX_CORRECTED_AMOUNT_MINOR = 100_000_000_000
+
+
 class Statement(_Model):
     id: int
     user_id: int | None = None
@@ -131,6 +143,13 @@ class Statement(_Model):
     #: 1-based page numbers kept for parsing (and sent to the LLM, for the LLM parser);
     #: `None` = every page.
     selected_pages: list[int] | None = None
+    #: The uploaded file's (sanitized) name.
+    original_name: str = ""
+    #: A PDF copy is on record (`stored_path` is set), so the statement can be re-imported.
+    has_pdf: bool = False
+    #: The PDF is a file the user put in the documents folder themselves (never removed unless
+    #: the user asks when deleting the statement).
+    pdf_in_place: bool = False
 
 
 class ExtractorProposal(_Model):
@@ -157,6 +176,24 @@ class ExtractRequest(_Model):
     remember: bool = False
     #: 1-based pages to keep/parse; `None` = the statement's saved selection (default: all).
     pages: list[int] | None = None
+
+
+class ReparseRequest(_Model):
+    """`POST /api/statements/{id}/reparse`. With neither `parser_id` nor `layout_spec_id` the
+    statement's recorded extractor is used."""
+
+    #: Accepted for compatibility with the Layout mapper; the statement's own issuer is used.
+    issuer_id: int | None = None
+    layout_spec_id: int | None = None
+    #: A built-in parser id, or `"llm"` for the LLM statement parser.
+    parser_id: str | None = None
+    #: Accepted and ignored: a re-import never rewrites the remembered layout.
+    remember: bool = False
+    #: 1-based pages to keep/parse; `None` = the statement's saved selection (default: all).
+    pages: list[int] | None = None
+    #: Drop the user's edits (category, kind, notes, field corrections) on this statement's
+    #: transactions instead of restoring them onto the rebuilt rows.
+    discard_edits: bool = False
 
 
 class StatementPageInfo(_Model):
@@ -220,6 +257,8 @@ class Job(_Model):
     #: and edits dropped because no single rebuilt row could be matched to them. `None` otherwise.
     restored_edits: int | None = None
     unmatched_edits: int | None = None
+    #: On a re-parse job run with `discard_edits`: edited rows whose edits were dropped.
+    discarded_edits: int | None = None
 
 
 # --- Transactions ----------------------------------------------------------------------------------
@@ -262,6 +301,14 @@ class TransactionCandidates(_Model):
     conflict: bool
 
 
+class TransactionCorrections(_Model):
+    """The *imported* values of the fields the user corrected (None = not corrected)."""
+
+    posted_date: date | None = None
+    amount_minor: int | None = None
+    description_clean: str | None = None
+
+
 class Transaction(_Model):
     id: int
     statement_id: int
@@ -278,6 +325,8 @@ class Transaction(_Model):
     merchant_key: str | None
     notes: str | None
     needs_review: bool
+    #: Imported values of the date/amount/description the user corrected; None when none is.
+    corrections: TransactionCorrections | None = None
     #: Only present when the list was asked for it (`include_candidates` / `include_conflict`).
     candidates: list[TransactionCandidate] | None = None
     conflict: bool | None = None
@@ -303,10 +352,43 @@ class TransactionPatch(_Model):
     subcategory_key: str | None = None
     kind: Kind | None = None
     notes: str | None = None
+    #: Corrections of what was imported. The imported value is kept (`Transaction.corrections`);
+    #: `dedupe_hash`, `description_raw` and `merchant_key` never change. Amount is signed minor
+    #: units, positive = money out (I5), non-zero.
+    posted_date: date | None = None
+    amount_minor: int | None = None
+    description_clean: str | None = Field(default=None, max_length=200)
+    #: Corrected fields to put back to their imported value.
+    revert_fields: list[Literal["posted_date", "amount_minor", "description_clean"]] = Field(
+        default_factory=list
+    )
     #: Also save an exact user rule for this transaction's merchant ("always categorize this
     #: merchant this way"), for future transactions. Needs a category and subcategory. Off by
     #: default: an edit is otherwise a one-time patch.
     create_rule: bool = False
+
+    @field_validator("description_clean")
+    @classmethod
+    def _check_description(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            raise ValueError("description must not be blank")
+        if any(unicodedata.category(ch) == "Cc" for ch in value):
+            raise ValueError("description must not contain control characters")
+        return value
+
+    @field_validator("amount_minor")
+    @classmethod
+    def _check_amount(cls, value: int | None) -> int | None:
+        if value is None:
+            return None
+        if value == 0:
+            raise ValueError("amount must not be zero")
+        if abs(value) > MAX_CORRECTED_AMOUNT_MINOR:
+            raise ValueError("amount is too large")
+        return value
 
 
 class TransactionState(_Model):
@@ -1757,6 +1839,10 @@ class WatchScanStarted(_Model):
     status: WatchStatus
 
 
+class WatchDismissAllResponse(_Model):
+    dismissed: int
+
+
 class WatchFile(_Model):
     id: int
     path: str
@@ -1771,6 +1857,8 @@ class WatchFile(_Model):
     statement_id: int | None = None
     tax_document_id: int | None = None
     warnings: list[str] = Field(default_factory=list)
+    #: When the user dismissed this problem (None = not dismissed).
+    dismissed_at: str | None = None
     first_seen: str
     last_seen: str
 

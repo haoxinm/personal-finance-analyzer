@@ -965,3 +965,139 @@ def test_reassign_hands_a_deleted_duplicates_edit_to_the_surviving_twin(
     assert survivor is not None
     assert (survivor.category_id, survivor.subcategory_id) == edited_category
     assert survivor.classified_by == "user"
+
+
+# --------------------------------------------------------------------------------------------
+# Field corrections (date / amount / description) survive reparse and never touch the hash
+# --------------------------------------------------------------------------------------------
+
+
+def _correct(
+    session: Session,
+    txn: Transaction,
+    *,
+    posted_date: str | None = None,
+    amount_minor: int | None = None,
+    description_clean: str | None = None,
+) -> None:
+    from personal_finance_analyzer.api.services import crud
+
+    crud.apply_field_corrections(
+        session,
+        txn,
+        posted_date=posted_date,
+        amount_minor=amount_minor,
+        description_clean=description_clean,
+    )
+    session.commit()
+
+
+def test_a_correction_survives_reparse_and_keeps_the_newly_parsed_value_as_imported(
+    session: Session, tmp_path: Path
+) -> None:
+    statement_id, _user = _import_three_rows(session, tmp_path, "fix")
+    coffee = _rows(session, statement_id)["COFFEE SHOP"]
+    original_hash = coffee.dedupe_hash
+    statement = coffee.statement
+    total_before = statement.parsed_total_minor
+    assert total_before is not None
+    _correct(
+        session, coffee, posted_date="2026-01-06", amount_minor=1500, description_clean="Latte"
+    )
+    session.refresh(statement)
+    assert statement.parsed_total_minor == total_before + (1500 - 1234)
+    assert coffee.dedupe_hash == original_hash  # never recomputed
+    assert coffee.classified_by is None  # a correction is not a category decision
+
+    result = pipeline.reparse(session, statement_id, parser_id="generic_table", layout_spec_id=None)
+    session.commit()
+
+    assert (result.restored_edits, result.unmatched_edits) == (1, 0)
+    rebuilt = _rows(session, statement_id)["COFFEE SHOP"]
+    assert (rebuilt.posted_date, rebuilt.amount_minor, rebuilt.description_clean) == (
+        "2026-01-06",
+        1500,
+        "Latte",
+    )
+    assert (rebuilt.orig_posted_date, rebuilt.orig_amount_minor) == ("2026-01-05", 1234)
+    assert rebuilt.orig_description_clean is not None
+    assert rebuilt.classified_by is None
+    assert rebuilt.dedupe_hash == original_hash
+    session.refresh(statement)
+    assert statement.parsed_total_minor == total_before + (1500 - 1234)
+
+
+def test_a_correction_the_new_parse_already_satisfies_is_dropped(
+    session: Session, tmp_path: Path
+) -> None:
+    statement_id, _user = _import_three_rows(session, tmp_path, "same")
+    coffee = _rows(session, statement_id)["COFFEE SHOP"]
+    coffee.orig_amount_minor = 999  # "imported as 9.99, corrected to what the parser now reads"
+    session.commit()
+    assert coffee.amount_minor == 1234
+
+    pipeline.reparse(session, statement_id, parser_id="generic_table", layout_spec_id=None)
+    session.commit()
+
+    rebuilt = _rows(session, statement_id)["COFFEE SHOP"]
+    assert rebuilt.amount_minor == 1234 and rebuilt.orig_amount_minor is None
+
+
+def test_discard_edits_drops_corrections_and_one_time_edits_and_counts_them(
+    session: Session, tmp_path: Path
+) -> None:
+    statement_id, _user = _import_three_rows(session, tmp_path, "discard")
+    rows = _rows(session, statement_id)
+    _correct(session, rows["COFFEE SHOP"], amount_minor=1500)
+    _edit_by_hand(session, rows["GROCERY MART"], "travel", "hotels")
+
+    result = pipeline.reparse(
+        session, statement_id, parser_id="generic_table", layout_spec_id=None, discard_edits=True
+    )
+    session.commit()
+
+    assert (result.restored_edits, result.discarded_edits) == (0, 2)
+    rebuilt = _rows(session, statement_id)
+    assert rebuilt["COFFEE SHOP"].amount_minor == 1234
+    assert rebuilt["COFFEE SHOP"].orig_amount_minor is None
+    assert rebuilt["GROCERY MART"].classified_by is None
+    statement = rebuilt["GROCERY MART"].statement
+    assert statement.parsed_total_minor == 4510 + 1234 + 2999
+
+
+def test_an_overlapping_import_still_skips_a_corrected_row(
+    session: Session, tmp_path: Path
+) -> None:
+    user = _make_user(session)
+    issuer = _make_issuer(session, "Fix Overlap Bank")
+    pdf1 = tmp_path / "o1.pdf"
+    _build_card_pdf(
+        pdf1,
+        [
+            ("01/03/2026", "GROCERY MART", "45.10"),
+            ("01/05/2026", "COFFEE SHOP", "12.34"),
+            ("01/06/2026", "HARDWARE STORE", "8.00"),
+        ],
+        closing="65.44",
+    )
+    p1, _r1 = _propose_and_confirm(session, pdf1, user_id=user.id, issuer_id=issuer.id)
+    coffee = _rows(session, p1.statement_id)["COFFEE SHOP"]
+    _correct(session, coffee, amount_minor=9999, posted_date="2026-01-07")
+
+    pdf2 = tmp_path / "o2.pdf"
+    _build_card_pdf(
+        pdf2,
+        [
+            ("01/03/2026", "GROCERY MART", "45.10"),
+            ("01/05/2026", "COFFEE SHOP", "12.34"),
+            ("01/06/2026", "HARDWARE STORE", "8.00"),
+            ("01/09/2026", "ONLINE BOOKSTORE", "29.99"),
+        ],
+        closing="95.43",
+    )
+    _p2, r2 = _propose_and_confirm(
+        session, pdf2, user_id=user.id, issuer_id=issuer.id, original_name="o2.pdf"
+    )
+    assert r2.inserted == 1 and r2.skipped_duplicates == 3
+    session.expire_all()
+    assert session.query(Transaction).filter_by(description_raw="COFFEE SHOP").count() == 1

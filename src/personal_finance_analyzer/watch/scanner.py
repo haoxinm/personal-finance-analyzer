@@ -520,6 +520,7 @@ class FolderScanner:
         record.tax_document_id = outcome.tax_document_id
         record.warnings = json.dumps(outcome.warnings) if outcome.warnings else None
         record.last_seen = now
+        record.dismissed_at = None  # a re-evaluated outcome deserves to be seen again
         session.commit()
 
     def _settle_records(self, session: Session, records: dict[str, WatchedFile]) -> None:
@@ -630,3 +631,39 @@ def retry(session: Session, record_id: int) -> bool:
     session.delete(record)
     session.commit()
     return True
+
+
+def dismiss(session: Session, record_id: int) -> bool:
+    """Hide a failed or ignored file from the "needs attention" list. The scan leaves the record
+    alone while the file is unchanged, so it stays hidden; any rewrite of the record (the file
+    changed, or Retry) clears the dismissal. False when there is no such problem."""
+    record = session.get(WatchedFile, record_id)
+    if record is None or record.outcome not in ("failed", "ignored"):
+        return False
+    record.dismissed_at = utcnow_iso()
+    session.commit()
+    return True
+
+
+def undismiss(session: Session, record_id: int) -> bool:
+    """Show a dismissed problem again. False when there is no such problem."""
+    record = session.get(WatchedFile, record_id)
+    if record is None or record.outcome not in ("failed", "ignored"):
+        return False
+    record.dismissed_at = None
+    session.commit()
+    return True
+
+
+def dismiss_all(session: Session) -> int:
+    """Dismiss every problem that is not dismissed yet; returns how many were."""
+    now = utcnow_iso()
+    records = session.scalars(
+        select(WatchedFile).where(
+            WatchedFile.outcome.in_(("failed", "ignored")), WatchedFile.dismissed_at.is_(None)
+        )
+    ).all()
+    for record in records:
+        record.dismissed_at = now
+    session.commit()
+    return len(records)

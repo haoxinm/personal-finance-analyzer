@@ -57,6 +57,12 @@ counterpart except the layout mapper and the forecast.
   row, never an LLM (if none answers, the row becomes Uncategorized and flagged for review). On an
   edited row the chip the rules would pick is marked *Automatic*. Undo puts the edit back. A kind
   you changed by hand stays; the original kind is not stored.
+- **Fix an import.** *Re-import* a statement from its kept PDF (same extractor by default, or a
+  different one): the rows are rebuilt and classified again, and your edits are kept unless you
+  choose to discard them; edits that cannot be matched to exactly one rebuilt row are reported, not
+  guessed. You can also correct a single transaction's **date, amount or description** in the edit
+  dialog: the imported value is remembered ("Imported as ..." with a restore), rules still match the
+  merchant as imported, and overlapping re-imports still skip the row as a duplicate.
 - **Reconcile every import** against the statement's own printed totals and warn, rather than
   silently accept numbers that don't add up; **never double-count a card payment** (a payment from
   a tracked checking account is a transfer on both sides, not spend).
@@ -130,7 +136,7 @@ The folder name must be the name of a person in the app (capitals and spacing do
 an unknown name is reported, never created. Files stay exactly where you put them, a PDF still
 being copied waits until it is complete, and anything the app cannot import (unknown person, a
 password-protected PDF, a layout it does not recognise yet) is listed on the Import page with the
-reason and a Retry button. Deleting a statement or tax document in the app **keeps** your PDF
+reason, a Retry button and Dismiss (a dismissed file shows up again if it changes). Deleting a statement or tax document in the app **keeps** your PDF
 (tick "Also delete the PDF file" to remove it too); it is not imported again unless the file
 changes or you press Import again. It is **off by default**: turn on *Folder imports* in Settings (or run
 `pfa documents scan` once). If an LLM is enabled, new statements' descriptions are sent to it for
