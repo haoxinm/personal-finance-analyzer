@@ -247,6 +247,36 @@ def test_repropose_never_overwrites_a_statement_that_became_parsed(
     assert row is not None and row.parser_id == "winner"
 
 
+def test_reuploading_a_pending_file_never_overwrites_a_statement_that_became_parsed(
+    session: Session, user: User, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    add_layout_b_bank(session)
+    first = _propose(session, user, _FIRST)
+    other = User(name="bob")
+    session.add(other)
+    session.commit()
+    real = pipeline._propose_extractor
+
+    def racing(*args: object, **kwargs: object) -> pipeline._Proposed:
+        proposed = real(*args, **kwargs)  # type: ignore[arg-type]
+        session.execute(
+            update(Statement)
+            .where(Statement.id == first.statement_id)
+            .values(status=pipeline.STATUS_PARSED, parser_id="winner")
+        )
+        return proposed
+
+    monkeypatch.setattr(pipeline, "_propose_extractor", racing)
+    again = pipeline.propose_import(
+        session, generated_pdf("layout_b_credit", _FIRST), user_id=other.id, original_name="x.pdf"
+    )
+    session.expire_all()
+    row = session.get(Statement, first.statement_id)
+    assert row is not None
+    assert (row.status, row.parser_id, row.user_id) == ("parsed", "winner", user.id)
+    assert again.status == "duplicate" and again.confident is False and again.remembered is False
+
+
 def test_a_remembered_spec_that_was_unapproved_falls_back_to_scoring(
     session: Session, user: User
 ) -> None:

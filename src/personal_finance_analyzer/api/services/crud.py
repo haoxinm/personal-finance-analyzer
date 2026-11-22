@@ -792,12 +792,7 @@ def revise_layout_spec(
 
 def approve_layout_spec(session: Session, spec: LayoutSpec) -> LayoutSpec:
     spec.approved = True
-    # A revision supersedes the version an issuer remembered (same name and issuer).
-    issuer = session.get(Issuer, spec.issuer_id) if spec.issuer_id is not None else None
-    if issuer is not None and issuer.default_spec_id not in (None, spec.id):
-        current = session.get(LayoutSpec, issuer.default_spec_id)
-        if current is not None and current.name == spec.name and current.version < spec.version:
-            issuer.default_spec_id = spec.id
+    gateway.advance_remembered_spec(session, spec)
     session.flush()
     return spec
 

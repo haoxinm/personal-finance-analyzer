@@ -13,6 +13,7 @@ from typer.testing import CliRunner
 
 from personal_finance_analyzer import cli
 from personal_finance_analyzer.cli import app
+from personal_finance_analyzer.core.paths import db_path
 from personal_finance_analyzer.db.session import make_engine_for_path
 
 runner = CliRunner()
@@ -439,3 +440,72 @@ def test_import_builtin_failure_warns_and_prints_llm_retry_command(
     retried = runner.invoke(app, _split_printed_command(match.group(1)), catch_exceptions=False)
     assert retried.exit_code == 0, retried.output
     assert "imported 0 transaction" in retried.output
+
+
+def _seed_specs(home: Path) -> tuple[int, int]:
+    """(an issuer's id, the id of an approved spec that belongs to a *different* issuer)."""
+    from sqlalchemy.orm import Session
+
+    from tests.watch.support import add_layout_b_bank, add_layout_b_spec
+
+    engine = make_engine_for_path(db_path())
+    try:
+        with Session(engine) as session:
+            owner = add_layout_b_bank(session)
+            spec = add_layout_b_spec(session, owner)
+            return owner.id, spec.id
+    finally:
+        engine.dispose()
+
+
+def test_issuers_add_rejects_an_invalid_default_spec(home: Path) -> None:
+    assert runner.invoke(app, ["migrate"], catch_exceptions=False).exit_code == 0
+    _, spec_id = _seed_specs(home)
+
+    result = runner.invoke(app, ["issuers", "add", "Newbank", "--default-spec", str(spec_id)])
+    assert result.exit_code == 1
+    assert "belongs to another issuer" in result.output
+    assert "Created issuer" not in result.output
+    listing = runner.invoke(app, ["issuers", "add", "Newbank"])
+    assert listing.exit_code == 0, listing.output  # the failed attempt created nothing
+
+
+def test_import_does_not_remember_an_invalid_layout_spec(home: Path) -> None:
+    from sqlalchemy.orm import Session
+
+    from personal_finance_analyzer.db.models import Issuer
+    from tests.ingest.tax_support import generated_pdf
+
+    assert runner.invoke(app, ["migrate"], catch_exceptions=False).exit_code == 0
+    owner_id, spec_id = _seed_specs(home)
+    assert runner.invoke(app, ["issuers", "add", "Other Bank"]).exit_code == 0
+
+    engine = make_engine_for_path(db_path())
+    try:
+        with Session(engine) as session:
+            other = session.query(Issuer).filter(Issuer.name == "Other Bank").one()
+            other_id = other.id
+    finally:
+        engine.dispose()
+    assert other_id != owner_id
+
+    result = runner.invoke(
+        app,
+        [
+            "import",
+            str(generated_pdf("layout_b_credit", "normal")),
+            "--issuer-id",
+            str(other_id),
+            "--layout-spec-id",
+            str(spec_id),
+        ],
+    )
+    assert "not remembering layout spec" in result.output
+    assert "belongs to another issuer" in result.output
+
+    engine = make_engine_for_path(db_path())
+    try:
+        with Session(engine) as session:
+            assert session.get(Issuer, other_id).default_spec_id is None  # type: ignore[union-attr]
+    finally:
+        engine.dispose()

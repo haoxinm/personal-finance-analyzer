@@ -333,6 +333,13 @@ def apply_kind_edit(session: Session, txn: Any, kind: Kind) -> None:
     fn(session, txn, kind)
 
 
+def advance_remembered_spec(session: Session, spec: Any) -> None:
+    """Point the issuer's remembered spec at ``spec`` when it is a newer approved revision of it
+    (does not commit)."""
+    fn = _resolve("personal_finance_analyzer.ingest.layout_spec", "advance_remembered_spec")
+    fn(session, spec)
+
+
 def approve_subcategory(session: Session, subcategory_id: int) -> None:
     """Approve a pending dynamic subcategory (A14).
 

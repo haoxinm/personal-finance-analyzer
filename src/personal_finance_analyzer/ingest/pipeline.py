@@ -189,13 +189,13 @@ def _stage_pdf(pdf_path: Path, file_sha256: str) -> Path:
     return dest
 
 
-def _adopt_in_place(statement: Statement, rel: str) -> None:
-    """Record ``rel`` (a file the user put in the documents folder) as the statement's PDF unless
-    the row already keeps a copy that is still on disk."""
+def _in_place_values(statement: Statement, rel: str) -> dict[str, Any]:
+    """Column values recording ``rel`` (a file the user put in the documents folder) as the
+    statement's PDF; empty when the row already keeps a copy that is still on disk."""
     current = docs.resolve(statement.stored_path) if statement.stored_path else None
     if current is None or not current.is_file():
-        statement.stored_path = rel
-        statement.pdf_in_place = True
+        return {"stored_path": rel, "pdf_in_place": True}
+    return {}
 
 
 def _finish_pdf(
@@ -281,18 +281,19 @@ def propose_import(
         retry_after_failure = existing.status in (STATUS_UNSUPPORTED_LAYOUT, STATUS_ERROR)
         rescored: _Proposed | None = None
         if existing.status != STATUS_PARSED:
+            extra: dict[str, Any] = {}
             if in_place is not None:
-                _adopt_in_place(existing, in_place)
+                extra.update(_in_place_values(existing, in_place))
             else:
                 _stage_pdf(pdf_path, file_sha256)
-            existing.user_id = user_id
+            extra["user_id"] = user_id
             failed_parser = existing.parser_id if retry_after_failure else None
             if retry_after_failure:
                 # A failed built-in parse is retryable: re-proposing reopens the statement
                 # (the failure message stays in `error_detail` as a warning) and it is never
                 # reported as confident, so nothing auto-confirms the parser that just failed.
-                existing.status = STATUS_AWAITING_EXTRACTOR
-            if existing.status == STATUS_AWAITING_EXTRACTOR:
+                extra["status"] = STATUS_AWAITING_EXTRACTOR
+            if existing.status == STATUS_AWAITING_EXTRACTOR or retry_after_failure:
                 # Re-score: the issuers, specs and remembered choices may have changed since the
                 # proposal was recorded.
                 rescored = _propose_extractor(
@@ -302,8 +303,20 @@ def propose_import(
                     # The extractor that just failed is not proposed again.
                     exclude=frozenset({failed_parser}) if failed_parser else frozenset(),
                 )
-                _apply_proposal(existing, rescored)
+                # Conditional update: the (slow) extraction may have raced a confirm that parsed
+                # this statement meanwhile; then this upload is a plain duplicate of it.
+                if not _apply_proposal_if_pending(session, existing.id, rescored, **extra):
+                    rescored = None
+            else:
+                # Not re-scored (e.g. `no_text_layer`): only refresh the user and the file.
+                session.execute(
+                    update(Statement)
+                    .where(Statement.id == existing.id, Statement.status != STATUS_PARSED)
+                    .values(**extra)
+                    .execution_options(synchronize_session=False)
+                )
             session.commit()
+            session.expire(existing)
         if existing.status == STATUS_PARSED:
             # Nothing to confirm and the kept copy (if any) is already filed under its readable
             # name: the upload that arrived with this duplicate is just a stray hash-named copy.
@@ -481,6 +494,40 @@ def _apply_proposal(statement: Statement, proposed: _Proposed) -> None:
     statement.parser_id = proposed.parser_id
     statement.parser_version = proposed.parser_version
     statement.detect_score = proposed.detect_score
+
+
+def _apply_proposal_if_pending(
+    session: Session, statement_id: int, proposed: _Proposed, **extra: Any
+) -> bool:
+    """Record ``proposed`` (plus ``extra`` column values) on the statement only while it is still
+    pending (`awaiting_extractor`, `unsupported_layout` or `error`): a concurrent confirm may have
+    parsed it meanwhile and its row must never be overwritten. Returns whether the row was
+    updated. Expires the loaded ORM row either way."""
+    updated = cast(
+        "CursorResult[Any]",
+        session.execute(
+            update(Statement)
+            .where(
+                Statement.id == statement_id,
+                Statement.status.in_(
+                    (STATUS_AWAITING_EXTRACTOR, STATUS_UNSUPPORTED_LAYOUT, STATUS_ERROR)
+                ),
+            )
+            .values(
+                issuer_id=proposed.issuer_id,
+                layout_spec_id=proposed.layout_spec_id,
+                parser_id=proposed.parser_id,
+                parser_version=proposed.parser_version,
+                detect_score=proposed.detect_score,
+                **extra,
+            )
+            .execution_options(synchronize_session=False)
+        ),
+    )
+    stale = session.get(Statement, statement_id)
+    if stale is not None:
+        session.expire(stale)
+    return updated.rowcount > 0
 
 
 def _newest_approved_version(session: Session, row: LayoutSpec) -> LayoutSpec | None:
@@ -1747,27 +1794,7 @@ def repropose(session: Session, statement_id: int) -> ImportProposal:
     )
     # Conditional update: the (slow) extraction above may have raced a confirm that parsed this
     # statement meanwhile; never overwrite a parsed statement's extractor.
-    updated = cast(
-        "CursorResult[Any]",
-        session.execute(
-            update(Statement)
-            .where(
-                Statement.id == statement_id,
-                Statement.status.in_(
-                    (STATUS_AWAITING_EXTRACTOR, STATUS_UNSUPPORTED_LAYOUT, STATUS_ERROR)
-                ),
-            )
-            .values(
-                issuer_id=proposed.issuer_id,
-                layout_spec_id=proposed.layout_spec_id,
-                parser_id=proposed.parser_id,
-                parser_version=proposed.parser_version,
-                detect_score=proposed.detect_score,
-            )
-            .execution_options(synchronize_session=False)
-        ),
-    )
-    if updated.rowcount == 0:
+    if not _apply_proposal_if_pending(session, statement_id, proposed):
         session.expire(statement)
         raise PfaError(f"statement {statement_id} is no longer pending; it cannot be re-proposed")
     session.expire(statement)
