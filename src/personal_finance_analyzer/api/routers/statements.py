@@ -336,6 +336,11 @@ def reparse_statement(
         raise HTTPException(
             status_code=400, detail="give either parser_id or layout_spec_id, not both"
         )
+    if statement.account_id is None:
+        raise HTTPException(
+            status_code=409,
+            detail="this statement was never imported; finish it on the Import page",
+        )
     parser_id, layout_spec_id = body.parser_id, body.layout_spec_id
     if parser_id is None and layout_spec_id is None:
         layout_spec_id = statement.layout_spec_id
@@ -346,11 +351,13 @@ def reparse_statement(
                 status_code=400,
                 detail="this statement has no extractor on record; choose one",
             )
-    if statement.account_id is None:
-        raise HTTPException(
-            status_code=409,
-            detail="this statement was never imported; finish it on the Import page",
-        )
+        if not gateway.extractor_exists(
+            session, parser_id=parser_id, layout_spec_id=layout_spec_id
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="this statement's recorded extractor is no longer available; choose one",
+            )
     if statement.stored_path is None:
         raise HTTPException(
             status_code=409,

@@ -1,4 +1,4 @@
-import { useQueryClient } from "@tanstack/react-query";
+import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 import * as React from "react";
 
 import type { components } from "@/api/client";
@@ -8,7 +8,7 @@ import { useJobProgress } from "@/hooks/use-job-progress";
 
 import { fetchJob } from "./api";
 import { useReparseStatement, type ReparseRequest } from "./imported-statements-api";
-import { describeReimport } from "./statement-format";
+import { describeReimport, extractorDisplayName } from "./statement-format";
 import { errorMessage, useSafeToast } from "./use-safe-toast";
 
 type Statement = components["schemas"]["Statement"];
@@ -24,10 +24,38 @@ export interface ReimportPanelProps {
   onClose: () => void;
 }
 
+const TERMINAL = new Set(["done", "error", "cancelled"]);
+const POLL_MS = 1000;
+const POLL_MAX = 90;
+
+/** Poll a job (and the classification job it spawned) to the end, refreshing everything that shows
+ * imported data after each. Used when the panel is left while work is still running, so the
+ * categories still appear without the user doing anything. Never throws. */
+async function followJobsThenRefresh(queryClient: QueryClient, jobId: string): Promise<void> {
+  let next: string | null | undefined = jobId;
+  while (next) {
+    let job: Job | null = null;
+    for (let attempt = 0; attempt < POLL_MAX; attempt += 1) {
+      try {
+        job = await fetchJob(next);
+      } catch {
+        job = null;
+      }
+      if (job && TERMINAL.has(job.status)) break;
+      await new Promise((resolve) => setTimeout(resolve, POLL_MS));
+    }
+    void queryClient.invalidateQueries();
+    next = job?.classify_job_id;
+    if (next === jobId) return;
+  }
+}
+
 /**
  * The inline "Re-import" panel under a statement row: rebuild the statement from its stored PDF,
  * optionally with another extractor. Hand edits are kept unless the user opts to discard them; the
  * job's result says how many came back, how many could not be matched and how many were discarded.
+ * Whatever happens to the job (done, failed, result unreadable) the panel ends in a state the user
+ * can leave or retry from, and everything that shows imported data is refreshed.
  */
 export function ReimportPanel({ statement, specs, llmConfigured, onClose }: ReimportPanelProps) {
   const queryClient = useQueryClient();
@@ -38,38 +66,92 @@ export function ReimportPanel({ statement, specs, llmConfigured, onClose }: Reim
   const [jobId, setJobId] = React.useState<string | null>(null);
   const [submitError, setSubmitError] = React.useState<string | null>(null);
   const [result, setResult] = React.useState<Job | null>(null);
+  const [classifyJobId, setClassifyJobId] = React.useState<string | null>(null);
   const { event } = useJobProgress(jobId);
+  const { event: classifyEvent } = useJobProgress(classifyJobId);
+  const headingRef = React.useRef<HTMLHeadingElement>(null);
 
   const titleId = `reimport-title-${statement.id}`;
   const issuerSpecs = specs.filter((s) => s.approved && s.issuer_id === statement.issuer_id);
   const recordedSpec = statement.layout_spec_id != null ? specs.find((s) => s.id === statement.layout_spec_id) : undefined;
+  const recordedIsLlm = statement.parser_id === "llm";
   const sameLabel = recordedSpec
     ? `${recordedSpec.name} (v${recordedSpec.version})`
-    : (statement.parser_id ?? "the recorded extractor");
-  const showLlm = llmConfigured && statement.parser_id !== "llm";
-  const running = reparse.isPending || (jobId !== null && result === null && event?.status !== "error");
+    : extractorDisplayName(statement.parser_id);
+  const showLlm = llmConfigured && !recordedIsLlm;
+  const jobEnded = event?.status === "done" || event?.status === "error";
+  const running = reparse.isPending || (jobId !== null && !jobEnded);
+  const jobFailed = event?.status === "error";
+  const classifying = classifyJobId !== null && classifyEvent?.status !== "done" && classifyEvent?.status !== "error";
 
-  // Follow the job: on done, read its result once and refresh everything that shows imported data.
+  React.useEffect(() => {
+    headingRef.current?.focus();
+  }, []);
+
+  // Refs read by the unmount cleanup: was something still running when the panel was left?
+  const live = React.useRef<{ jobId: string | null; ended: boolean; classifyId: string | null; classifyEnded: boolean }>({
+    jobId: null,
+    ended: false,
+    classifyId: null,
+    classifyEnded: false,
+  });
+  live.current = {
+    jobId,
+    ended: jobEnded,
+    classifyId: classifyJobId,
+    classifyEnded: classifyEvent?.status === "done" || classifyEvent?.status === "error",
+  };
+  React.useEffect(
+    () => () => {
+      const { jobId: id, ended, classifyId, classifyEnded } = live.current;
+      if (classifyId && !classifyEnded) void followJobsThenRefresh(queryClient, classifyId);
+      else if (id && !ended) void followJobsThenRefresh(queryClient, id);
+    },
+    [queryClient],
+  );
+
+  // The re-import job ended: always refresh; on success read its result once (never get stuck if
+  // that read fails) and start following the classification job it spawned.
   const finishedFor = React.useRef<string | null>(null);
   React.useEffect(() => {
-    if (jobId === null || event?.status !== "done" || finishedFor.current === jobId) return;
+    if (jobId === null || !jobEnded || finishedFor.current === jobId) return;
     finishedFor.current = jobId;
-    void fetchJob(jobId).then((job) => {
-      if (job === null) {
-        setSubmitError("The re-import finished, but its result could not be read.");
-        return;
-      }
-      setResult(job);
-      const { headline, notes } = describeReimport(job);
-      toast({
-        title: headline,
-        description: notes.join(" ") || undefined,
-        variant: notes.length > 0 ? "default" : "success",
-        duration: 10000,
+    void queryClient.invalidateQueries();
+    if (event?.status !== "done") return;
+    void fetchJob(jobId)
+      .then((job) => {
+        if (job === null) {
+          setSubmitError(
+            "The re-import finished, but its result could not be read. Your transactions were updated; check them before importing again.",
+          );
+          return;
+        }
+        setResult(job);
+        if (job.classify_job_id) setClassifyJobId(job.classify_job_id);
+        const { headline, notes } = describeReimport(job);
+        toast({
+          title: headline,
+          description: notes.join(" ") || undefined,
+          variant: notes.length > 0 ? "default" : "success",
+          duration: 10000,
+        });
+      })
+      .catch(() => {
+        setSubmitError(
+          "The re-import finished, but its result could not be read. Your transactions were updated; check them before importing again.",
+        );
       });
-      void queryClient.invalidateQueries();
-    });
-  }, [jobId, event?.status, queryClient, toast]);
+  }, [jobId, jobEnded, event?.status, queryClient, toast]);
+
+  // The classification job ended: the new rows now have categories.
+  const classifiedFor = React.useRef<string | null>(null);
+  React.useEffect(() => {
+    if (classifyJobId === null || classifyEvent === null) return;
+    if (classifyEvent.status !== "done" && classifyEvent.status !== "error") return;
+    if (classifiedFor.current === classifyJobId) return;
+    classifiedFor.current = classifyJobId;
+    void queryClient.invalidateQueries();
+  }, [classifyJobId, classifyEvent, queryClient]);
 
   const start = () => {
     const body: ReparseRequest = { discard_edits: discard, remember: false };
@@ -78,17 +160,14 @@ export function ReimportPanel({ statement, specs, llmConfigured, onClose }: Reim
     setSubmitError(null);
     setResult(null);
     setJobId(null);
-    reparse.mutate(
-      { statementId: statement.id, body },
-      {
-        onSuccess: (id) => setJobId(id),
-        onError: (error) => setSubmitError(errorMessage(error)),
-      },
+    setClassifyJobId(null);
+    reparse.mutateAsync({ statementId: statement.id, body }).then(
+      (id) => setJobId(id),
+      (error: unknown) => setSubmitError(errorMessage(error)),
     );
   };
 
   const outcome = result ? describeReimport(result) : null;
-  const jobFailed = event?.status === "error";
   const progress = Math.round((event?.progress ?? 0) * 100);
 
   return (
@@ -97,13 +176,19 @@ export function ReimportPanel({ statement, specs, llmConfigured, onClose }: Reim
       aria-labelledby={titleId}
       className="flex flex-col gap-3 rounded-md border border-border bg-muted/30 p-3 text-sm"
       data-testid="reimport-panel"
+      onKeyDown={(e) => {
+        if (e.key === "Escape" && !running) {
+          e.stopPropagation();
+          onClose();
+        }
+      }}
     >
-      <h4 id={titleId} className="font-medium">
+      <h4 id={titleId} ref={headingRef} tabIndex={-1} className="font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring">
         Re-import {statement.original_name || `statement ${statement.id}`}
       </h4>
       <p className="text-xs text-muted-foreground">
-        Rebuilds this statement&rsquo;s transactions from the saved PDF. Your category edits and notes are kept
-        unless you choose to discard them.
+        Rebuilds this statement&rsquo;s transactions from the saved PDF. Your category edits, notes and corrections
+        to dates, amounts and descriptions are kept unless you choose to discard them.
       </p>
 
       {outcome === null ? (
@@ -127,7 +212,7 @@ export function ReimportPanel({ statement, specs, llmConfigured, onClose }: Reim
               {showLlm ? <option value="llm">LLM extractor</option> : null}
             </select>
           </label>
-          {choice === "llm" ? (
+          {choice === "llm" || (choice === "same" && recordedIsLlm && recordedSpec === undefined) ? (
             <p className="text-xs text-amber-700 dark:text-amber-400">
               Sends this statement&rsquo;s page text (after redaction) to the configured language model.
             </p>
@@ -187,7 +272,9 @@ export function ReimportPanel({ statement, specs, llmConfigured, onClose }: Reim
             </p>
           ))}
           {result?.classify_job_id ? (
-            <p className="text-xs text-muted-foreground">New rows are being categorized in the background.</p>
+            <p className="text-xs text-muted-foreground" aria-live="polite">
+              {classifying ? "New rows are being categorized in the background." : "New rows have been categorized."}
+            </p>
           ) : null}
         </div>
       ) : null}

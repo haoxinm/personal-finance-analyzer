@@ -13,9 +13,12 @@ export const ToastViewport = React.forwardRef<
   <ToastPrimitive.Viewport
     ref={ref}
     className={cn(
-      "fixed bottom-0 right-0 z-[100] flex max-h-screen w-full flex-col gap-2 p-4 sm:max-w-[380px]",
+      // Top on phones, where a bottom toast would sit on a dialog's Save/Cancel footer; bottom-right
+      // from `sm`. `data-dialog-exempt`: stays live while a dialog makes the rest of the page inert.
+      "fixed right-0 top-0 z-[100] flex max-h-screen w-full flex-col gap-2 p-4 sm:bottom-0 sm:top-auto sm:max-w-[380px]",
       className,
     )}
+    data-dialog-exempt=""
     {...props}
   />
 ));

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   OTHER_KEY,
   computeMonthOverMonthDelta,
+  defaultCategoryLabel,
   detectOtherCurrencies,
   distinctCategories,
   humanizeMerchantKey,
@@ -253,5 +254,17 @@ describe("chart-type helpers", () => {
   it("topCategoriesWithOther adds no Other series when everything fits", () => {
     const points = pivotByCategory([row("2026-01", "a", 1)]);
     expect(topCategoriesWithOther(points, ["a"], 8).keys).toEqual(["a"]);
+  });
+});
+
+describe("merged bucket label", () => {
+  it("is not confusable with the taxonomy's Others category", () => {
+    expect(defaultCategoryLabel(OTHER_KEY)).toBe("All other categories");
+  });
+  it("records which categories were merged", () => {
+    const totals = Array.from({ length: 10 }, (_, i) => ({ key: `c${i}`, totalMinor: (10 - i) * 100 }));
+    const merged = pieSlicesFromTotals(totals, 8).slices.at(-1)!;
+    expect(merged.key).toBe(OTHER_KEY);
+    expect(merged.members).toEqual(["c8", "c9"]);
   });
 });

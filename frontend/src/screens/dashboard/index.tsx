@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Link } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 
 import type { DateRange } from "@/components/primitives/date-range-picker";
 import { Page, PageHeader } from "@/components/primitives/page";
@@ -9,10 +9,10 @@ import { useTaxonomy } from "@/api/hooks";
 import { ChartTypeToggle } from "@/components/primitives/chart-type-toggle";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { usePersistentChoice } from "@/hooks/use-persistent-choice";
-import { useSelectedUser } from "@/hooks/use-selected-user";
+import { COMPARE_USER_PARAM, SELECTED_USER_PARAM, useSelectedUser } from "@/hooks/use-selected-user";
 import { useSpendQueryParams } from "@/hooks/use-spend-query-params";
 
-import { colorMapForKeys } from "./chart-colors";
+import { stableColorMap } from "./chart-colors";
 import { CategoryLines } from "./components/category-lines";
 import { CategoryPie } from "./components/category-pie";
 import { CategoryStackedBar } from "./components/category-stacked-bar";
@@ -54,6 +54,8 @@ export default function DashboardScreen() {
   const [params, setParams] = useSpendQueryParams();
   const sel = useSelectedUser();
   const accountsQuery = useAccounts();
+  const navigate = useNavigate();
+  const { search: currentSearch } = useLocation();
 
   const granularity = params.granularity ?? "month";
   const currency = params.currency ?? "USD";
@@ -109,10 +111,10 @@ export default function DashboardScreen() {
   // One colour map and one label lookup for all three category charts, so a category keeps its
   // colour and its taxonomy name when the chart type changes.
   const taxonomyQuery = useTaxonomy();
-  const categoryColors = React.useMemo(
-    () => colorMapForKeys(distinctCategories(pivotByCategory(categoryQuery.data ?? [])), true),
-    [categoryQuery.data],
-  );
+  const categoryColors = React.useMemo(() => {
+    const order = Array.isArray(taxonomyQuery.data) ? taxonomyQuery.data.map((c) => c.key) : [];
+    return stableColorMap(distinctCategories(pivotByCategory(categoryQuery.data ?? [])), order);
+  }, [categoryQuery.data, taxonomyQuery.data]);
   const labelFor = React.useMemo(() => {
     const names = new Map<string, string>();
     if (Array.isArray(taxonomyQuery.data)) {
@@ -120,6 +122,20 @@ export default function DashboardScreen() {
     }
     return (key: string) => names.get(key) ?? defaultCategoryLabel(key);
   }, [taxonomyQuery.data]);
+
+  // Pie slice / legend click: the Transactions grid for that category in the current range.
+  function showCategoryTransactions(key: string) {
+    const next = new URLSearchParams();
+    next.set("category_keys", key);
+    if (params.dateFrom) next.set("date_from", params.dateFrom);
+    if (params.dateTo) next.set("date_to", params.dateTo);
+    // Keep the user view and an active compare.
+    for (const carried of [SELECTED_USER_PARAM, COMPARE_USER_PARAM]) {
+      const value = new URLSearchParams(currentSearch).get(carried);
+      if (value) next.set(carried, value);
+    }
+    navigate({ pathname: "/spending/transactions", search: `?${next.toString()}` });
+  }
 
   const pieCaption =
     params.dateFrom || params.dateTo
@@ -197,6 +213,7 @@ export default function DashboardScreen() {
                   currency={currency}
                   colors={categoryColors}
                   labelFor={labelFor}
+                  onSelectCategory={showCategoryTransactions}
                 />
               ) : categoryChart === "line" ? (
                 <CategoryLines

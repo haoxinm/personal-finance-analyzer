@@ -57,6 +57,16 @@ export interface EditPopoverProps {
   /** Hand an edited row back to automatic classification (the caller closes the dialog). Offered
    * only when the row carries a one-time edit, which the candidates say. */
   onRevert?: () => void;
+  /** The last save failed: shown in the footer, beside the buttons (a toast alone can be missed). */
+  saveError?: string | null;
+}
+
+/** `YYYY-MM-DD` of today plus `days`, in local time. The date field's `max`. */
+function isoDateFromToday(days: number): string {
+  const d = new Date();
+  d.setDate(d.getDate() + days);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
 /**
@@ -84,8 +94,15 @@ export function EditPopover({
   conflict = false,
   onApplySuggestion,
   onRevert,
+  saveError,
 }: EditPopoverProps) {
   const ids = React.useId();
+  const [confirmingDiscard, setConfirmingDiscard] = React.useState(false);
+  const keepEditingRef = React.useRef<HTMLButtonElement>(null);
+  // Move focus to the safe choice when the confirmation appears (its buttons replace Cancel/Save).
+  React.useEffect(() => {
+    if (confirmingDiscard) keepEditingRef.current?.focus();
+  }, [confirmingDiscard]);
   const [categoryKey, setCategoryKey] = React.useState(transaction.category_key ?? "");
   const [subcategoryKey, setSubcategoryKey] = React.useState(transaction.subcategory_key ?? "");
   const [kind, setKind] = React.useState<Kind>(transaction.kind);
@@ -183,15 +200,36 @@ export function EditPopover({
     return patch;
   }
 
+  // Anything typed or picked that differs from what the dialog opened with (even if invalid).
+  const dirty =
+    categoryChanged ||
+    kindChanged ||
+    notesChanged ||
+    createRule ||
+    postedDate !== transaction.posted_date ||
+    description !== transaction.description_clean ||
+    amountText !== formatAmountInput(transaction.amount_minor) ||
+    direction !== (transaction.amount_minor < 0 ? "in" : "out");
+
+  // Escape, a press outside and Cancel never throw away edits silently: ask first, in the footer.
+  function requestClose() {
+    if (confirmingDiscard) setConfirmingDiscard(false);
+    else if (dirty && !saving) setConfirmingDiscard(true);
+    else onClose();
+  }
+
+  const directionChanged = direction !== (transaction.amount_minor < 0 ? "in" : "out");
+  const suggestRefund = directionChanged && direction === "in" && (kind === "purchase" || kind === "fee");
+
   const showRaw = transaction.description_raw !== transaction.description_clean;
   const fieldClass =
     "h-9 rounded-md border border-input bg-transparent px-2 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring aria-[invalid=true]:border-destructive";
   const selectClass = "h-9 rounded-md border border-input bg-transparent px-2 text-sm";
 
   return (
-    <Dialog onClose={onClose} aria-label={`Edit transaction ${transaction.id}`}>
+    <Dialog onClose={onClose} onRequestClose={requestClose} aria-labelledby={`${ids}-title`}>
       <DialogHeader>
-        <DialogTitle>Edit transaction</DialogTitle>
+        <DialogTitle id={`${ids}-title`}>Edit transaction</DialogTitle>
         <DialogDescription data-testid="edit-summary">
           <div className="flex items-start justify-between gap-3">
             {/* Clamped: a very long description must not eat the scrolling body's space. The
@@ -291,6 +329,7 @@ export function EditPopover({
               className={fieldClass}
               value={postedDate}
               min="1970-01-01"
+              max={isoDateFromToday(366)}
               aria-invalid={dateError !== null}
               aria-describedby={dateError ? `${ids}-date-err` : undefined}
               onChange={(e) => setPostedDate(e.target.value)}
@@ -368,6 +407,18 @@ export function EditPopover({
             {amountError ? (
               <FieldError id={`${ids}-amount-err`}>{amountError}</FieldError>
             ) : null}
+            {suggestRefund ? (
+              <p className="text-xs text-muted-foreground" data-testid="refund-hint">
+                Money in on a {kind} is usually a refund.{" "}
+                <button
+                  type="button"
+                  className="rounded-sm text-primary underline underline-offset-2 hover:opacity-80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  onClick={() => setKind("refund")}
+                >
+                  Set kind to refund
+                </button>
+              </p>
+            ) : null}
             <p id={`${ids}-amount-help`} className="text-xs text-muted-foreground">
               {direction === "out"
                 ? "Money out: a purchase, fee or payment you made. "
@@ -422,18 +473,47 @@ export function EditPopover({
           </label>
         ) : null}
       </DialogBody>
-      <DialogFooter>
-        <Button type="button" variant="outline" size="sm" onClick={onClose}>
-          Cancel
-        </Button>
-        <Button
-          type="button"
-          size="sm"
-          disabled={!canSave || saving}
-          onClick={() => onSave(buildPatch())}
-        >
-          {saving ? "Saving…" : "Save"}
-        </Button>
+      <DialogFooter className="items-center">
+        {confirmingDiscard ? (
+          <div
+            role="alertdialog"
+            aria-label="Discard changes?"
+            className="flex w-full flex-wrap items-center justify-end gap-2"
+          >
+            <p className="mr-auto text-sm">Discard your unsaved changes?</p>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              ref={keepEditingRef}
+              onClick={() => setConfirmingDiscard(false)}
+            >
+              Keep editing
+            </Button>
+            <Button type="button" variant="destructive" size="sm" onClick={onClose}>
+              Discard changes
+            </Button>
+          </div>
+        ) : (
+          <>
+            {saveError ? (
+              <p role="alert" className="mr-auto min-w-0 flex-1 text-sm text-destructive [overflow-wrap:anywhere]">
+                {saveError}
+              </p>
+            ) : null}
+            <Button type="button" variant="outline" size="sm" onClick={requestClose}>
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              disabled={!canSave || saving}
+              onClick={() => onSave(buildPatch())}
+            >
+              {saving ? "Saving…" : "Save"}
+            </Button>
+          </>
+        )}
       </DialogFooter>
     </Dialog>
   );

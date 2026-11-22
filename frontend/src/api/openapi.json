@@ -14577,8 +14577,7 @@
           "description_clean": {
             "anyOf": [
               {
-                "type": "string",
-                "maxLength": 200
+                "type": "string"
               },
               {
                 "type": "null"

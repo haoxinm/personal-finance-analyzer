@@ -167,7 +167,7 @@ describe("TransactionsScreen", () => {
     await screen.findByText("Corner Store");
     await user.click(screen.getByRole("button", { name: "Uncategorized" }));
 
-    const dialog = await screen.findByRole("dialog", { name: "Edit transaction 1" });
+    const dialog = await screen.findByRole("dialog", { name: "Edit transaction" });
     await user.selectOptions(within(dialog).getByLabelText("Category"), "groceries");
     await user.selectOptions(within(dialog).getByLabelText("Subcategory"), "supermarket");
     await user.click(within(dialog).getByRole("button", { name: "Save" }));
@@ -201,7 +201,7 @@ describe("TransactionsScreen", () => {
 
     await screen.findByText("Corner Store");
     await user.click(screen.getByRole("button", { name: "Edit Corner Store" }));
-    const dialog = await screen.findByRole("dialog", { name: "Edit transaction 1" });
+    const dialog = await screen.findByRole("dialog", { name: "Edit transaction" });
     const description = within(dialog).getByLabelText("Description");
     await user.clear(description);
     await user.type(description, "Renamed");
@@ -232,7 +232,7 @@ describe("TransactionsScreen", () => {
     edit.focus();
     await user.keyboard("{Enter}");
 
-    const dialog = await screen.findByRole("dialog", { name: "Edit transaction 1" });
+    const dialog = await screen.findByRole("dialog", { name: "Edit transaction" });
     expect(dialog).toContainElement(document.activeElement as HTMLElement);
     await user.keyboard("{Escape}");
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
@@ -260,7 +260,7 @@ describe("TransactionsScreen", () => {
     const edit = screen.getByRole("button", { name: "Edit Corner Store" });
     edit.focus();
     await user.keyboard("{Enter}");
-    const dialog = await screen.findByRole("dialog", { name: "Edit transaction 1" });
+    const dialog = await screen.findByRole("dialog", { name: "Edit transaction" });
     await user.type(within(dialog).getByLabelText("Notes"), "x");
     await user.click(within(dialog).getByRole("button", { name: "Save" }));
 
@@ -284,7 +284,7 @@ describe("TransactionsScreen", () => {
     await screen.findByText("Corner Store");
     for (const ticked of [false, true]) {
       await user.click(screen.getByRole("button", { name: "Uncategorized" }));
-      const dialog = await screen.findByRole("dialog", { name: "Edit transaction 1" });
+      const dialog = await screen.findByRole("dialog", { name: "Edit transaction" });
       expect(within(dialog).getByTestId("edit-scope-note")).toHaveTextContent("this transaction only");
       await user.selectOptions(within(dialog).getByLabelText("Category"), "groceries");
       await user.selectOptions(within(dialog).getByLabelText("Subcategory"), "supermarket");
@@ -476,7 +476,7 @@ describe("TransactionsScreen", () => {
 
     await screen.findByText("Corner Store");
     await user.click(screen.getByRole("button", { name: "Uncategorized" }));
-    const dialog = await screen.findByRole("dialog", { name: "Edit transaction 1" });
+    const dialog = await screen.findByRole("dialog", { name: "Edit transaction" });
     await user.selectOptions(within(dialog).getByLabelText("Kind"), "transfer");
     await user.type(within(dialog).getByLabelText("Notes"), "moved to savings");
     await user.click(within(dialog).getByRole("button", { name: "Save" }));
@@ -626,7 +626,7 @@ describe("TransactionsScreen", () => {
       await screen.findByText("Corner Store");
 
       await user.click(screen.getByRole("button", { name: "Edit Corner Store" }));
-      const dialog = await screen.findByRole("dialog", { name: "Edit transaction 1" });
+      const dialog = await screen.findByRole("dialog", { name: "Edit transaction" });
       const group = await within(dialog).findByRole("group", { name: "Suggested categories" });
       expect(within(group).getByRole("note")).toHaveTextContent("Sources disagree");
 
@@ -738,7 +738,7 @@ describe("TransactionsScreen", () => {
       await screen.findByText("Corner Store");
 
       await user.click(screen.getByRole("button", { name: "Edit Corner Store" }));
-      const dialog = await screen.findByRole("dialog", { name: "Edit transaction 1" });
+      const dialog = await screen.findByRole("dialog", { name: "Edit transaction" });
       await user.click(await within(dialog).findByRole("button", { name: "Revert to automatic" }));
 
       await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
@@ -759,7 +759,7 @@ describe("TransactionsScreen", () => {
       await screen.findByText("Corner Store");
 
       await user.click(screen.getByRole("button", { name: "Edit Corner Store" }));
-      const dialog = await screen.findByRole("dialog", { name: "Edit transaction 1" });
+      const dialog = await screen.findByRole("dialog", { name: "Edit transaction" });
       await user.click(await within(dialog).findByRole("button", { name: "Revert to automatic" }));
       await user.click(await screen.findByRole("button", { name: "Undo" }));
 

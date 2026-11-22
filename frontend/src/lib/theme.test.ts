@@ -124,4 +124,28 @@ describe("theme", () => {
     media.set(true);
     expect(root().classList.contains("dark")).toBe(false);
   });
+
+  it("keeps a forced choice in memory when storage is blocked", async () => {
+    const media = stubMatchMedia(false);
+    vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+      throw new Error("blocked");
+    });
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("blocked");
+    });
+    const { initTheme, setThemePreference } = await import("./theme");
+    initTheme();
+    setThemePreference("light");
+    media.set(true);
+    expect(root().classList.contains("dark")).toBe(false);
+    expect(root().getAttribute("data-theme-preference")).toBe("light");
+  });
+
+  it("exposes the system preference separately from the resolved theme", async () => {
+    stubMatchMedia(true);
+    const { initTheme, setThemePreference, getThemeSnapshot } = await import("./theme");
+    initTheme();
+    setThemePreference("light");
+    expect(getThemeSnapshot()).toBe("light:light:true");
+  });
 });

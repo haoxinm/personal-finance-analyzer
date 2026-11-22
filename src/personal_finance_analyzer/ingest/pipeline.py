@@ -590,6 +590,18 @@ def _resolve_parser(
     raise UnsupportedLayoutError(f"no parser registered with id={parser_id!r}")
 
 
+def extractor_exists(
+    session: Session, *, parser_id: str | None, layout_spec_id: int | None
+) -> bool:
+    """Whether `_resolve_parser` could resolve this extractor (cheap; builds no parser, makes no
+    LLM call). Lets the API reject an unusable recorded extractor up front."""
+    if layout_spec_id is not None:
+        return session.get(LayoutSpec, layout_spec_id) is not None
+    if parser_id in ("llm", generic_table.id):
+        return True
+    return any(candidate.id == parser_id for candidate in discover_all_parsers())
+
+
 # ------------------------------------------------------------------------------------------------
 # Persistence: normalize, resolve the account, reconcile, evaluate drift, dedupe-insert
 # ------------------------------------------------------------------------------------------------
@@ -1037,21 +1049,22 @@ def reparse(
             "(it was moved out or deleted); put it back to reparse"
         )
     full_doc = extract(pdf_path)
-    doc = _apply_page_selection(statement, full_doc, pages)
+    # An already-parsed statement must be left untouched by a failed re-import: neither the page
+    # selection nor status/error_detail is written until the new parse has succeeded (the error
+    # is reported on the job only).
+    new_selection = (
+        dump_pages(validate_pages(pages, full_doc.page_count)) if pages is not None else None
+    )
+    doc = full_doc.select_pages(
+        load_pages(new_selection if new_selection is not None else statement.selected_pages)
+    )
     parser = _resolve_parser(
         session, parser_id=parser_id, layout_spec_id=layout_spec_id, user_id=account.user_id
     )
 
-    try:
-        parsed = parser.parse(doc)
-    except UnsupportedLayoutError as exc:
-        statement.status = STATUS_UNSUPPORTED_LAYOUT
-        statement.error_detail = str(exc)
-        raise
-    except ParserError as exc:
-        statement.status = STATUS_ERROR
-        statement.error_detail = str(exc)
-        raise
+    parsed = parser.parse(doc)  # UnsupportedLayoutError/ParserError propagate; nothing persisted
+    if new_selection is not None:
+        statement.selected_pages = new_selection
 
     # Rebuild: this statement's own rows are cleared first, so the standard dedupe-insert path
     # below only ever collides with *other* statements' rows on the same account (§3.5). A row the
@@ -1172,22 +1185,36 @@ def _apply_user_edit(txn: Transaction, edit: _UserEdit) -> None:
         txn.notes = edit.notes
     # Corrections: re-applied onto the freshly parsed row, which keeps the newly parsed value as
     # the "imported" one; a correction the new parse already satisfies is simply not needed.
-    # `dedupe_hash` is never touched. An amount fix moves the statement's parsed total with it.
+    # `dedupe_hash` is never touched. `orig_X` is only ever set when it is None, so the true
+    # imported value is never overwritten. An amount fix moves the statement's parsed total.
     if edit.fix_posted_date is not None and edit.fix_posted_date != txn.posted_date:
-        txn.orig_posted_date = txn.posted_date
+        if txn.orig_posted_date is None:
+            txn.orig_posted_date = txn.posted_date
         txn.posted_date = edit.fix_posted_date
     if (
         edit.fix_description_clean is not None
         and edit.fix_description_clean != txn.description_clean
     ):
-        txn.orig_description_clean = txn.description_clean
+        if txn.orig_description_clean is None:
+            txn.orig_description_clean = txn.description_clean
         txn.description_clean = edit.fix_description_clean
     if edit.fix_amount_minor is not None and edit.fix_amount_minor != txn.amount_minor:
         statement = txn.statement
         if statement.parsed_total_minor is not None:
             statement.parsed_total_minor += edit.fix_amount_minor - txn.amount_minor
-        txn.orig_amount_minor = txn.amount_minor
+        if txn.orig_amount_minor is None:
+            txn.orig_amount_minor = txn.amount_minor
         txn.amount_minor = edit.fix_amount_minor
+    # A correction that lands back on the imported value is no correction any more.
+    if txn.orig_posted_date is not None and txn.posted_date == txn.orig_posted_date:
+        txn.orig_posted_date = None
+    if (
+        txn.orig_description_clean is not None
+        and txn.description_clean == txn.orig_description_clean
+    ):
+        txn.orig_description_clean = None
+    if txn.orig_amount_minor is not None and txn.amount_minor == txn.orig_amount_minor:
+        txn.orig_amount_minor = None
     txn.updated_at = _utcnow_iso()
 
 
@@ -1347,8 +1374,10 @@ def reassign(
     keys = [
         DedupeKey(
             account_id=account_id,
-            posted_date=t.posted_date,
-            amount_minor=t.amount_minor,
+            # The *imported* values: `dedupe_hash` identifies the parsed transaction, so a later
+            # hand correction of date/amount must not change it (nor how twins are counted).
+            posted_date=_imported(t.orig_posted_date, t.posted_date),
+            amount_minor=_imported(t.orig_amount_minor, t.amount_minor),
             description_raw=t.description_raw,
         )
         for t in transactions
@@ -1373,13 +1402,27 @@ def reassign(
         if collision is not None:
             if txn.classified_by == USER_CLASSIFIED or _has_corrections(txn):
                 # The surviving twin is the same real transaction: it inherits the user's edit
-                # (and field corrections) unless it carries one of its own.
+                # and field corrections. A survivor with its own hand edit keeps its category
+                # edit and notes, but still receives this row's field corrections for every
+                # field it has not corrected itself (its own correction wins; nothing is lost).
                 survivor = session.get(Transaction, collision)
-                if survivor is not None and survivor.classified_by != USER_CLASSIFIED:
+                if survivor is not None:
                     handed = _user_edit_of(txn)
-                    if txn.classified_by != USER_CLASSIFIED:
+                    if txn.classified_by != USER_CLASSIFIED or survivor.classified_by == (
+                        USER_CLASSIFIED
+                    ):
                         handed = replace(handed, locked=False, notes=None)
-                    _apply_user_edit(survivor, handed)
+                    if survivor.orig_posted_date is not None:
+                        handed = replace(handed, fix_posted_date=None)
+                    if survivor.orig_amount_minor is not None:
+                        handed = replace(handed, fix_amount_minor=None)
+                    if survivor.orig_description_clean is not None:
+                        handed = replace(handed, fix_description_clean=None)
+                    _apply_user_edit(survivor, handed)  # moves the survivor statement's total
+            if txn.orig_amount_minor is not None and statement.parsed_total_minor is not None:
+                # The deleted row stays counted in this statement's parsed total at its imported
+                # amount; its correction now lives on the survivor (and its statement's total).
+                statement.parsed_total_minor -= txn.amount_minor - txn.orig_amount_minor
             session.delete(txn)
             duplicates_deleted += 1
             continue

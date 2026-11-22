@@ -4,11 +4,11 @@ import type { ThemePreference } from "@/lib/theme";
 
 /** Appearance (client-only): the colour theme, saved in this browser. */
 export function AppearanceSection() {
-  const { preference, resolved, setPreference } = useTheme();
+  const { preference, systemDark, setPreference } = useTheme();
   const options: { value: ThemePreference; label: string }[] = [
     { value: "light", label: "Light" },
     { value: "dark", label: "Dark" },
-    { value: "system", label: `Match my system (currently ${resolved === "dark" ? "Dark" : "Light"})` },
+    { value: "system", label: `Match my system (currently ${systemDark ? "Dark" : "Light"})` },
   ];
   return (
     <Card>

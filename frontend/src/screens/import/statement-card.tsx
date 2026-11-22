@@ -8,6 +8,7 @@ import { useJobProgress, type JobEvent } from "@/hooks/use-job-progress";
 import { Money } from "@/components/primitives/money";
 
 import { isSkipConfirmForIssuer, setSkipConfirmForIssuer } from "./storage";
+import { statementTransactionsUrl } from "./statement-format";
 import { isConfidentProposal } from "./use-import-queue";
 import type { ImportItem } from "./types";
 
@@ -22,6 +23,9 @@ export interface StatementCardProps {
   picker: React.ReactNode;
   /** Page selection + LLM privacy notice (`PageSelector`), shown under the picker. */
   pages?: React.ReactNode;
+  /** A dropped file that was already imported: open the Re-import flow for that existing
+   * statement (it lives in the "Imported statements" panel). */
+  onReimportExisting?: (statementId: number) => void;
 }
 
 const STATUS_LABEL: Record<ImportItem["status"], string> = {
@@ -81,6 +85,7 @@ export function StatementCard({
   onConfirm,
   picker,
   pages,
+  onReimportExisting,
 }: StatementCardProps) {
   const { event } = useJobProgress(item.status === "extracting" ? item.jobId : null);
 
@@ -233,10 +238,18 @@ export function StatementCard({
                 </Button>
               ) : null}
               <Button asChild size="sm" variant="outline">
-                <Link to={`/spending/transactions?statement_id=${item.statementId ?? ""}`}>
-                  View transactions
-                </Link>
+                <Link to={statementTransactionsUrl(item.statementId ?? "")}>View transactions</Link>
               </Button>
+              {item.duplicate && item.statementId !== undefined && onReimportExisting ? (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => onReimportExisting(item.statementId as number)}
+                >
+                  Re-import…
+                </Button>
+              ) : null}
             </div>
           </div>
         ) : null}

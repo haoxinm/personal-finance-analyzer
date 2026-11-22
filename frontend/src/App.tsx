@@ -130,11 +130,15 @@ function Shell() {
       {/* Sticky only from `md` up: stacked on a phone the three header rows would eat the screen. */}
       <header className="z-30 bg-background md:sticky md:top-0">
         <div className="border-b border-border">
-          <div className="mx-auto flex max-w-screen-2xl items-center gap-4 px-4 py-3">
-            <Link to="/" className="shrink-0 rounded-sm text-sm font-semibold tracking-tight">
+          <div className="mx-auto flex max-w-screen-2xl flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3">
+            <Link to="/" className="mr-auto shrink-0 rounded-sm text-sm font-semibold tracking-tight sm:mr-0">
               {APP_NAME}
             </Link>
-            <nav aria-label="Main" className="-my-1 flex min-w-0 flex-1 flex-nowrap items-center gap-4 overflow-x-auto py-1">
+            {/* Below `sm` the nav gets its own full-width row and wraps, so every section stays reachable. */}
+            <nav
+              aria-label="Main"
+              className="order-last flex w-full flex-wrap items-center gap-x-2 gap-y-1 sm:order-none sm:-my-1 sm:w-auto sm:min-w-0 sm:flex-1 sm:flex-nowrap sm:gap-x-4 sm:overflow-x-auto sm:py-1"
+            >
               {SECTIONS.filter((section) => !section.hidden).map((section) => {
                 const first = section.tabs[0]!;
                 return (

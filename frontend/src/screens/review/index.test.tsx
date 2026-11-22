@@ -574,4 +574,24 @@ describe("ReviewScreen suggestion chips", () => {
     );
     expect(accepts).toHaveLength(1);
   });
+
+  it("opens the edit dialog from the card and keeps j/k/Enter shortcuts out of it", async () => {
+    const { fetchMock } = await renderScreen({
+      transactions: [
+        makeTransaction({ id: 1, description_clean: "Coffee Shop", amount_minor: 450 }),
+        makeTransaction({ id: 2, description_clean: "Bakery" }),
+      ],
+      categories: CATEGORIES,
+    });
+    await screen.findByText("Coffee Shop");
+    await userEvent.click(screen.getByRole("button", { name: /Edit details/ }));
+    const dialog = await screen.findByRole("dialog", { name: "Edit transaction" });
+    expect(within(dialog).getByLabelText("Description")).toHaveValue("Coffee Shop");
+    await userEvent.type(within(dialog).getByLabelText("Description"), "jk");
+    fireEvent.keyDown(within(dialog).getByRole("button", { name: "Cancel" }), { key: "Enter" });
+    const acceptCalls = fetchMock.mock.calls.filter(
+      (c) => new URL((c[0] as Request).url).pathname === "/api/review/accept",
+    );
+    expect(acceptCalls).toHaveLength(0);
+  });
 });

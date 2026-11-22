@@ -15,7 +15,7 @@ import { useAccounts } from "@/screens/dashboard/hooks";
 import { useImportSettings, useIssuers, useLayoutSpecs } from "./api";
 import { useDeleteStatement } from "./imported-statements-api";
 import { ReimportPanel } from "./reimport-panel";
-import { formatPeriod, sortStatements } from "./statement-format";
+import { formatPeriod, sortStatements, statementTransactionsUrl } from "./statement-format";
 import { errorMessage, useSafeToast } from "./use-safe-toast";
 
 type Statement = components["schemas"]["Statement"];
@@ -37,9 +37,36 @@ interface RowContext {
   ownerName: (userId: number | null | undefined) => string | null;
   specs: readonly components["schemas"]["LayoutSpec"][];
   llmConfigured: boolean;
+  onFinishImport?: (statement: Statement) => void;
+  /** A request from elsewhere on the page (a dropped duplicate's "Re-import…") to open this row. */
+  request?: OpenRequest | null;
+  /** Called after a statement is deleted, once its row is on its way out. */
+  onDeleted: () => void;
 }
 
-function DeleteConfirm({ statement, onClose }: { statement: Statement; onClose: () => void }) {
+/** Ask the panel to scroll to a statement's row and open its Re-import panel. `nonce` makes the
+ * same statement requestable twice. */
+export interface OpenRequest {
+  statementId: number;
+  nonce: number;
+}
+
+/** Statements that still need the user: awaiting an extractor, or whose import failed. */
+const FINISHABLE: ReadonlySet<Statement["status"]> = new Set(["pending", "awaiting_extractor", "error", "unsupported_layout"]);
+
+function DeleteConfirm({
+  statement,
+  onClose,
+  onDeleted,
+}: {
+  statement: Statement;
+  onClose: () => void;
+  onDeleted: () => void;
+}) {
+  const boxRef = React.useRef<HTMLDivElement>(null);
+  React.useEffect(() => {
+    boxRef.current?.focus();
+  }, []);
   const toast = useSafeToast();
   const del = useDeleteStatement();
   const [deletePdf, setDeletePdf] = React.useState(false);
@@ -48,9 +75,17 @@ function DeleteConfirm({ statement, onClose }: { statement: Statement; onClose: 
 
   return (
     <div
+      ref={boxRef}
       role="alertdialog"
       aria-label={`Confirm delete ${name}`}
-      className="flex flex-col gap-3 rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm"
+      tabIndex={-1}
+      className="flex flex-col gap-3 rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      onKeyDown={(e) => {
+        if (e.key === "Escape" && !del.isPending) {
+          e.stopPropagation();
+          onClose();
+        }
+      }}
     >
       <p>
         Delete this statement and its {count.toLocaleString()} transaction{count === 1 ? "" : "s"}? Your category
@@ -87,7 +122,7 @@ function DeleteConfirm({ statement, onClose }: { statement: Statement; onClose: 
               {
                 onSuccess: () => {
                   toast({ title: "Statement deleted", description: name, variant: "success" });
-                  onClose();
+                  onDeleted();
                 },
               },
             )
@@ -108,6 +143,12 @@ type RowMode = "idle" | "reimport" | "delete";
 
 function StatementRow({ statement, ctx }: { statement: Statement; ctx: RowContext }) {
   const [mode, setMode] = React.useState<RowMode>("idle");
+  const [highlight, setHighlight] = React.useState(false);
+  const rowRef = React.useRef<HTMLLIElement>(null);
+  const reimportBtn = React.useRef<HTMLButtonElement>(null);
+  const deleteBtn = React.useRef<HTMLButtonElement>(null);
+  const returnTo = React.useRef<"reimport" | "delete" | null>(null);
+  const handledRequest = React.useRef<number | null>(null);
   const name = statement.original_name || `Statement ${statement.id}`;
   const account = ctx.accountLabel(statement.account_id);
   const owner = ctx.ownerName(statement.user_id);
@@ -115,14 +156,46 @@ function StatementRow({ statement, ctx }: { statement: Statement; ctx: RowContex
   const parsed = statement.status === "parsed";
   const reimportBlocked = !statement.has_pdf;
   const reasonId = `no-pdf-${statement.id}`;
+  const unassigned = statement.user_id == null;
+
+  const open = (next: "reimport" | "delete") => {
+    returnTo.current = next;
+    setMode(next);
+  };
+  const close = () => setMode("idle");
+
+  // Back to the buttons: put focus on the one that opened the panel.
+  React.useEffect(() => {
+    if (mode !== "idle" || returnTo.current === null) return;
+    (returnTo.current === "reimport" ? reimportBtn : deleteBtn).current?.focus();
+    returnTo.current = null;
+  }, [mode]);
+
+  // Asked from elsewhere on the page (a duplicate drop's "Re-import…"): scroll here and open it.
+  const requestNonce = ctx.request?.statementId === statement.id ? ctx.request.nonce : null;
+  React.useEffect(() => {
+    if (requestNonce === null || handledRequest.current === requestNonce) return;
+    handledRequest.current = requestNonce;
+    rowRef.current?.scrollIntoView?.({ block: "center", behavior: "smooth" });
+    setHighlight(true);
+    const timer = setTimeout(() => setHighlight(false), 3000);
+    if (parsed && !reimportBlocked) open("reimport");
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [requestNonce]);
 
   return (
-    <li className="flex flex-col gap-2 rounded-md border p-3 text-sm" data-testid="imported-statement">
+    <li
+      ref={rowRef}
+      className={`flex flex-col gap-2 rounded-md border p-3 text-sm transition-shadow ${highlight ? "ring-2 ring-ring" : ""}`}
+      data-testid="imported-statement"
+    >
       <div className="flex flex-wrap items-center gap-2">
         <span className="min-w-0 max-w-full truncate font-medium" title={name}>
           {name}
         </span>
         <Badge variant={parsed ? "default" : "destructive"}>{STATUS_LABEL[statement.status]}</Badge>
+        {unassigned ? <Badge variant="outline">No person yet</Badge> : null}
       </div>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
         {owner ? <span>{owner}</span> : null}
@@ -137,18 +210,32 @@ function StatementRow({ statement, ctx }: { statement: Statement; ctx: RowContex
           Totals don&rsquo;t reconcile (off by <Money minorUnits={Math.abs(delta)} tone="neutral" />)
         </p>
       ) : null}
+      {!parsed && statement.error_detail ? (
+        <p className="text-xs text-muted-foreground">{statement.error_detail}</p>
+      ) : null}
       {mode === "idle" ? (
         <div className="flex flex-wrap items-center gap-2">
           {parsed ? (
             <Button asChild size="sm" variant="outline">
-              <Link to={`/spending/transactions?statement_id=${statement.id}`}>View transactions</Link>
+              <Link to={statementTransactionsUrl(statement.id)}>View transactions</Link>
+            </Button>
+          ) : null}
+          {FINISHABLE.has(statement.status) && ctx.onFinishImport ? (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => ctx.onFinishImport?.(statement)}
+              aria-label={`Finish import of ${name}`}
+            >
+              Finish import
             </Button>
           ) : null}
           {parsed ? (
             <Button
+              ref={reimportBtn}
               size="sm"
               variant="outline"
-              onClick={() => setMode("reimport")}
+              onClick={() => open("reimport")}
               disabled={reimportBlocked}
               aria-describedby={reimportBlocked ? reasonId : undefined}
               title={reimportBlocked ? NO_PDF_REASON : undefined}
@@ -157,7 +244,7 @@ function StatementRow({ statement, ctx }: { statement: Statement; ctx: RowContex
               Re-import…
             </Button>
           ) : null}
-          <Button size="sm" variant="ghost" onClick={() => setMode("delete")} aria-label={`Delete ${name}`}>
+          <Button ref={deleteBtn} size="sm" variant="ghost" onClick={() => open("delete")} aria-label={`Delete ${name}`}>
             Delete…
           </Button>
         </div>
@@ -172,10 +259,19 @@ function StatementRow({ statement, ctx }: { statement: Statement; ctx: RowContex
           statement={statement}
           specs={ctx.specs}
           llmConfigured={ctx.llmConfigured}
-          onClose={() => setMode("idle")}
+          onClose={close}
         />
       ) : null}
-      {mode === "delete" ? <DeleteConfirm statement={statement} onClose={() => setMode("idle")} /> : null}
+      {mode === "delete" ? (
+        <DeleteConfirm
+          statement={statement}
+          onClose={close}
+          onDeleted={() => {
+            returnTo.current = null;
+            ctx.onDeleted();
+          }}
+        />
+      ) : null}
     </li>
   );
 }
@@ -185,8 +281,20 @@ function StatementRow({ statement, ctx }: { statement: Statement; ctx: RowContex
  * the Import queue cannot offer: Re-import (rebuild from the saved PDF, edits kept unless
  * discarded) and Delete.
  */
-export function ImportedStatementsPanel({ userId }: { userId: number | null }) {
-  const statements = useStatements(userId ?? undefined);
+export function ImportedStatementsPanel({
+  userId,
+  onFinishImport,
+  request,
+}: {
+  userId: number | null;
+  onFinishImport?: (statement: Statement) => void;
+  request?: OpenRequest | null;
+}) {
+  const mine = useStatements(userId ?? undefined);
+  // Statements still awaiting an extractor (or failed) have no owner yet, so the per-user query
+  // omits them; the unfiltered one (the same query when "All users" is selected) has them.
+  const everyone = useStatements(undefined);
+  const statements = userId === null ? everyone : mine;
   const accounts = useAccounts();
   const issuers = useIssuers();
   const specs = useLayoutSpecs();
@@ -209,16 +317,32 @@ export function ImportedStatementsPanel({ userId }: { userId: number | null }) {
       ownerName: (id) => (userId === null && id != null ? (userName.get(id) ?? null) : null),
       specs: specs.data ?? [],
       llmConfigured: settings.data !== undefined && settings.data.llm.mode !== "none",
+      onFinishImport,
+      request,
+      onDeleted: () => document.getElementById("imported-statements-title")?.focus(),
     };
-  }, [issuers.data, accounts.data, users.data, specs.data, settings.data, userId]);
+  }, [issuers.data, accounts.data, users.data, specs.data, settings.data, userId, onFinishImport, request]);
 
-  const rows = sortStatements(statements.data ?? []);
+  const rows = React.useMemo(() => {
+    const byId = new Map<number, Statement>();
+    for (const row of statements.data ?? []) byId.set(row.id, row);
+    if (userId !== null) {
+      for (const row of everyone.data ?? []) if (row.user_id == null) byId.set(row.id, row);
+    }
+    return sortStatements([...byId.values()]);
+  }, [statements.data, everyone.data, userId]);
+
+  // A request for a row beyond the first page must be able to reach it.
+  const requestedId = request?.statementId;
+  React.useEffect(() => {
+    if (requestedId !== undefined && rows.findIndex((r) => r.id === requestedId) >= INITIAL_ROWS) setShowAll(true);
+  }, [requestedId, rows]);
   const visible = showAll ? rows : rows.slice(0, INITIAL_ROWS);
 
   return (
     <Card data-testid="imported-statements-panel" role="region" aria-labelledby="imported-statements-title">
       <CardHeader>
-        <CardTitle id="imported-statements-title">Imported statements</CardTitle>
+        <CardTitle id="imported-statements-title" tabIndex={-1} className="outline-none focus-visible:ring-2 focus-visible:ring-ring">Imported statements</CardTitle>
         <CardDescription>Re-import a statement from its PDF to fix how it was read, or delete it.</CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-3">

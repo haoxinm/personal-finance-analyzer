@@ -179,7 +179,7 @@ describe("FolderImportsPanel", () => {
     expect(within(rows[0]!).getByText("Alex/Statements/Chase/jan.pdf")).toBeInTheDocument();
     expect(within(rows[0]!).getByRole("link", { name: "View transactions" })).toHaveAttribute(
       "href",
-      "/spending/transactions?statement_id=7",
+      "/spending/transactions?statement_id=7&include_non_spend=true",
     );
     expect(within(rows[1]!).getByRole("link", { name: "View tax documents" })).toHaveAttribute("href", "/tax/documents");
     expect(within(rows[1]!).getByText(/in the 2021 folder/)).toBeInTheDocument();
@@ -404,5 +404,36 @@ describe("FolderImportsPanel", () => {
     expect(within(rows[1]!).getByRole("button", { name: /^Retry / })).toBeEnabled();
     expect(within(rows[1]!).getByRole("button", { name: /^Dismiss / })).toBeEnabled();
     release();
+  });
+
+  it("confirms Dismiss all with focus, Escape cancels back to the trigger, and names the file on a single dismiss", async () => {
+    const second = { ...PROBLEM, id: 5, path: "Taylor/Statements/feb.pdf" };
+    const { fn } = makeFetch({ status: BASE_STATUS, recent: [], problems: [PROBLEM, second] });
+    await renderPanel(fn);
+    await userEvent.click(await screen.findByRole("button", { name: "Dismiss all" }));
+    expect(screen.getByRole("alertdialog")).toHaveFocus();
+    expect(screen.getByRole("alertdialog")).toHaveTextContent("Dismiss 2 files?");
+    await userEvent.keyboard("{Escape}");
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Dismiss all" })).toHaveFocus();
+
+    await userEvent.click(screen.getByRole("button", { name: `Dismiss ${PROBLEM.path}` }));
+    expect(await screen.findByText(`Dismissed ${PROBLEM.path}`)).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("button", { name: `Dismiss ${second.path}` })).toHaveFocus());
+  });
+
+  it("remembers whether the Dismissed list was open and can show everything again", async () => {
+    window.localStorage.removeItem("pfa:import:dismissed-open");
+    const { fn, calls } = makeFetch({ status: BASE_STATUS, recent: [], problems: [], dismissed: [PROBLEM, { ...PROBLEM, id: 6 }] });
+    const view = await renderPanel(fn);
+    const details = await screen.findByTestId("folder-imports-dismissed");
+    expect(details).not.toHaveAttribute("open");
+    await userEvent.click(within(details).getByText(/Dismissed \(2\)/));
+    await waitFor(() => expect(window.localStorage.getItem("pfa:import:dismissed-open")).toBe("1"));
+    view.unmount();
+    await renderPanel(fn);
+    expect(await screen.findByTestId("folder-imports-dismissed")).toHaveAttribute("open");
+    await userEvent.click(screen.getByRole("button", { name: "Show all again" }));
+    await waitFor(() => expect(calls.filter((c) => c.url.includes("/undismiss"))).toHaveLength(2));
   });
 });

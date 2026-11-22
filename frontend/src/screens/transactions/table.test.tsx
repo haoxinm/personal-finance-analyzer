@@ -145,4 +145,17 @@ describe("TransactionsTable column layout", () => {
     await userEvent.keyboard(" ");
     expect(onEdit).toHaveBeenCalledTimes(2);
   });
+
+  it("keeps Description usable on a phone: the grid has a minimum width and scrolls sideways", () => {
+    render(
+      <TransactionsTable
+        rows={TRANSACTIONS}
+        context={{ categories: CATEGORIES, selectedIds: new Set(), onToggleRow: noop, onEdit: noop }}
+      />,
+    );
+    const table = screen.getByRole("table", { name: "Transactions" });
+    // 36 + 104 + 240 + 90 + 110 + 140 fixed, plus 200 for Description.
+    expect(table).toHaveStyle({ minWidth: "920px" });
+    expect(table.parentElement?.className).toContain("overflow-x-auto");
+  });
 });

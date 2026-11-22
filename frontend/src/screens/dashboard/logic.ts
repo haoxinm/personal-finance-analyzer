@@ -173,6 +173,8 @@ export interface PieSlice {
   totalMinor: number;
   /** Share of the positive total, 0-100. */
   percent: number;
+  /** For the merged `OTHER_KEY` slice: the category keys folded into it. */
+  members?: string[];
 }
 
 export interface PieSlices {
@@ -193,14 +195,18 @@ export function pieSlicesFromTotals(totals: readonly CategoryTotal[], maxSlices 
   const excluded = totals.filter((t) => t.totalMinor <= 0).map((t) => t.key);
   const totalMinor = positive.reduce((sum, t) => sum + t.totalMinor, 0);
   let kept: CategoryTotal[] = positive;
+  let members: string[] | undefined;
   if (positive.length > maxSlices) {
-    const rest = positive.slice(maxSlices).reduce((sum, t) => sum + t.totalMinor, 0);
+    const tail = positive.slice(maxSlices);
+    members = tail.map((t) => t.key);
+    const rest = tail.reduce((sum, t) => sum + t.totalMinor, 0);
     kept = [...positive.slice(0, maxSlices), { key: OTHER_KEY, totalMinor: rest }];
   }
-  const slices = kept.map((t) => ({
+  const slices: PieSlice[] = kept.map((t) => ({
     key: t.key,
     totalMinor: t.totalMinor,
     percent: totalMinor === 0 ? 0 : (t.totalMinor / totalMinor) * 100,
+    ...(t.key === OTHER_KEY && members ? { members } : {}),
   }));
   return { slices, excluded, totalMinor };
 }
@@ -234,7 +240,8 @@ export function topCategoriesWithOther(
 
 /** Display name for a category key when no taxonomy name is known. */
 export function defaultCategoryLabel(key: string): string {
-  if (key === OTHER_KEY) return "Other";
+  // Not "Other(s)": the taxonomy has a real "Others" category this must not be confused with.
+  if (key === OTHER_KEY) return "All other categories";
   if (key === "uncategorized") return "Uncategorized";
   return key;
 }

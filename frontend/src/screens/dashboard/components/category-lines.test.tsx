@@ -55,7 +55,7 @@ describe("CategoryLines", () => {
     const lines = screen.getAllByTestId("mock-line");
     expect(lines).toHaveLength(9);
     const other = lines.find((l) => l.getAttribute("data-key") === "__other__");
-    expect(other).toHaveAttribute("data-name", "Other");
+    expect(other).toHaveAttribute("data-name", "All other categories");
     expect(other).toHaveAttribute("data-stroke", "hsl(var(--muted-foreground))");
   });
 

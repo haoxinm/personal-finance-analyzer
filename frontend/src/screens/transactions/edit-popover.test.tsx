@@ -393,3 +393,81 @@ describe("EditPopover details (corrections)", () => {
     expect(screen.getByRole("button", { name: "Save" })).toBeInTheDocument();
   });
 });
+
+describe("EditPopover unsaved changes", () => {
+  function setupClose(transaction: Transaction) {
+    const onClose = vi.fn();
+    render(<EditPopover transaction={transaction} categories={CATEGORIES} onSave={vi.fn()} onClose={onClose} />);
+    return { onClose };
+  }
+
+  it("is named by its visible title", () => {
+    setupClose(makeTransaction());
+    const dialog = screen.getByRole("dialog", { name: "Edit transaction" });
+    expect(dialog).toHaveAttribute("aria-labelledby", screen.getByRole("heading", { name: "Edit transaction" }).id);
+  });
+
+  it("closes straight away when nothing changed", async () => {
+    const { onClose } = setupClose(makeTransaction());
+    await userEvent.keyboard("{Escape}");
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("asks before discarding edits on Escape, Cancel and an outside press", async () => {
+    const { onClose } = setupClose(makeTransaction());
+    await userEvent.type(screen.getByLabelText("Notes"), "x");
+    await userEvent.keyboard("{Escape}");
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getByText("Discard your unsaved changes?")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Keep editing" })).toHaveFocus();
+    // Escape again backs out of the question.
+    await userEvent.keyboard("{Escape}");
+    expect(screen.queryByText("Discard your unsaved changes?")).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.getByText("Discard your unsaved changes?")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Keep editing" }));
+    expect(onClose).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByTestId("dialog-overlay"));
+    expect(screen.getByText("Discard your unsaved changes?")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Discard changes" }));
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows a save error inline in the footer", () => {
+    render(
+      <EditPopover
+        transaction={makeTransaction()}
+        categories={CATEGORIES}
+        onSave={vi.fn()}
+        onClose={vi.fn()}
+        saveError="Could not save: boom"
+      />,
+    );
+    expect(screen.getByRole("alert")).toHaveTextContent("Could not save: boom");
+  });
+});
+
+describe("EditPopover details", () => {
+  it("limits the date to 1970 .. a year from now", () => {
+    setup(makeTransaction());
+    const date = screen.getByLabelText<HTMLInputElement>("Date");
+    expect(date.min).toBe("1970-01-01");
+    const max = new Date();
+    max.setDate(max.getDate() + 366);
+    expect(date.max).toBe(
+      `${max.getFullYear()}-${String(max.getMonth() + 1).padStart(2, "0")}-${String(max.getDate()).padStart(2, "0")}`,
+    );
+  });
+
+  it("hints at a refund when a purchase is switched to Money in, and applies it on request", async () => {
+    const { save } = setup(makeTransaction({ kind: "purchase", amount_minor: 5000 }));
+    expect(screen.queryByTestId("refund-hint")).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("radio", { name: "Money in" }));
+    expect(screen.getByTestId("refund-hint")).toBeInTheDocument();
+    expect(screen.getByLabelText<HTMLSelectElement>("Kind").value).toBe("purchase");
+    await userEvent.click(screen.getByRole("button", { name: "Set kind to refund" }));
+    expect(screen.getByLabelText<HTMLSelectElement>("Kind").value).toBe("refund");
+    expect(screen.queryByTestId("refund-hint")).not.toBeInTheDocument();
+    expect(save()).toBeEnabled();
+  });
+});

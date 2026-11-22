@@ -3,11 +3,57 @@ import { createPortal } from "react-dom";
 
 import { cn } from "@/utils";
 
-const FOCUSABLE =
-  "select:not([disabled]), textarea:not([disabled]), input:not([disabled]), button:not([disabled]), a[href], [tabindex]:not([tabindex='-1'])";
+const NOT_SKIPPED = ":not([tabindex='-1']):not([disabled])";
+const FOCUSABLE = [
+  `select${NOT_SKIPPED}`,
+  `textarea${NOT_SKIPPED}`,
+  `input:not([type='hidden'])${NOT_SKIPPED}`,
+  `button${NOT_SKIPPED}`,
+  "a[href]:not([tabindex='-1'])",
+  "[tabindex]:not([tabindex='-1']):not([disabled])",
+].join(", ");
+
+/** Tab stops inside `root`: no `tabindex="-1"`, disabled, `hidden` or non-rendered elements. */
+function tabStops(root: HTMLElement): HTMLElement[] {
+  return Array.from(root.querySelectorAll<HTMLElement>(FOCUSABLE)).filter((el) => {
+    if (el.closest("[hidden], [inert]")) return false;
+    const style = window.getComputedStyle(el);
+    return style.display !== "none" && style.visibility !== "hidden";
+  });
+}
+
+/** Marks an element (and anything holding a `data-dialog-exempt` element, one level at a time)
+ * `inert` + `aria-hidden`, returning an undo function. The dialog's own host and exempt
+ * elements (the toast viewport) stay live. */
+function hideBackground(host: HTMLElement): () => void {
+  const undo: Array<() => void> = [];
+  const visit = (parent: Element) => {
+    for (const child of Array.from(parent.children)) {
+      if (child === host || child.hasAttribute("data-dialog-exempt")) continue;
+      if (child.querySelector("[data-dialog-exempt]")) {
+        visit(child);
+        continue;
+      }
+      if (child.tagName === "SCRIPT" || child.hasAttribute("inert")) continue;
+      const hadAriaHidden = child.getAttribute("aria-hidden");
+      child.setAttribute("inert", "");
+      child.setAttribute("aria-hidden", "true");
+      undo.push(() => {
+        child.removeAttribute("inert");
+        if (hadAriaHidden === null) child.removeAttribute("aria-hidden");
+        else child.setAttribute("aria-hidden", hadAriaHidden);
+      });
+    }
+  };
+  visit(document.body);
+  return () => undo.forEach((fn) => fn());
+}
 
 export interface DialogProps {
   onClose: () => void;
+  /** What Escape and a press outside the panel call, when set (default: `onClose`). Lets a form
+   * with unsaved changes ask before it closes; `onClose` stays the plain "go away". */
+  onRequestClose?: () => void;
   "aria-label"?: string;
   "aria-labelledby"?: string;
   /** Extra classes for the panel (e.g. a different `max-w-*`). */
@@ -25,23 +71,38 @@ export interface DialogProps {
  */
 export function Dialog({
   onClose,
+  onRequestClose,
   className,
   children,
   "aria-label": ariaLabel,
   "aria-labelledby": ariaLabelledBy,
 }: DialogProps) {
   const panelRef = React.useRef<HTMLDivElement>(null);
-  const onCloseRef = React.useRef(onClose);
-  onCloseRef.current = onClose;
+  const overlayRef = React.useRef<HTMLDivElement>(null);
+  const requestCloseRef = React.useRef(onRequestClose ?? onClose);
+  requestCloseRef.current = onRequestClose ?? onClose;
   const pressedOnOverlay = React.useRef(false);
 
-  // Lock page scroll while open; restore whatever was there before.
+  // Lock page scroll while open; restore whatever was there before. The vanishing scrollbar's
+  // width is added as padding so the page behind does not jump sideways.
   React.useEffect(() => {
-    const previous = document.body.style.overflow;
+    const { overflow, paddingRight } = document.body.style;
+    const scrollbar = Math.max(0, window.innerWidth - document.documentElement.clientWidth);
     document.body.style.overflow = "hidden";
+    if (scrollbar > 0) {
+      const current = parseFloat(window.getComputedStyle(document.body).paddingRight) || 0;
+      document.body.style.paddingRight = `${current + scrollbar}px`;
+    }
     return () => {
-      document.body.style.overflow = previous;
+      document.body.style.overflow = overflow;
+      document.body.style.paddingRight = paddingRight;
     };
+  }, []);
+
+  // Everything behind the dialog is unreachable for assistive tech and the keyboard.
+  React.useEffect(() => {
+    const host = overlayRef.current;
+    return host ? hideBackground(host) : undefined;
   }, []);
 
   // Focus management: move in on mount, go back to the opener on unmount.
@@ -66,11 +127,11 @@ export function Dialog({
       if (!panel) return;
       if (e.key === "Escape") {
         e.preventDefault();
-        onCloseRef.current();
+        requestCloseRef.current();
         return;
       }
       if (e.key !== "Tab") return;
-      const focusable = Array.from(panel.querySelectorAll<HTMLElement>(FOCUSABLE));
+      const focusable = tabStops(panel);
       const first = focusable[0];
       const last = focusable[focusable.length - 1];
       if (!first || !last) {
@@ -93,15 +154,16 @@ export function Dialog({
 
   return createPortal(
     <div
+      ref={overlayRef}
       data-testid="dialog-overlay"
-      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/50 p-4 sm:items-center"
+      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto overscroll-contain bg-black/50 p-4 sm:items-center"
       // mousedown + mouseup on the overlay itself (not click): a text-selection drag that ends
       // outside the panel must not close the dialog.
       onMouseDown={(e) => {
         pressedOnOverlay.current = e.target === e.currentTarget;
       }}
       onMouseUp={(e) => {
-        if (pressedOnOverlay.current && e.target === e.currentTarget) onClose();
+        if (pressedOnOverlay.current && e.target === e.currentTarget) requestCloseRef.current();
         pressedOnOverlay.current = false;
       }}
     >

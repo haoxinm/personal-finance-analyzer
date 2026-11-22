@@ -161,7 +161,20 @@ describe("StatementCard", () => {
     expect(screen.getByRole("link", { name: /Review 5/ })).toHaveAttribute("href", "/spending/review");
     expect(screen.getByRole("link", { name: "View transactions" })).toHaveAttribute(
       "href",
-      "/spending/transactions?statement_id=9",
+      "/spending/transactions?statement_id=9&include_non_spend=true",
     );
+  });
+
+  it("offers Re-import… on an already-imported duplicate, for that existing statement", async () => {
+    const onReimportExisting = vi.fn();
+    renderCard(makeItem({ status: "parsed", duplicate: true, statementId: 12 }), { onReimportExisting });
+    const { default: userEvent } = await import("@testing-library/user-event");
+    await userEvent.click(screen.getByRole("button", { name: "Re-import…" }));
+    expect(onReimportExisting).toHaveBeenCalledWith(12);
+  });
+
+  it("does not offer Re-import… for a fresh import", () => {
+    renderCard(makeItem({ status: "parsed", statementId: 12 }), { onReimportExisting: vi.fn() });
+    expect(screen.queryByRole("button", { name: "Re-import…" })).not.toBeInTheDocument();
   });
 });

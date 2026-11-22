@@ -49,3 +49,17 @@ export function describeReimport(job: Job): { headline: string; notes: string[] 
   return { headline: parts.join(" "), notes };
 }
 
+
+/** The transactions grid for one statement, with every kind (payments and transfers too, not only
+ * spending) so the row count matches the statement's. */
+export function statementTransactionsUrl(statementId: number | string): string {
+  return `/spending/transactions?statement_id=${statementId}&include_non_spend=true`;
+}
+
+/** A human name for a recorded extractor: the LLM, or a built-in layout parser by its id with the
+ * underscores read as spaces. */
+export function extractorDisplayName(parserId: string | null | undefined): string {
+  if (!parserId) return "the recorded extractor";
+  if (parserId === "llm") return "LLM extractor";
+  return `built-in parser ${parserId.replace(/_/g, " ")}`;
+}

@@ -61,6 +61,7 @@ interface World {
   llm?: string;
   reparse?: { status: number; body: unknown };
   job?: Record<string, unknown>;
+  jobStatus?: number;
 }
 
 function makeFetch(world: World) {
@@ -73,11 +74,18 @@ function makeFetch(world: World) {
       const answer = world.reparse ?? { status: 202, body: { job_id: "job-1" } };
       return jsonResponse(answer.body, answer.status);
     }
+    if (url.includes("/api/jobs/job-2")) {
+      return jsonResponse({ id: "job-2", kind: "classify", status: "done", progress: 1 });
+    }
+    if (url.includes("/api/jobs/job-1") && world.jobStatus) return jsonResponse({ detail: "boom" }, world.jobStatus);
     if (url.includes("/api/jobs/job-1")) {
       return jsonResponse(world.job ?? { id: "job-1", kind: "import", status: "done", progress: 1, inserted: 42, restored_edits: 3 });
     }
     if (url.includes("/api/statements/") && method === "DELETE") return new Response(null, { status: 204 });
-    if (url.includes("/api/statements")) return jsonResponse(world.statements);
+    if (url.includes("/api/statements")) {
+      const owner = new URL(url).searchParams.get("user_id");
+      return jsonResponse(owner === null ? world.statements : world.statements.filter((r) => String(r.user_id) === owner));
+    }
     if (url.includes("/api/accounts")) {
       return jsonResponse([{ id: 5, user_id: 1, issuer_id: 3, account_type: "credit", currency: "USD" }]);
     }
@@ -92,7 +100,7 @@ function makeFetch(world: World) {
   return { fn, calls };
 }
 
-async function renderPanel(fetchMock: typeof fetch, userId: number | null = 1) {
+async function renderPanel(fetchMock: typeof fetch, userId: number | null = 1, onFinishImport?: (s: { id: number }) => void) {
   vi.resetModules();
   vi.stubGlobal("fetch", fetchMock);
   const { ImportedStatementsPanel } = await import("./imported-statements-panel");
@@ -103,7 +111,7 @@ async function renderPanel(fetchMock: typeof fetch, userId: number | null = 1) {
     <QueryClientProvider client={queryClient}>
       <ToastContextProvider>
         <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
-          <ImportedStatementsPanel userId={userId} />
+          <ImportedStatementsPanel userId={userId} onFinishImport={onFinishImport as never} />
         </MemoryRouter>
         <Toaster />
       </ToastContextProvider>
@@ -162,7 +170,7 @@ describe("ImportedStatementsPanel", () => {
     expect(within(rows[1]!).getByText(/Totals don.t reconcile/)).toHaveTextContent("$12.50");
     expect(within(rows[0]!).getByRole("link", { name: "View transactions" })).toHaveAttribute(
       "href",
-      "/spending/transactions?statement_id=1",
+      "/spending/transactions?statement_id=1&include_non_spend=true",
     );
   });
 
@@ -192,7 +200,7 @@ describe("ImportedStatementsPanel", () => {
     await renderPanel(fn);
     await userEvent.click(await screen.findByRole("button", { name: "Re-import chase-march.pdf" }));
     const panel = screen.getByRole("region", { name: /Re-import chase-march.pdf/ });
-    expect(within(panel).getByRole("option", { name: "Same as before (layout_a_credit)" })).toBeInTheDocument();
+    expect(within(panel).getByRole("option", { name: "Same as before (built-in parser layout a credit)" })).toBeInTheDocument();
     await userEvent.click(within(panel).getByRole("button", { name: "Start re-import" }));
 
     await waitFor(() => expect(calls.some((c) => c.url.includes("/statements/1/reparse"))).toBe(true));
@@ -323,5 +331,93 @@ describe("ImportedStatementsPanel", () => {
     expect(await screen.findAllByTestId("imported-statement")).toHaveLength(10);
     await userEvent.click(screen.getByRole("button", { name: "Show all (12)" }));
     expect(screen.getAllByTestId("imported-statement")).toHaveLength(12);
+  });
+
+  it("never sticks when the finished job's result cannot be read, refreshes, and lets the user retry", async () => {
+    MockEventSource.instances = [];
+    const { fn, calls } = makeFetch({ statements: [statement()], jobStatus: 500 });
+    await renderPanel(fn);
+    await userEvent.click(await screen.findByRole("button", { name: "Re-import chase-march.pdf" }));
+    await userEvent.click(screen.getByRole("button", { name: "Start re-import" }));
+    await waitFor(() => expect(MockEventSource.instances).toHaveLength(1));
+    const before = calls.filter((c) => c.url.includes("/api/statements") && c.method === "GET").length;
+    act(() => {
+      MockEventSource.instances[0]!.onmessage?.({ data: JSON.stringify({ status: "done", progress: 1 }) });
+    });
+    expect(await screen.findByRole("alert")).toHaveTextContent("result could not be read");
+    expect(screen.getByRole("button", { name: "Start re-import" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled();
+    await waitFor(() =>
+      expect(calls.filter((c) => c.url.includes("/api/statements") && c.method === "GET").length).toBeGreaterThan(before),
+    );
+  });
+
+  it("refreshes again when the classification job it spawned finishes", async () => {
+    MockEventSource.instances = [];
+    const { fn, calls } = makeFetch({
+      statements: [statement()],
+      job: { id: "job-1", kind: "import", status: "done", progress: 1, inserted: 4, classify_job_id: "job-2" },
+    });
+    await renderPanel(fn);
+    await userEvent.click(await screen.findByRole("button", { name: "Re-import chase-march.pdf" }));
+    await userEvent.click(screen.getByRole("button", { name: "Start re-import" }));
+    await waitFor(() => expect(MockEventSource.instances).toHaveLength(1));
+    act(() => {
+      MockEventSource.instances[0]!.onmessage?.({ data: JSON.stringify({ status: "done", progress: 1 }) });
+    });
+    await waitFor(() => expect(MockEventSource.instances).toHaveLength(2));
+    expect(MockEventSource.instances[1]!.url).toContain("/api/jobs/job-2/events");
+    expect(await screen.findByText(/being categorized/)).toBeInTheDocument();
+    const before = calls.filter((c) => c.url.includes("/api/statements") && c.method === "GET").length;
+    act(() => {
+      MockEventSource.instances[1]!.onmessage?.({ data: JSON.stringify({ status: "done", progress: 1 }) });
+    });
+    await waitFor(() =>
+      expect(calls.filter((c) => c.url.includes("/api/statements") && c.method === "GET").length).toBeGreaterThan(before),
+    );
+    expect(await screen.findByText(/have been categorized/)).toBeInTheDocument();
+  });
+
+  it("lists unassigned statements (no owner) with their status, Finish import and Delete", async () => {
+    const onFinish = vi.fn();
+    const { fn } = makeFetch({
+      statements: [
+        statement(),
+        statement({ id: 8, user_id: null, status: "awaiting_extractor", original_name: "waiting.pdf", txn_count: 0, period_end: null }),
+      ],
+    });
+    await renderPanel(fn, 1, onFinish);
+    const rows = await screen.findAllByTestId("imported-statement");
+    expect(rows).toHaveLength(2);
+    const waiting = rows.find((r) => r.textContent?.includes("waiting.pdf"))!;
+    expect(waiting).toHaveTextContent("Not imported yet");
+    expect(within(waiting).getByRole("button", { name: "Delete waiting.pdf" })).toBeInTheDocument();
+    await userEvent.click(within(waiting).getByRole("button", { name: "Finish import of waiting.pdf" }));
+    expect(onFinish).toHaveBeenCalledWith(expect.objectContaining({ id: 8 }));
+  });
+
+  it("moves focus into the panels, closes them with Escape and returns focus to the trigger", async () => {
+    const { fn } = makeFetch({ statements: [statement()] });
+    await renderPanel(fn);
+    const trigger = await screen.findByRole("button", { name: "Re-import chase-march.pdf" });
+    await userEvent.click(trigger);
+    expect(screen.getByRole("heading", { name: /Re-import chase-march.pdf/ })).toHaveFocus();
+    await userEvent.keyboard("{Escape}");
+    expect(screen.queryByTestId("reimport-panel")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Re-import chase-march.pdf" })).toHaveFocus();
+
+    await userEvent.click(screen.getByRole("button", { name: "Delete chase-march.pdf" }));
+    expect(screen.getByRole("alertdialog")).toHaveFocus();
+    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.getByRole("button", { name: "Delete chase-march.pdf" })).toHaveFocus();
+  });
+
+  it("warns that the LLM is used when the recorded extractor is the LLM, and says it in words", async () => {
+    const { fn } = makeFetch({ statements: [statement({ parser_id: "llm" })], llm: "cloud" });
+    await renderPanel(fn);
+    await userEvent.click(await screen.findByRole("button", { name: "Re-import chase-march.pdf" }));
+    expect(screen.getByRole("option", { name: "Same as before (LLM extractor)" })).toBeInTheDocument();
+    expect(screen.getByText(/Sends this statement.s page text \(after redaction\)/)).toBeInTheDocument();
+    expect(screen.getByText(/corrections\s+to dates, amounts and descriptions are kept/)).toBeInTheDocument();
   });
 });

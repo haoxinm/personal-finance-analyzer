@@ -49,6 +49,33 @@ export function colorMapForKeys(keys: readonly string[], avoidNeutral = false): 
   return new Map(sorted.map((k, i) => [k, colorByIndex(i)]));
 }
 
+/**
+ * Colours that stay put across date ranges: a category's slot is its position in `order` (the
+ * taxonomy order, then any unknown keys alphabetically), not its rank among what happens to be
+ * displayed. Two displayed categories only share a slot when `order` is longer than the palette;
+ * the later one then takes the next free slot, so displayed series stay distinct where possible.
+ * The grey slate is never handed out (it is the merged "All other categories" series).
+ */
+export function stableColorMap(displayed: readonly string[], order: readonly string[]): Map<string, string> {
+  const palette = PALETTE.filter((c) => c !== NEUTRAL);
+  const rank = new Map<string, number>();
+  for (const key of order) if (!rank.has(key)) rank.set(key, rank.size);
+  const unknown = [...new Set(displayed)].filter((k) => !rank.has(k)).sort();
+  for (const key of unknown) rank.set(key, rank.size);
+  const keys = [...new Set(displayed)].sort((a, b) => rank.get(a)! - rank.get(b)!);
+  const used = new Set<number>();
+  const result = new Map<string, string>();
+  for (const key of keys) {
+    let slot = rank.get(key)! % palette.length;
+    if (used.size < palette.length) {
+      while (used.has(slot)) slot = (slot + 1) % palette.length;
+    }
+    used.add(slot);
+    result.set(key, palette[slot]!);
+  }
+  return result;
+}
+
 /** The n-th palette colour (wraps), for series that need distinct colours by position. */
 export function colorByIndex(index: number): string {
   return PALETTE[index % PALETTE.length] ?? PALETTE[0]!;

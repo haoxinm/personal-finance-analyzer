@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
@@ -160,3 +161,43 @@ def test_analytics_reflects_the_corrected_amount_and_date(
     )
     assert rows.status_code == 200, rows.text
     assert [(r["period"], r["total_minor"]) for r in rows.json()] == [("2026-03", 4000)]
+
+
+def test_description_is_stripped_before_the_length_check_and_invisible_chars_are_rejected(
+    client: TestClient, session: Session
+) -> None:
+    txn_id = _make_transaction(session)
+    url = f"/api/transactions/{txn_id}"
+    padded = "  " + "x" * 200 + "  "
+    assert client.patch(url, json={"description_clean": padded}).status_code == 200
+    assert client.patch(url, json={"description_clean": "x" * 201}).status_code == 422
+    for code in (0x200B, 0x202E, 0x2028, 0x2029):
+        bad = f"a{chr(code)}b"
+        assert client.patch(url, json={"description_clean": bad}).status_code == 422, hex(code)
+
+
+def test_patch_with_category_and_corrections_commits_once(
+    client: TestClient, session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    txn_id = _make_transaction(session)
+    commits: list[int] = []
+    original = Session.commit
+
+    def counting(self: Session) -> None:
+        commits.append(1)
+        original(self)
+
+    monkeypatch.setattr(Session, "commit", counting)
+    response = client.patch(
+        f"/api/transactions/{txn_id}",
+        json={
+            "category_key": "travel",
+            "subcategory_key": "hotels",
+            "notes": "n",
+            "amount_minor": 1999,
+        },
+    )
+    assert response.status_code == 200, response.text
+    assert len(commits) == 1
+    out = response.json()
+    assert out["amount_minor"] == 1999 and out["notes"] == "n"

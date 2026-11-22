@@ -27,6 +27,9 @@ function columnFlex(column: Column<Transaction, unknown>): string {
   return column.columnDef.meta?.flexible ? "1 1 0%" : `0 0 ${column.getSize()}px`;
 }
 
+/** Narrowest the flexible Description column may get; below that the grid scrolls sideways. */
+const DESCRIPTION_MIN_WIDTH = 200;
+
 export interface TransactionsTableProps {
   rows: Transaction[];
   context: ColumnsContext;
@@ -90,15 +93,22 @@ export function TransactionsTable({
   );
 
   const visibleRows = tableRows.slice(range.startIndex, range.endIndex);
+  // Fixed columns plus the Description minimum: on a phone the grid is this wide and scrolls
+  // sideways instead of squeezing Description to nothing.
+  const minGridWidth = table
+    .getVisibleLeafColumns()
+    .reduce((sum, column) => sum + (column.columnDef.meta?.flexible ? DESCRIPTION_MIN_WIDTH : column.getSize()), 0);
 
   return (
     // The header row and the (scrolling) body are both inside the one `role="table"`; the
     // virtualized body only mounts a window of rows, so each carries its `aria-rowindex`.
+    <div className="relative w-full min-w-0 max-w-full overflow-x-auto rounded-lg">
     <div
       role="table"
       aria-label="Transactions"
       aria-rowcount={Math.max(totalCount ?? 0, tableRows.length) + 1}
       className="overflow-hidden rounded-lg border border-border"
+      style={{ minWidth: minGridWidth }}
     >
       <div role="rowgroup">
       <div
@@ -183,6 +193,7 @@ export function TransactionsTable({
           ))}
         </div>
       </div>
+    </div>
     </div>
   );
 }

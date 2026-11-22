@@ -199,6 +199,14 @@ def reparse(
     )
 
 
+def extractor_exists(
+    session: Session, *, parser_id: str | None, layout_spec_id: int | None
+) -> bool:
+    """Whether the named extractor (parser id or layout spec) can be resolved."""
+    fn = _resolve("personal_finance_analyzer.ingest.pipeline", "extractor_exists")
+    return cast(bool, fn(session, parser_id=parser_id, layout_spec_id=layout_spec_id))
+
+
 def reassign(
     session: Session, statement_id: int, *, user_id: int, account_id: int
 ) -> tuple[int, int]:

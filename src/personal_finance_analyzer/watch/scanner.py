@@ -539,6 +539,7 @@ class FolderScanner:
             record.code = None
             record.message = "Imported later from the Import page."
             record.hint = None
+            record.dismissed_at = None  # a failure the user had dismissed is now a success
         if parsed:
             session.commit()
 

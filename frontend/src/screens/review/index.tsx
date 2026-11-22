@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import * as React from "react";
 import { Link } from "react-router-dom";
 
-import { useSettings, useTaxonomy } from "@/api/hooks";
+import { usePatchTransaction, useSettings, useTaxonomy } from "@/api/hooks";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -13,6 +13,8 @@ import { Page, PageHeader } from "@/components/primitives/page";
 import { EmptyState, ErrorState, LoadingState } from "@/components/primitives/states";
 import { CategoryBadge } from "@/components/primitives/category-badge";
 import { Money } from "@/components/primitives/money";
+import { useToast } from "@/components/ui/use-toast";
+import { EditPopover, type EditPopoverProps } from "@/screens/transactions/edit-popover";
 import { usePaneShortcutsEnabled, useSelectedUser } from "@/hooks/use-selected-user";
 
 import { fetchUncategorizedCount } from "./api";
@@ -77,6 +79,41 @@ export default function ReviewScreen() {
   const uncategorizedCount = uncategorized.data ?? 0;
 
   const categories = React.useMemo(() => taxonomy.data ?? [], [taxonomy.data]);
+  const { toast } = useToast();
+  const patchTransaction = usePatchTransaction();
+  // "Edit details…": the transactions grid's editor, for a misread amount/date found while reviewing.
+  const [editing, setEditing] = React.useState<Transaction | null>(null);
+  const [saveError, setSaveError] = React.useState<string | null>(null);
+  const editingRef = React.useRef(false);
+  editingRef.current = editing !== null;
+
+  async function saveEdit(patch: Parameters<EditPopoverProps["onSave"]>[0]) {
+    if (!editing) return;
+    setSaveError(null);
+    try {
+      const updated = await patchTransaction.mutateAsync({
+        id: editing.id,
+        body: {
+          category_key: patch.categoryKey,
+          subcategory_key: patch.subcategoryKey,
+          kind: patch.kind,
+          notes: patch.notes,
+          posted_date: patch.postedDate,
+          description_clean: patch.descriptionClean,
+          amount_minor: patch.amountMinor,
+          revert_fields: patch.revertFields,
+          create_rule: patch.createRule ?? false,
+        },
+      });
+      if (updated) queue.replaceRow(updated);
+      toast({ title: "Saved" });
+      setEditing(null);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : undefined;
+      setSaveError(message ? `Could not save: ${message}` : "Could not save this transaction.");
+    }
+  }
+
   const choices = React.useMemo(() => buildCategoryChoices(categories), [categories]);
 
   React.useEffect(() => {
@@ -88,6 +125,8 @@ export default function ReviewScreen() {
 
     function onKeyDown(event: KeyboardEvent) {
       if (event.defaultPrevented) return;
+      // The edit dialog owns the keyboard (its selects and buttons would otherwise trigger j/k/Enter/1-9).
+      if (editingRef.current) return;
       if (event.metaKey || event.ctrlKey || event.altKey) return;
       if (isTypingTarget(event.target)) return;
       // Enter on a focused suggestion chip is that chip's own click, not "accept the proposal".
@@ -234,10 +273,24 @@ export default function ReviewScreen() {
                 },
               })
             }
+            onEditDetails={() => {
+              setSaveError(null);
+              setEditing(queue.current);
+            }}
             disabled={queue.isMutating}
           />
         ) : null}
       </section>
+      {editing ? (
+        <EditPopover
+          transaction={editing}
+          categories={categories}
+          onSave={(patch) => void saveEdit(patch)}
+          onClose={() => setEditing(null)}
+          saving={patchTransaction.isPending}
+          saveError={saveError}
+        />
+      ) : null}
 
       <section aria-labelledby="new-categories-heading" className="flex flex-col gap-3">
         <h2 id="new-categories-heading" className="text-sm font-semibold tracking-tight text-foreground">
@@ -271,6 +324,8 @@ interface TransactionCardProps {
   onAcceptAndCreateRule: () => void;
   /** One click on a suggestion chip: accept that candidate as a one-time edit of this row only. */
   onApplySuggestion: (candidate: SuggestionCandidate) => void;
+  /** Opens the transaction editor (amount, date, description, kind, notes). */
+  onEditDetails: () => void;
   disabled: boolean;
 }
 
@@ -288,6 +343,7 @@ function TransactionCard({
   onAccept,
   onAcceptAndCreateRule,
   onApplySuggestion,
+  onEditDetails,
   disabled,
 }: TransactionCardProps) {
   const effectiveCategoryKey = stagedCategoryKey ?? transaction.category_key ?? undefined;
@@ -374,6 +430,16 @@ function TransactionCard({
               </span>
             )}
             <Kbd className="shrink-0">r</Kbd>
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            onClick={onEditDetails}
+            disabled={disabled}
+            aria-haspopup="dialog"
+            title="Fix a misread amount, date or description, or change the kind or notes."
+          >
+            Edit details…
           </Button>
         </div>
         <p className="text-xs text-muted-foreground">

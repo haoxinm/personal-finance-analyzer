@@ -102,9 +102,9 @@ def enqueue_reparse_then_classify(
                     discard_edits=discard_edits,
                 )
             except PfaError:
-                # `reparse` records `status='error'` + `error_detail` on the row but leaves the
-                # commit to its caller; persist that so the failure surfaces on the statement.
-                session.commit()
+                # A failed re-import must not change the already-parsed statement: discard
+                # everything; the error is reported on the job only.
+                session.rollback()
                 raise
             session.commit()
         progress.update(1, 1)

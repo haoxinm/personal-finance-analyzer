@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import * as React from "react";
 import { describe, expect, it, vi } from "vitest";
 
@@ -12,7 +12,9 @@ vi.mock("recharts", () => ({
       {children}
     </div>
   ),
-  Cell: ({ fill }: { fill?: string }) => <div data-testid="mock-cell" data-fill={fill} />,
+  Cell: ({ fill, onClick }: { fill?: string; onClick?: () => void }) => (
+    <div data-testid="mock-cell" data-fill={fill} onClick={onClick} />
+  ),
   Tooltip: () => null,
 }));
 
@@ -62,12 +64,27 @@ describe("CategoryPie", () => {
     const rows = Array.from({ length: 10 }, (_, i) => row("2026-01", `cat${i}`, (i + 1) * 100));
     render(<CategoryPie rows={rows} currency="USD" />);
     expect(screen.getAllByTestId("mock-cell")).toHaveLength(9);
-    expect(within(screen.getByRole("list")).getByText("Other")).toBeInTheDocument();
+    expect(within(screen.getByRole("list")).getByText("All other categories")).toBeInTheDocument();
   });
 
   it("shows an empty state when nothing is positive", () => {
     render(<CategoryPie rows={[row("2026-01", "refunds", -300)]} currency="USD" labelFor={labelFor} />);
     expect(screen.getByText("No spending to chart")).toBeInTheDocument();
     expect(screen.getByText(/Refunds/)).toBeInTheDocument();
+  });
+
+  it("selects a category from a legend row or a slice, but never the merged slice", () => {
+    const onSelect = vi.fn();
+    const rows = Array.from({ length: 10 }, (_, i) => row("2026-01", `cat${i}`, (i + 1) * 100));
+    render(<CategoryPie rows={rows} currency="USD" onSelectCategory={onSelect} />);
+    fireEvent.click(within(screen.getByRole("list")).getByRole("button", { name: /cat9/ }));
+    expect(onSelect).toHaveBeenCalledWith("cat9");
+    fireEvent.click(screen.getAllByTestId("mock-cell")[0]!);
+    expect(onSelect).toHaveBeenCalledWith("cat9");
+    // 9 slices; the merged one (last) has no handler and no button.
+    fireEvent.click(screen.getAllByTestId("mock-cell")[8]!);
+    expect(onSelect).toHaveBeenCalledTimes(2);
+    expect(within(screen.getByRole("list")).getAllByRole("button")).toHaveLength(8);
+    expect(screen.getByTitle(/Includes: cat1, cat0/)).toBeInTheDocument();
   });
 });

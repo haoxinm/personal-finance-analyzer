@@ -196,3 +196,55 @@ def test_the_layout_mapper_body_is_still_accepted(client: TestClient, imported: 
     )
     assert response.status_code == 202
     assert _wait(client, response.json()["job_id"])["status"] == "done"
+
+
+def test_reparse_with_an_unresolvable_recorded_extractor_is_400_not_a_failed_job(
+    client: TestClient, session: Session, imported: int
+) -> None:
+    statement = session.get(Statement, imported)
+    assert statement is not None
+    statement.parser_id = "no_such_parser"
+    statement.layout_spec_id = None
+    session.commit()
+    response = client.post(f"/api/statements/{imported}/reparse", json={})
+    assert response.status_code == 400
+    assert "choose one" in response.json()["detail"]
+
+
+def test_never_imported_409_wins_over_the_missing_extractor_400(
+    client: TestClient, session: Session
+) -> None:
+    statement = Statement(
+        file_sha256="d" * 64,
+        original_name="y.pdf",
+        status="awaiting_extractor",
+        parser_id=None,
+        ingested_at=utcnow_iso(),
+    )
+    session.add(statement)
+    session.commit()
+    assert client.post(f"/api/statements/{statement.id}/reparse", json={}).status_code == 409
+
+
+def test_a_failed_reparse_job_leaves_the_parsed_statement_alone(
+    client: TestClient, session: Session, imported: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from personal_finance_analyzer.core.errors import ParserError
+    from personal_finance_analyzer.ingest import pipeline
+
+    before = [r.id for r in _rows(session, imported)]
+
+    def boom(self: object, doc: object) -> None:
+        raise ParserError("bad year")
+
+    monkeypatch.setattr(type(pipeline.generic_table), "parse", boom)
+    response = client.post(
+        f"/api/statements/{imported}/reparse", json={"parser_id": "generic_table", "pages": [1]}
+    )
+    assert response.status_code == 202
+    assert _wait(client, response.json()["job_id"])["status"] == "error"
+    session.expire_all()
+    statement = session.get(Statement, imported)
+    assert statement is not None
+    assert statement.status == "parsed" and statement.error_detail is None
+    assert [r.id for r in _rows(session, imported)] == before

@@ -26,3 +26,18 @@ describe("ThemeToggle", () => {
     expect(screen.getByRole("radio", { name: "Match system" })).toHaveAttribute("aria-checked", "true");
   });
 });
+
+describe("ThemeToggle compact button", () => {
+  it("cycles light, dark, system", () => {
+    window.localStorage.clear();
+    render(<ThemeToggle />);
+    const button = screen.getByTestId("theme-cycle");
+    fireEvent.click(button);
+    expect(window.localStorage.getItem("pfa:theme")).toBe("light");
+    fireEvent.click(button);
+    expect(window.localStorage.getItem("pfa:theme")).toBe("dark");
+    fireEvent.click(button);
+    expect(window.localStorage.getItem("pfa:theme")).toBeNull();
+    expect(button).toHaveAttribute("aria-label", expect.stringContaining("Match system"));
+  });
+});

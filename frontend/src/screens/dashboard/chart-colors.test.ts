@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { CHART_INFLOW, CHART_OUTFLOW, colorByIndex, colorMapForKeys } from "./chart-colors";
+import { CHART_INFLOW, CHART_OUTFLOW, colorByIndex, colorMapForKeys, stableColorMap } from "./chart-colors";
 
 describe("colorMapForKeys", () => {
   it("gives every visible series a distinct colour", () => {
@@ -28,5 +28,26 @@ describe("colorMapForKeys avoidNeutral", () => {
     const map = colorMapForKeys(keys, true);
     expect([...map.values()]).not.toContain("hsl(var(--chart-slate))");
     expect(new Set([...map.values()]).size).toBe(11);
+  });
+});
+
+describe("stableColorMap", () => {
+  const taxonomy = ["cash", "dining", "groceries", "health", "others", "rent"];
+  it("keeps a category's colour whatever else is displayed", () => {
+    const wide = stableColorMap(["dining", "groceries", "rent"], taxonomy);
+    const narrow = stableColorMap(["groceries", "rent"], taxonomy);
+    expect(narrow.get("groceries")).toBe(wide.get("groceries"));
+    expect(narrow.get("rent")).toBe(wide.get("rent"));
+  });
+  it("keeps displayed series distinct even when the taxonomy outgrows the palette", () => {
+    const order = Array.from({ length: 15 }, (_, i) => `c${String(i).padStart(2, "0")}`);
+    const map = stableColorMap(order, order);
+    expect(new Set(map.values()).size).toBe(11);
+    expect(new Set(stableColorMap(["c00", "c11"], order).values()).size).toBe(2);
+  });
+  it("handles keys outside the taxonomy and never uses the neutral slate", () => {
+    const map = stableColorMap(["uncategorized", "cash"], taxonomy);
+    expect(map.size).toBe(2);
+    expect([...map.values()]).not.toContain("hsl(var(--chart-slate))");
   });
 });

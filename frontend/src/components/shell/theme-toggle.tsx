@@ -49,8 +49,37 @@ const OPTIONS: readonly SegmentedOption<ThemePreference>[] = [
   },
 ];
 
-/** Header control for the colour theme: Light / Dark / Match system. */
+const CYCLE: readonly ThemePreference[] = ["light", "dark", "system"];
+
+/**
+ * Header control for the colour theme. From `sm` up: a Light / Dark / Match system segmented
+ * control. Below `sm` (phones) a single icon button that cycles through the three, so the header
+ * keeps its room for the navigation.
+ */
 export function ThemeToggle() {
   const { preference, setPreference } = useTheme();
-  return <SegmentedControl label="Colour theme" value={preference} options={OPTIONS} onChange={setPreference} />;
+  const current = OPTIONS.find((o) => o.value === preference) ?? OPTIONS[2]!;
+  const next = CYCLE[(CYCLE.indexOf(preference) + 1) % CYCLE.length]!;
+  const nextLabel = OPTIONS.find((o) => o.value === next)!.label;
+  return (
+    <>
+      <SegmentedControl
+        label="Colour theme"
+        value={preference}
+        options={OPTIONS}
+        onChange={setPreference}
+        className="hidden sm:inline-flex"
+      />
+      <button
+        type="button"
+        onClick={() => setPreference(next)}
+        aria-label={`Colour theme: ${current.label}. Switch to ${nextLabel}`}
+        title={`Colour theme: ${current.label}`}
+        data-testid="theme-cycle"
+        className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-input text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:hidden"
+      >
+        {current.icon}
+      </button>
+    </>
+  );
 }

@@ -10,7 +10,7 @@ import type { JobEvent } from "@/hooks/use-job-progress";
 
 import { useExtractStatement, useImportSettings, useUploadStatement } from "./api";
 import { FolderImportsPanel } from "./folder-imports-panel";
-import { ImportedStatementsPanel } from "./imported-statements-panel";
+import { ImportedStatementsPanel, type OpenRequest } from "./imported-statements-panel";
 import { IssuerExtractorPicker } from "./issuer-extractor-picker";
 import { StatementCard } from "./statement-card";
 import { PageSelector } from "./page-selector";
@@ -40,6 +40,9 @@ function ImportScreen() {
   // The upload target is the app-wide selected user. Only when "All users" is selected do we
   // ask which user to import for (the pick is local to this screen).
   const sel = useSelectedUser();
+  const dropRef = React.useRef<HTMLDivElement>(null);
+  const [finishHint, setFinishHint] = React.useState<string | null>(null);
+  const [openRequest, setOpenRequest] = React.useState<OpenRequest | null>(null);
   const [pickedUserId, setPickedUserId] = React.useState<number | null>(null);
   const selectedUserId: number | null =
     sel.selectedUserId ?? (users.some((u) => u.id === pickedUserId) ? pickedUserId : null);
@@ -159,6 +162,20 @@ function ImportScreen() {
     [items, dispatch, queryClient, llmConfigured],
   );
 
+  // A statement awaiting an extractor (or whose import failed) is finished by dropping its PDF
+  // again: the upload recognizes it and offers the extractor choice.
+  const finishImport = React.useCallback((statement: { original_name: string; id: number }) => {
+    setFinishHint(
+      `Drop \u201c${statement.original_name || `statement ${statement.id}`}\u201d here again to choose an extractor and finish importing it.`,
+    );
+    const zone = dropRef.current;
+    zone?.scrollIntoView?.({ block: "center", behavior: "smooth" });
+    zone?.querySelector<HTMLElement>('[role="button"]')?.focus();
+  }, []);
+  const reimportExisting = React.useCallback((statementId: number) => {
+    setOpenRequest((prev) => ({ statementId, nonce: (prev?.nonce ?? 0) + 1 }));
+  }, []);
+
   const header = (
     <PageHeader
       title="Import statements"
@@ -211,7 +228,14 @@ function ImportScreen() {
         </p>
       )}
 
-      <FileDropZone onFiles={handleFiles} disabled={selectedUserId === null} />
+      <div ref={dropRef} className="flex flex-col gap-2">
+        <FileDropZone onFiles={handleFiles} disabled={selectedUserId === null} />
+        {finishHint ? (
+          <p role="status" className="text-sm text-muted-foreground" data-testid="finish-hint">
+            {finishHint}
+          </p>
+        ) : null}
+      </div>
 
       <SummaryBar items={items} />
 
@@ -223,6 +247,7 @@ function ImportScreen() {
               item={item}
               onJobEvent={handleJobEvent}
               onConfirm={() => void confirmImport(item)}
+              onReimportExisting={reimportExisting}
               onRememberChange={(remember) =>
                 dispatch({ type: "remember_toggled", clientId: item.clientId, remember })
               }
@@ -248,7 +273,7 @@ function ImportScreen() {
         </div>
       ) : null}
 
-      <ImportedStatementsPanel userId={sel.selectedUserId} />
+      <ImportedStatementsPanel userId={sel.selectedUserId} onFinishImport={finishImport} request={openRequest} />
 
       <FolderImportsPanel />
     </Page>

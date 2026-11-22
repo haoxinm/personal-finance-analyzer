@@ -357,7 +357,7 @@ class TransactionPatch(_Model):
     #: units, positive = money out (I5), non-zero.
     posted_date: date | None = None
     amount_minor: int | None = None
-    description_clean: str | None = Field(default=None, max_length=200)
+    description_clean: str | None = None
     #: Corrected fields to put back to their imported value.
     revert_fields: list[Literal["posted_date", "amount_minor", "description_clean"]] = Field(
         default_factory=list
@@ -375,8 +375,10 @@ class TransactionPatch(_Model):
         value = value.strip()
         if not value:
             raise ValueError("description must not be blank")
-        if any(unicodedata.category(ch) == "Cc" for ch in value):
-            raise ValueError("description must not contain control characters")
+        if len(value) > 200:
+            raise ValueError("description must be at most 200 characters")
+        if any(unicodedata.category(ch) in ("Cc", "Cf") or ch in "\u2028\u2029" for ch in value):
+            raise ValueError("description must not contain control or invisible characters")
         return value
 
     @field_validator("amount_minor")

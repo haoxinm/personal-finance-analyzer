@@ -26,7 +26,10 @@ export function toTransactionsQuery(filters: SpendQueryParams, grid?: GridParams
     amount_min_minor: filters.amountMinMinor,
     amount_max_minor: filters.amountMaxMinor,
     kinds: filters.kinds as Kind[] | undefined,
-    include_non_spend: filters.includeNonSpend,
+    // A statement's own rows include its payments, so the count matches the statement card; the
+    // spend-only default stays for every other view (an explicit `include_non_spend` still wins).
+    include_non_spend:
+      filters.includeNonSpend ?? (grid?.statementId !== undefined ? true : undefined),
     search: filters.search,
     currency: filters.currency,
     // Grid-only filters (`use-grid-params.ts`); omitted when no `grid` is given.

@@ -276,7 +276,7 @@ def patch_transaction(
             kind=body.kind.value if body.kind is not None else None,
             create_rule=body.create_rule,
         )
-        session.commit()
+        session.flush()
         session.refresh(txn)
 
     remaining_kind = (
@@ -284,7 +284,6 @@ def patch_transaction(
     )
     if remaining_kind is not None or body.notes is not None:
         crud.update_transaction_fields(session, txn, kind=remaining_kind, notes=body.notes)
-        session.commit()
 
     if body.revert_fields or any(v is not None for v in given.values()):
         crud.apply_field_corrections(
@@ -295,8 +294,8 @@ def patch_transaction(
             amount_minor=body.amount_minor,
             revert_fields=body.revert_fields,
         )
-        session.commit()
 
+    session.commit()  # one transaction: category + kind/notes + corrections land together
     return _transaction_response(session, txn)
 
 

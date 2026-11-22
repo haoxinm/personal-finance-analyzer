@@ -690,3 +690,26 @@ def test_only_problems_can_be_dismissed(setup: FolderScanner, session: Session) 
     assert scanner_mod.dismiss(session, done.id) is False
     assert scanner_mod.undismiss(session, done.id) is False
     assert scanner_mod.dismiss(session, 9999) is False
+
+
+def test_a_dismissed_failure_finished_by_hand_is_undismissed_when_settled(
+    setup: FolderScanner, session: Session
+) -> None:
+    from personal_finance_analyzer.db.models import Statement, utcnow_iso
+
+    put_statement("loose.pdf")
+    scan_stable(setup)
+    statement = Statement(
+        file_sha256="e" * 64, original_name="loose.pdf", status="parsed", ingested_at=utcnow_iso()
+    )
+    session.add(statement)
+    session.flush()
+    record = records(session)["loose.pdf"]
+    record.outcome = "failed"
+    record.statement_id = statement.id
+    record.dismissed_at = utcnow_iso()
+    session.commit()
+
+    setup._settle_records(session, records(session))
+    settled = records(session)["loose.pdf"]
+    assert settled.outcome == "imported" and settled.dismissed_at is None

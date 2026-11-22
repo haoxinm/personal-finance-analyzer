@@ -105,4 +105,71 @@ describe("Dialog", () => {
     expect(screen.getByRole("dialog").className).toContain("max-h-[calc(100dvh-2rem)]");
     expect(screen.getByRole("button", { name: "Save" })).toBeVisible();
   });
+
+  it("routes Escape and an overlay press to onRequestClose when given, leaving onClose alone", async () => {
+    const onClose = vi.fn();
+    const onRequestClose = vi.fn();
+    render(
+      <Dialog aria-label="Guarded" onClose={onClose} onRequestClose={onRequestClose}>
+        <DialogBody>
+          <input aria-label="Field" />
+        </DialogBody>
+      </Dialog>,
+    );
+    await userEvent.keyboard("{Escape}");
+    await userEvent.click(screen.getByTestId("dialog-overlay"));
+    expect(onRequestClose).toHaveBeenCalledTimes(2);
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("skips tabindex=-1, disabled and hidden controls in the Tab trap", async () => {
+    render(
+      <Dialog aria-label="Trap" onClose={vi.fn()}>
+        <DialogBody>
+          <input aria-label="First" />
+          <button tabIndex={-1}>Skipped</button>
+          <button disabled>Disabled</button>
+          <div hidden>
+            <button>Hidden</button>
+          </div>
+          <input aria-label="Last" />
+        </DialogBody>
+      </Dialog>,
+    );
+    screen.getByLabelText("Last").focus();
+    await userEvent.tab();
+    expect(screen.getByLabelText("First")).toHaveFocus();
+    await userEvent.tab({ shift: true });
+    expect(screen.getByLabelText("Last")).toHaveFocus();
+  });
+
+  it("makes the rest of the app inert while open, except exempt elements, and undoes it", async () => {
+    render(
+      <>
+        <Harness />
+        <div data-testid="toasts" data-dialog-exempt="">
+          toast
+        </div>
+      </>,
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Open" }));
+    expect(screen.getByTestId("app")).toHaveAttribute("inert");
+    expect(screen.getByTestId("app")).toHaveAttribute("aria-hidden", "true");
+    expect(screen.getByTestId("toasts")).not.toHaveAttribute("inert");
+    await userEvent.keyboard("{Escape}");
+    expect(screen.getByTestId("app")).not.toHaveAttribute("inert");
+    expect(screen.getByTestId("app")).not.toHaveAttribute("aria-hidden");
+  });
+
+  it("compensates for the scrollbar it removes and restores the padding", async () => {
+    const original = document.documentElement.clientWidth;
+    Object.defineProperty(document.documentElement, "clientWidth", { configurable: true, value: window.innerWidth - 15 });
+    document.body.style.paddingRight = "";
+    render(<Harness />);
+    await userEvent.click(screen.getByRole("button", { name: "Open" }));
+    expect(document.body.style.paddingRight).toBe("15px");
+    await userEvent.keyboard("{Escape}");
+    expect(document.body.style.paddingRight).toBe("");
+    Object.defineProperty(document.documentElement, "clientWidth", { configurable: true, value: original });
+  });
 });

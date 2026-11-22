@@ -93,6 +93,9 @@ export function usePatchTransaction() {
       void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
       void queryClient.invalidateQueries({ queryKey: ["review"] });
       void queryClient.invalidateQueries({ queryKey: ["statements"] });
+      // Tax and net-worth screens read corrected transactions too (income by payer, balances).
+      void queryClient.invalidateQueries({ queryKey: ["net-worth"] });
+      void queryClient.invalidateQueries({ queryKey: ["tax"] });
     },
   });
 }

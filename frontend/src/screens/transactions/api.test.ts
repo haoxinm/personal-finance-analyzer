@@ -53,6 +53,13 @@ describe("toTransactionsQuery grid filters", () => {
     expect(toTransactionsQuery({})).not.toHaveProperty("needs_review");
   });
 
+  it("includes payments and other non-spend kinds when a statement is opened, unless told otherwise", () => {
+    expect(toTransactionsQuery({}, { statementId: 4, sort: "-posted_date" }).include_non_spend).toBe(true);
+    expect(toTransactionsQuery({ includeNonSpend: false }, { statementId: 4, sort: "-posted_date" }).include_non_spend).toBe(false);
+    expect(toTransactionsQuery({}, { sort: "-posted_date" }).include_non_spend).toBeUndefined();
+    expect(toTransactionsQuery({}).include_non_spend).toBeUndefined();
+  });
+
   it("carries the conflicting-suggestions filter as ?conflict=", () => {
     expect(toTransactionsQuery({}, { conflict: true, sort: "-posted_date" })).toMatchObject({
       conflict: true,

@@ -12,16 +12,20 @@ export type ResolvedTheme = "light" | "dark";
 export const THEME_STORAGE_KEY = "pfa:theme";
 const DARK_QUERY = "(prefers-color-scheme: dark)";
 
+/** The last choice made in this page view; used when storage is blocked so it is not forgotten. */
+let memoryPreference: ThemePreference | null = null;
+
 export function readThemePreference(): ThemePreference {
   try {
     const stored = window.localStorage.getItem(THEME_STORAGE_KEY);
     return stored === "light" || stored === "dark" ? stored : "system";
   } catch {
-    return "system";
+    return memoryPreference ?? "system";
   }
 }
 
 export function writeThemePreference(preference: ThemePreference): void {
+  memoryPreference = preference;
   try {
     if (preference === "system") window.localStorage.removeItem(THEME_STORAGE_KEY);
     else window.localStorage.setItem(THEME_STORAGE_KEY, preference);
@@ -55,18 +59,20 @@ export function applyTheme(resolved: ResolvedTheme, preference: ThemePreference)
 let preferenceState: ThemePreference = "system";
 let resolvedState: ResolvedTheme = "light";
 // A primitive string snapshot: stable between changes, so React does not re-render needlessly.
-let snapshot = `${preferenceState}:${resolvedState}`;
+let systemDarkState = false;
+let snapshot = `${preferenceState}:${resolvedState}:${systemDarkState}`;
 const listeners = new Set<() => void>();
 
 function emit(): void {
-  snapshot = `${preferenceState}:${resolvedState}`;
+  snapshot = `${preferenceState}:${resolvedState}:${systemDarkState}`;
   listeners.forEach((l) => l());
 }
 
 /** Re-read preference + OS setting, apply to <html>, and notify subscribers. */
 function sync(): void {
   preferenceState = readThemePreference();
-  resolvedState = resolveTheme(preferenceState, systemPrefersDark());
+  systemDarkState = systemPrefersDark();
+  resolvedState = resolveTheme(preferenceState, systemDarkState);
   applyTheme(resolvedState, preferenceState);
   emit();
 }
@@ -95,7 +101,8 @@ export function setThemePreference(preference: ThemePreference): void {
   writeThemePreference(preference);
   // Apply what the user chose even if storage refused the write.
   preferenceState = preference;
-  resolvedState = resolveTheme(preference, systemPrefersDark());
+  systemDarkState = systemPrefersDark();
+  resolvedState = resolveTheme(preference, systemDarkState);
   applyTheme(resolvedState, preference);
   emit();
 }

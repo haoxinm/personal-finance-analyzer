@@ -69,7 +69,12 @@ export default function TransactionsScreen() {
   // The selection is "everything the filters match" (from `handleSelectAllMatching`), not rows
   // the user ticked: bulk apply then asks for confirmation. Any manual change ends it.
   const [allMatchingSelected, setAllMatchingSelected] = React.useState(false);
-  const [editing, setEditing] = React.useState<Transaction | null>(null);
+  const [editing, setEditingRaw] = React.useState<Transaction | null>(null);
+  const [saveError, setSaveError] = React.useState<string | null>(null);
+  const setEditing = React.useCallback((txn: Transaction | null) => {
+    setSaveError(null);
+    setEditingRaw(txn);
+  }, []);
   // After the editor closes, its opener (the row's Edit button) may unmount because the saved row
   // left the filter; focus then falls back to the grid container instead of <body>.
   const gridFocusRef = React.useRef<HTMLDivElement>(null);
@@ -141,7 +146,7 @@ export default function TransactionsScreen() {
       onToggleRow: toggleRow,
       onEdit: setEditing,
     }),
-    [categories, selectedIds, toggleRow],
+    [categories, selectedIds, toggleRow, setEditing],
   );
 
   async function handleSelectAllMatching() {
@@ -206,6 +211,7 @@ export default function TransactionsScreen() {
     createRule?: boolean;
   }) {
     if (!editing) return;
+    setSaveError(null);
     try {
       await patchTransaction.mutateAsync({
         id: editing.id,
@@ -225,9 +231,12 @@ export default function TransactionsScreen() {
       toast({ title: "Saved" });
       setEditing(null);
     } catch (error) {
+      const message = error instanceof Error ? error.message : undefined;
+      // Inline too: the dialog's footer is where the eyes are, and a toast can be missed.
+      setSaveError(message ? `Could not save: ${message}` : "Could not save this transaction.");
       toast({
         title: "Could not save transaction",
-        description: error instanceof Error ? error.message : undefined,
+        description: message,
         variant: "destructive",
       });
     }
@@ -348,7 +357,7 @@ export default function TransactionsScreen() {
         />
       ) : (
         <>
-          <div ref={gridFocusRef} tabIndex={-1} className="outline-none" data-testid="transactions-grid">
+          <div ref={gridFocusRef} tabIndex={-1} className="min-w-0 outline-none" data-testid="transactions-grid">
           <TransactionsTable
             rows={rows}
             context={columnsContext}
@@ -386,6 +395,7 @@ export default function TransactionsScreen() {
           conflict={candidates.data?.conflict}
           onApplySuggestion={handleApplySuggestion}
           onRevert={handleRevertEditing}
+          saveError={saveError}
         />
       ) : null}
     </Page>
