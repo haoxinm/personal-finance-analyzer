@@ -238,6 +238,33 @@ describe("ReviewScreen", () => {
     expect(screen.queryByText(/Accept \+ create rule/)).not.toBeInTheDocument();
   });
 
+  it("keeps the amount and the rule button reachable for very long text", async () => {
+    const long = "VERYLONGMERCHANT".repeat(20);
+    await renderScreen({
+      transactions: [
+        makeTransaction({
+          id: 1,
+          description_clean: long,
+          description_raw: `${long} RAW`,
+          merchant_key: long,
+          amount_minor: 123456,
+        }),
+      ],
+      categories: CATEGORIES,
+    });
+    const title = await screen.findByText(long, { selector: "div, h3, h2, p" });
+    const left = title.closest(".min-w-0");
+    expect(left?.className).toContain("flex-1");
+    expect(left?.className).toContain("[overflow-wrap:anywhere]");
+    const amount = screen.getByLabelText("outflow $1,234.56");
+    expect(amount.parentElement?.className).toContain("shrink-0");
+    expect(screen.getByText(`${long} RAW`).className).toContain("break-all");
+    const rule = screen.getByRole("button", { name: `Always categorize “${long}” this way` });
+    expect(rule.className).toContain("whitespace-normal");
+    expect(rule.className).toContain("max-w-full");
+    expect(within(rule).getByTitle(long).className).toContain("truncate");
+  });
+
   it("says Accept is for this transaction only and the other button saves a rule", async () => {
     const { fetchMock } = await renderScreen({
       transactions: [makeTransaction({ id: 1, merchant_key: "trader joes", category_key: "groceries", subcategory_key: "groceries" })],

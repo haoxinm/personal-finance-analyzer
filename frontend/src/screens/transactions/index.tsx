@@ -23,7 +23,7 @@ import {
 } from "./api";
 import { BulkBar } from "./bulk-bar";
 import type { ColumnsContext } from "./columns";
-import { EditPopover } from "./edit-popover";
+import { EditPopover, type CorrectableField } from "./edit-popover";
 import { FiltersBar } from "./filters";
 import { TransactionsTable } from "./table";
 import type { Transaction } from "./types";
@@ -199,6 +199,10 @@ export default function TransactionsScreen() {
     subcategoryKey?: string;
     kind?: Transaction["kind"];
     notes?: string;
+    postedDate?: string;
+    descriptionClean?: string;
+    amountMinor?: number;
+    revertFields?: CorrectableField[];
     createRule?: boolean;
   }) {
     if (!editing) return;
@@ -210,10 +214,15 @@ export default function TransactionsScreen() {
           subcategory_key: patch.subcategoryKey,
           kind: patch.kind,
           notes: patch.notes,
+          posted_date: patch.postedDate,
+          description_clean: patch.descriptionClean,
+          amount_minor: patch.amountMinor,
+          revert_fields: patch.revertFields,
           // Off unless the popover's "Also create a rule" box was ticked: an edit is one-time.
           create_rule: patch.createRule ?? false,
         },
       });
+      toast({ title: "Saved" });
       setEditing(null);
     } catch (error) {
       toast({

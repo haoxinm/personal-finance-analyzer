@@ -298,14 +298,14 @@ function TransactionCard({
   return (
     <Card>
       <CardHeader className="flex-row items-start justify-between gap-4">
-        <div>
+        <div className="min-w-0 flex-1 break-words [overflow-wrap:anywhere]">
           <CardTitle className="text-base font-semibold">{transaction.description_clean}</CardTitle>
           <RawDescription transaction={transaction} />
           <p className="mt-1 text-xs text-muted-foreground">
             {transaction.posted_date} · #{position + 1} of {total}
           </p>
         </div>
-        <div className="flex flex-col items-end gap-1">
+        <div className="flex shrink-0 flex-col items-end gap-1">
           <Money minorUnits={transaction.amount_minor} currency={transaction.currency} className="text-lg font-semibold" />
           {effectiveCategoryKey ? (
             <CategoryBadge categoryKey={effectiveCategoryKey} needsReview={transaction.needs_review} />
@@ -314,7 +314,7 @@ function TransactionCard({
           )}
         </div>
       </CardHeader>
-      <CardContent className="flex flex-col gap-4">
+      <CardContent className="flex min-w-0 flex-col gap-4">
         <CategoryPicker
           categories={categories}
           stagedCategoryKey={effectiveCategoryKey}
@@ -355,14 +355,25 @@ function TransactionCard({
           <Button
             type="button"
             variant="secondary"
+            className="h-auto min-h-9 max-w-full whitespace-normal py-1.5 text-left"
             onClick={onAcceptAndCreateRule}
             disabled={disabled || ruleLabel === ""}
             aria-label={ruleLabel === "" ? "Always categorize this way" : `Always categorize “${ruleLabel}” this way`}
             aria-keyshortcuts="r"
             title="Accepts this one and saves a rule: every future import of this merchant is categorized this way automatically. Transactions you already edited by hand are never changed by it."
           >
-            {ruleLabel === "" ? "Always categorize this way" : `Always categorize “${ruleLabel}” this way`}
-            <Kbd>r</Kbd>
+            {ruleLabel === "" ? (
+              "Always categorize this way"
+            ) : (
+              <span className="min-w-0">
+                Always categorize “
+                <span className="inline-block max-w-[18rem] truncate align-bottom" title={ruleLabel ?? undefined}>
+                  {ruleLabel}
+                </span>
+                ” this way
+              </span>
+            )}
+            <Kbd className="shrink-0">r</Kbd>
           </Button>
         </div>
         <p className="text-xs text-muted-foreground">
@@ -380,7 +391,7 @@ function RawDescription({ transaction }: { transaction: Transaction }) {
   if (transaction.description_raw === transaction.description_clean) return null;
   return (
     <p className="text-xs text-muted-foreground">
-      Raw: <span className="font-mono">{transaction.description_raw}</span>
+      Raw: <span className="break-all font-mono">{transaction.description_raw}</span>
     </p>
   );
 }

@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
@@ -270,5 +270,126 @@ describe("EditPopover suggestions", () => {
       />,
     );
     expect(screen.queryByRole("button", { name: "Revert to automatic" })).not.toBeInTheDocument();
+  });
+});
+
+describe("EditPopover details (corrections)", () => {
+  const amount = () => screen.getByRole("textbox", { name: /^Amount/ });
+
+  it("shows a summary of the transaction being edited", () => {
+    setup(makeTransaction({ description_raw: "ACME RAW 123", description_clean: "Acme" }));
+    const summary = screen.getByTestId("edit-summary");
+    expect(summary).toHaveTextContent("2026-01-05");
+    expect(summary).toHaveTextContent("Acme");
+    expect(summary).toHaveTextContent("As printed: ACME RAW 123");
+  });
+
+  it("prefills date, description and the amount magnitude with its direction", () => {
+    setup(makeTransaction());
+    expect(screen.getByLabelText("Date")).toHaveValue("2026-01-05");
+    expect(screen.getByLabelText("Description")).toHaveValue("ACME DEPOSIT");
+    expect(amount()).toHaveValue("2500.00");
+    expect(screen.getByRole("radio", { name: "Money in" })).toBeChecked();
+  });
+
+  it("sends only changed detail fields", async () => {
+    const { onSave, save } = setup(makeTransaction({ amount_minor: 1000 }));
+    await userEvent.clear(screen.getByLabelText("Description"));
+    await userEvent.type(screen.getByLabelText("Description"), "  Better name ");
+    fireEvent.change(screen.getByLabelText("Date"), { target: { value: "2026-01-06" } });
+    await userEvent.click(save());
+    expect(onSave).toHaveBeenCalledWith({
+      postedDate: "2026-01-06",
+      descriptionClean: "Better name",
+    });
+  });
+
+  it("signs the amount from the direction: out is positive, in is negative", async () => {
+    const { onSave, save } = setup(makeTransaction({ amount_minor: 1000 }));
+    await userEvent.clear(amount());
+    await userEvent.type(amount(), "12.5");
+    await userEvent.click(save());
+    expect(onSave).toHaveBeenLastCalledWith({ amountMinor: 1250 });
+
+    await userEvent.click(screen.getByRole("radio", { name: "Money in" }));
+    await userEvent.click(save());
+    expect(onSave).toHaveBeenLastCalledWith({ amountMinor: -1250 });
+  });
+
+  it("flipping only the direction changes the sign", async () => {
+    const { onSave, save } = setup(makeTransaction({ amount_minor: 1000 }));
+    await userEvent.click(screen.getByRole("radio", { name: "Money in" }));
+    await userEvent.click(save());
+    expect(onSave).toHaveBeenCalledWith({ amountMinor: -1000 });
+  });
+
+  it("disables Save with an inline error for an invalid amount, then recovers", async () => {
+    const { save } = setup(makeTransaction({ notes: "n" }));
+    await userEvent.type(screen.getByLabelText("Notes"), "x");
+    expect(save()).toBeEnabled();
+    await userEvent.clear(amount());
+    await userEvent.type(amount(), "1.234");
+    expect(save()).toBeDisabled();
+    expect(amount()).toHaveAttribute("aria-invalid", "true");
+    expect(screen.getByRole("alert")).toHaveTextContent(/at most 2 decimals/);
+    await userEvent.clear(amount());
+    await userEvent.type(amount(), "1.23");
+    expect(save()).toBeEnabled();
+  });
+
+  it("disables Save for an empty description or date", () => {
+    const { save } = setup(makeTransaction());
+    fireEvent.change(screen.getByLabelText("Description"), { target: { value: "   " } });
+    expect(save()).toBeDisabled();
+    expect(screen.getByLabelText("Description")).toHaveAttribute("aria-invalid", "true");
+    fireEvent.change(screen.getByLabelText("Description"), { target: { value: "ok" } });
+    expect(save()).toBeEnabled();
+    fireEvent.change(screen.getByLabelText("Date"), { target: { value: "" } });
+    expect(save()).toBeDisabled();
+  });
+
+  it("offers Imported as / Restore only for corrected fields", () => {
+    setup(
+      makeTransaction({
+        description_clean: "Fixed",
+        corrections: { description_clean: "FIXD 99", amount_minor: null },
+      }),
+    );
+    expect(screen.getByRole("button", { name: "Restore imported description" })).toBeInTheDocument();
+    expect(screen.getByText("FIXD 99")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Restore imported date" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Restore imported amount" })).not.toBeInTheDocument();
+  });
+
+  it("restoring then saving sends revertFields instead of a value", async () => {
+    const { onSave, save } = setup(
+      makeTransaction({
+        description_clean: "Fixed",
+        amount_minor: 2000,
+        posted_date: "2026-01-09",
+        corrections: { description_clean: "FIXD 99", amount_minor: -2000, posted_date: "2026-01-05" },
+      }),
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Restore imported description" }));
+    await userEvent.click(screen.getByRole("button", { name: "Restore imported amount" }));
+    await userEvent.click(screen.getByRole("button", { name: "Restore imported date" }));
+    expect(screen.getByLabelText("Description")).toHaveValue("FIXD 99");
+    expect(amount()).toHaveValue("20.00");
+    expect(screen.getByRole("radio", { name: "Money in" })).toBeChecked();
+    await userEvent.click(save());
+    expect(onSave).toHaveBeenCalledWith({
+      revertFields: ["posted_date", "description_clean", "amount_minor"],
+    });
+  });
+
+  it("wraps long unbroken text instead of widening the dialog", () => {
+    const long = "A".repeat(400);
+    setup(makeTransaction({ description_clean: long, description_raw: long + "RAW", merchant_key: long }));
+    const dialog = screen.getByRole("dialog");
+    const body = dialog.querySelector("[data-dialog-body]");
+    expect(body?.className).toContain("[overflow-wrap:anywhere]");
+    expect(body?.className).toContain("overflow-y-auto");
+    expect(screen.getByText(/As printed:/).className).toContain("break-all");
+    expect(screen.getByRole("button", { name: "Save" })).toBeInTheDocument();
   });
 });

@@ -1,10 +1,30 @@
 import * as React from "react";
 
+import { Money } from "@/components/primitives/money";
+import { SegmentedControl } from "@/components/primitives/segmented-control";
 import { SuggestionChips } from "@/components/primitives/suggestion-chips";
 import type { SuggestionCandidate } from "@/components/primitives/suggestion-labels";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogBody,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 
+import { formatAmountInput, parseAmountInput } from "./amount-input";
 import { KINDS, type Category, type Kind, type Transaction } from "./types";
+
+export type CorrectableField = "posted_date" | "amount_minor" | "description_clean";
+
+type Direction = "out" | "in";
+
+const DIRECTION_OPTIONS = [
+  { value: "out", label: "Money out" },
+  { value: "in", label: "Money in" },
+] as const;
 
 export interface EditPopoverProps {
   transaction: Transaction;
@@ -15,6 +35,13 @@ export interface EditPopoverProps {
     subcategoryKey?: string;
     kind?: Kind;
     notes?: string;
+    /** Corrected values (the imported value is kept by the server and can be restored). */
+    postedDate?: string;
+    descriptionClean?: string;
+    /** Signed minor units: positive = money out, negative = money in (I5). */
+    amountMinor?: number;
+    /** Fields put back to their imported value. Never also present as a value. */
+    revertFields?: CorrectableField[];
     /** Only present (and true) when "Also create a rule" was ticked. */
     createRule?: boolean;
   }) => void;
@@ -58,13 +85,21 @@ export function EditPopover({
   onApplySuggestion,
   onRevert,
 }: EditPopoverProps) {
+  const ids = React.useId();
   const [categoryKey, setCategoryKey] = React.useState(transaction.category_key ?? "");
   const [subcategoryKey, setSubcategoryKey] = React.useState(transaction.subcategory_key ?? "");
   const [kind, setKind] = React.useState<Kind>(transaction.kind);
   const [notes, setNotes] = React.useState(transaction.notes ?? "");
   const [createRule, setCreateRule] = React.useState(false);
+  const [postedDate, setPostedDate] = React.useState(transaction.posted_date);
+  const [description, setDescription] = React.useState(transaction.description_clean);
+  const [direction, setDirection] = React.useState<Direction>(
+    transaction.amount_minor < 0 ? "in" : "out",
+  );
+  const [amountText, setAmountText] = React.useState(formatAmountInput(transaction.amount_minor));
 
   const selectedCategory = categories.find((c) => c.key === categoryKey);
+  const corrections = transaction.corrections ?? null;
 
   React.useEffect(() => {
     // Reset the subcategory whenever the category changes to one that doesn't have it,
@@ -82,146 +117,312 @@ export function EditPopover({
   const categoryComplete = categoryKey !== "" && subcategoryKey !== "";
   const kindChanged = kind !== transaction.kind;
   const notesChanged = notes !== (transaction.notes ?? "");
+
+  // Details (corrections). Each is validated on its own; an invalid one blocks Save.
+  const dateError = postedDate === "" ? "Enter a valid date." : null;
+  const trimmedDescription = description.trim();
+  const descriptionError =
+    trimmedDescription === "" ? "Enter a description." : null;
+  const parsedAmount = parseAmountInput(amountText);
+  const amountError =
+    parsedAmount === null
+      ? "Enter an amount above 0, with at most 2 decimals (for example 12.50)."
+      : null;
+  const signedAmount =
+    parsedAmount === null ? null : direction === "out" ? parsedAmount : -parsedAmount;
+
+  const dateChanged = dateError === null && postedDate !== transaction.posted_date;
+  const descriptionChanged =
+    descriptionError === null && trimmedDescription !== transaction.description_clean;
+  const amountChanged = signedAmount !== null && signedAmount !== transaction.amount_minor;
+  const detailsValid = dateError === null && descriptionError === null && amountError === null;
+
+  const importedDate = corrections?.posted_date ?? null;
+  const importedDescription = corrections?.description_clean ?? null;
+  const importedAmount = corrections?.amount_minor ?? null;
+
   const canSave =
+    detailsValid &&
     (categoryChanged ? categoryComplete : true) &&
-    ((categoryChanged && categoryComplete) || kindChanged || notesChanged);
+    ((categoryChanged && categoryComplete) ||
+      kindChanged ||
+      notesChanged ||
+      dateChanged ||
+      descriptionChanged ||
+      amountChanged);
   // A rule needs a merchant to match and a category to apply, so the box only works alongside a
   // complete category change.
   const merchant = transaction.merchant_key ?? "";
   const canCreateRule = merchant !== "" && categoryChanged && categoryComplete;
   const ruleRequested = createRule && canCreateRule;
 
-  // Keyboard users: focus moves into the dialog, Escape closes it, and focus goes back to the
-  // control that opened it (the row's Edit button) when it unmounts.
-  const dialogRef = React.useRef<HTMLDivElement>(null);
-  React.useEffect(() => {
-    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    dialogRef.current?.querySelector<HTMLElement>("select, textarea, button")?.focus();
-    return () => opener?.focus();
-  }, []);
+  function buildPatch(): Parameters<EditPopoverProps["onSave"]>[0] {
+    const revertFields: CorrectableField[] = [];
+    const patch: Parameters<EditPopoverProps["onSave"]>[0] = {
+      ...(categoryChanged && categoryComplete ? { categoryKey, subcategoryKey } : {}),
+      ...(kindChanged ? { kind } : {}),
+      ...(notesChanged ? { notes } : {}),
+      ...(ruleRequested ? { createRule: true } : {}),
+    };
+    // Editing a corrected field back to its imported value is a revert, not a new correction.
+    if (dateChanged) {
+      if (importedDate !== null && postedDate === importedDate) revertFields.push("posted_date");
+      else patch.postedDate = postedDate;
+    }
+    if (descriptionChanged) {
+      if (importedDescription !== null && trimmedDescription === importedDescription)
+        revertFields.push("description_clean");
+      else patch.descriptionClean = trimmedDescription;
+    }
+    if (amountChanged && signedAmount !== null) {
+      if (importedAmount !== null && signedAmount === importedAmount)
+        revertFields.push("amount_minor");
+      else patch.amountMinor = signedAmount;
+    }
+    if (revertFields.length > 0) patch.revertFields = revertFields;
+    return patch;
+  }
+
+  const showRaw = transaction.description_raw !== transaction.description_clean;
+  const fieldClass =
+    "h-9 rounded-md border border-input bg-transparent px-2 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring aria-[invalid=true]:border-destructive";
+  const selectClass = "h-9 rounded-md border border-input bg-transparent px-2 text-sm";
 
   return (
-    <div
-      className="fixed inset-0 z-20 flex items-center justify-center bg-black/30 p-4"
-      onClick={onClose}
-    >
-    <div
-      ref={dialogRef}
-      role="dialog"
-      aria-modal="true"
-      aria-label={`Edit transaction ${transaction.id}`}
-      onClick={(e) => e.stopPropagation()}
-      onKeyDown={(e) => {
-        if (e.key === "Escape") {
-          onClose();
-          return;
-        }
-        if (e.key !== "Tab") return;
-        // aria-modal: keep Tab / Shift+Tab inside the dialog.
-        const focusable = Array.from(
-          e.currentTarget.querySelectorAll<HTMLElement>(
-            "select:not([disabled]), textarea:not([disabled]), input:not([disabled]), button:not([disabled]), [tabindex]:not([tabindex='-1'])",
-          ),
-        );
-        const first = focusable[0];
-        const last = focusable[focusable.length - 1];
-        if (!first || !last) {
-          e.preventDefault();
-          return;
-        }
-        const active = document.activeElement;
-        if (e.shiftKey && (active === first || !e.currentTarget.contains(active))) {
-          e.preventDefault();
-          last.focus();
-        } else if (!e.shiftKey && (active === last || !e.currentTarget.contains(active))) {
-          e.preventDefault();
-          first.focus();
-        }
-      }}
-      className="flex w-80 flex-col gap-3 rounded-md border border-border bg-background p-4 shadow-lg"
-    >
-      {candidates && onApplySuggestion ? (
-        <SuggestionChips
-          candidates={candidates}
-          conflict={conflict}
-          categories={categories}
-          onApply={onApplySuggestion}
-          onRevert={onRevert}
-          disabled={saving}
-        />
-      ) : null}
-      <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-        Category
-        <select
-          className="h-9 rounded-md border border-input bg-transparent px-2 text-sm"
-          value={categoryKey}
-          onChange={(e) => setCategoryKey(e.target.value)}
-        >
-          <option value="">Choose a category</option>
-          {categories.map((category) => (
-            <option key={category.key} value={category.key}>
-              {category.name}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-        Subcategory
-        <select
-          className="h-9 rounded-md border border-input bg-transparent px-2 text-sm"
-          value={subcategoryKey}
-          onChange={(e) => setSubcategoryKey(e.target.value)}
-          disabled={!selectedCategory}
-        >
-          <option value="">Choose a subcategory</option>
-          {selectedCategory?.subcategories.map((subcategory) => (
-            <option key={subcategory.key} value={subcategory.key}>
-              {subcategory.name}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-        Kind
-        <select
-          className="h-9 rounded-md border border-input bg-transparent px-2 text-sm"
-          value={kind}
-          onChange={(e) => setKind(e.target.value as Kind)}
-        >
-          {KINDS.map((k) => (
-            <option key={k} value={k}>
-              {k}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-        Notes
-        <textarea
-          className="min-h-16 rounded-md border border-input bg-transparent px-2 py-1.5 text-sm text-foreground"
-          value={notes}
-          onChange={(e) => setNotes(e.target.value)}
-        />
-      </label>
-      <p className="text-xs text-muted-foreground" data-testid="edit-scope-note">
-        This change applies to this transaction only. Rules and re-classifying will not change it.
-      </p>
-      {merchant !== "" ? (
-        <label className="flex items-start gap-2 text-xs text-muted-foreground">
-          <input
-            type="checkbox"
-            className="mt-0.5"
-            checked={ruleRequested}
-            disabled={!canCreateRule}
-            onChange={(e) => setCreateRule(e.target.checked)}
+    <Dialog onClose={onClose} aria-label={`Edit transaction ${transaction.id}`}>
+      <DialogHeader>
+        <DialogTitle>Edit transaction</DialogTitle>
+        <DialogDescription data-testid="edit-summary">
+          <div className="flex items-start justify-between gap-3">
+            {/* Clamped: a very long description must not eat the scrolling body's space. The
+                full text is in the Description field below and in the tooltip. */}
+            <div
+              className="line-clamp-3 min-w-0"
+              title={`${transaction.posted_date} · ${transaction.description_clean}`}
+            >
+              <span className="whitespace-nowrap">{transaction.posted_date}</span>
+              {" · "}
+              <span className="text-foreground">{transaction.description_clean}</span>
+            </div>
+            <Money
+              minorUnits={transaction.amount_minor}
+              currency={transaction.currency}
+              className="shrink-0 font-semibold"
+            />
+          </div>
+          {showRaw ? (
+            <p className="mt-1 line-clamp-2 break-all font-mono text-xs" title={transaction.description_raw}>
+              As printed: {transaction.description_raw}
+            </p>
+          ) : null}
+        </DialogDescription>
+      </DialogHeader>
+      <DialogBody>
+        {candidates && onApplySuggestion ? (
+          <SuggestionChips
+            candidates={candidates}
+            conflict={conflict}
+            categories={categories}
+            onApply={onApplySuggestion}
+            onRevert={onRevert}
+            disabled={saving}
           />
-          <span>
-            Also create a rule for “{merchant}”: future transactions from this merchant get this
-            category. Existing ones change only if you apply the rule on the Rules screen.
-          </span>
+        ) : null}
+        <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+          Category
+          <select
+            className={selectClass}
+            value={categoryKey}
+            onChange={(e) => setCategoryKey(e.target.value)}
+          >
+            <option value="">Choose a category</option>
+            {categories.map((category) => (
+              <option key={category.key} value={category.key}>
+                {category.name}
+              </option>
+            ))}
+          </select>
         </label>
-      ) : null}
-      <div className="flex justify-end gap-2">
+        <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+          Subcategory
+          <select
+            className={selectClass}
+            value={subcategoryKey}
+            onChange={(e) => setSubcategoryKey(e.target.value)}
+            disabled={!selectedCategory}
+          >
+            <option value="">Choose a subcategory</option>
+            {selectedCategory?.subcategories.map((subcategory) => (
+              <option key={subcategory.key} value={subcategory.key}>
+                {subcategory.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+          Kind
+          <select
+            className={selectClass}
+            value={kind}
+            onChange={(e) => setKind(e.target.value as Kind)}
+          >
+            {KINDS.map((k) => (
+              <option key={k} value={k}>
+                {k}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <fieldset className="flex min-w-0 flex-col gap-3 rounded-md border border-border p-3">
+          <legend className="px-1 text-xs font-medium text-foreground">Details</legend>
+          <p className="text-xs text-muted-foreground">
+            Fix something the statement parser got wrong. The imported value is kept, so you can
+            restore it.
+          </p>
+
+          <div className="flex flex-col gap-1">
+            <label htmlFor={`${ids}-date`} className="text-xs text-muted-foreground">
+              Date
+            </label>
+            <input
+              id={`${ids}-date`}
+              type="date"
+              className={fieldClass}
+              value={postedDate}
+              min="1970-01-01"
+              aria-invalid={dateError !== null}
+              aria-describedby={dateError ? `${ids}-date-err` : undefined}
+              onChange={(e) => setPostedDate(e.target.value)}
+            />
+            {dateError ? (
+              <FieldError id={`${ids}-date-err`}>{dateError}</FieldError>
+            ) : null}
+            {importedDate !== null && postedDate !== importedDate ? (
+              <ImportedAs label="date" onRestore={() => setPostedDate(importedDate)}>
+                {importedDate}
+              </ImportedAs>
+            ) : importedDate !== null ? (
+              <p className="text-xs text-muted-foreground">Restored to the imported date.</p>
+            ) : null}
+          </div>
+
+          <div className="flex flex-col gap-1">
+            <label htmlFor={`${ids}-desc`} className="text-xs text-muted-foreground">
+              Description
+            </label>
+            <input
+              id={`${ids}-desc`}
+              type="text"
+              maxLength={200}
+              className={fieldClass}
+              value={description}
+              aria-invalid={descriptionError !== null}
+              aria-describedby={`${descriptionError ? `${ids}-desc-err ` : ""}${ids}-desc-help`}
+              onChange={(e) => setDescription(e.target.value)}
+            />
+            {descriptionError ? (
+              <FieldError id={`${ids}-desc-err`}>{descriptionError}</FieldError>
+            ) : null}
+            <p id={`${ids}-desc-help`} className="text-xs text-muted-foreground">
+              {merchant !== ""
+                ? `Rules still match this merchant as imported (‘${merchant}’).`
+                : "Only the name shown here changes."}
+            </p>
+            {importedDescription !== null && trimmedDescription !== importedDescription ? (
+              <ImportedAs
+                label="description"
+                onRestore={() => setDescription(importedDescription)}
+              >
+                {importedDescription}
+              </ImportedAs>
+            ) : importedDescription !== null ? (
+              <p className="text-xs text-muted-foreground">Restored to the imported description.</p>
+            ) : null}
+          </div>
+
+          <div className="flex flex-col gap-1">
+            <span id={`${ids}-amount-label`} className="text-xs text-muted-foreground">
+              Amount ({transaction.currency})
+            </span>
+            <div className="flex flex-wrap items-center gap-2">
+              <SegmentedControl
+                label="Direction"
+                size="sm"
+                value={direction}
+                options={DIRECTION_OPTIONS}
+                onChange={setDirection}
+              />
+              <input
+                type="text"
+                inputMode="decimal"
+                autoComplete="off"
+                aria-labelledby={`${ids}-amount-label`}
+                className={`${fieldClass} w-32 min-w-0 flex-1 text-right tabular-nums`}
+                value={amountText}
+                aria-invalid={amountError !== null}
+                aria-describedby={`${amountError ? `${ids}-amount-err ` : ""}${ids}-amount-help`}
+                onChange={(e) => setAmountText(e.target.value)}
+              />
+            </div>
+            {amountError ? (
+              <FieldError id={`${ids}-amount-err`}>{amountError}</FieldError>
+            ) : null}
+            <p id={`${ids}-amount-help`} className="text-xs text-muted-foreground">
+              {direction === "out"
+                ? "Money out: a purchase, fee or payment you made. "
+                : "Money in: a refund, deposit or credit. "}
+              {signedAmount !== null ? (
+                <>
+                  Saved as{" "}
+                  <Money minorUnits={signedAmount} currency={transaction.currency} />.
+                </>
+              ) : null}
+            </p>
+            {importedAmount !== null && signedAmount !== importedAmount ? (
+              <ImportedAs
+                label="amount"
+                onRestore={() => {
+                  setDirection(importedAmount < 0 ? "in" : "out");
+                  setAmountText(formatAmountInput(importedAmount));
+                }}
+              >
+                <Money minorUnits={importedAmount} currency={transaction.currency} />
+              </ImportedAs>
+            ) : importedAmount !== null ? (
+              <p className="text-xs text-muted-foreground">Restored to the imported amount.</p>
+            ) : null}
+          </div>
+        </fieldset>
+
+        <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+          Notes
+          <textarea
+            className="min-h-16 max-h-40 resize-y rounded-md border border-input bg-transparent px-2 py-1.5 text-sm text-foreground"
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+          />
+        </label>
+        <p className="text-xs text-muted-foreground" data-testid="edit-scope-note">
+          This change applies to this transaction only. Rules and re-classifying will not change it.
+        </p>
+        {merchant !== "" ? (
+          <label className="flex items-start gap-2 text-xs text-muted-foreground">
+            <input
+              type="checkbox"
+              className="mt-0.5 shrink-0"
+              checked={ruleRequested}
+              disabled={!canCreateRule}
+              onChange={(e) => setCreateRule(e.target.checked)}
+            />
+            <span className="min-w-0 [overflow-wrap:anywhere]">
+              Also create a rule for “{merchant}”: future transactions from this merchant get this
+              category. Existing ones change only if you apply the rule on the Rules screen.
+            </span>
+          </label>
+        ) : null}
+      </DialogBody>
+      <DialogFooter>
         <Button type="button" variant="outline" size="sm" onClick={onClose}>
           Cancel
         </Button>
@@ -229,19 +430,44 @@ export function EditPopover({
           type="button"
           size="sm"
           disabled={!canSave || saving}
-          onClick={() =>
-            onSave({
-              ...(categoryChanged && categoryComplete ? { categoryKey, subcategoryKey } : {}),
-              ...(kindChanged ? { kind } : {}),
-              ...(notesChanged ? { notes } : {}),
-              ...(ruleRequested ? { createRule: true } : {}),
-            })
-          }
+          onClick={() => onSave(buildPatch())}
         >
           {saving ? "Saving…" : "Save"}
         </Button>
-      </div>
-    </div>
-    </div>
+      </DialogFooter>
+    </Dialog>
+  );
+}
+
+function FieldError({ id, children }: { id: string; children: React.ReactNode }) {
+  return (
+    <p id={id} role="alert" className="text-xs text-destructive">
+      {children}
+    </p>
+  );
+}
+
+/** "Imported as X · Restore": shown only for a field the user corrected. */
+function ImportedAs({
+  label,
+  onRestore,
+  children,
+}: {
+  label: string;
+  onRestore: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <p className="text-xs text-muted-foreground">
+      Imported as <span className="text-foreground">{children}</span> ·{" "}
+      <button
+        type="button"
+        className="rounded-sm text-primary underline underline-offset-2 hover:opacity-80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        aria-label={`Restore imported ${label}`}
+        onClick={onRestore}
+      >
+        Restore
+      </button>
+    </p>
   );
 }

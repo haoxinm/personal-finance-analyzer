@@ -3,6 +3,7 @@ import type { ColumnDef } from "@tanstack/react-table";
 import { CategoryBadge } from "@/components/primitives/category-badge";
 import { Money } from "@/components/primitives/money";
 
+import { CorrectedMark } from "./corrected-mark";
 import { ConflictMarker } from "./conflict-marker";
 import type { Category, Transaction } from "./types";
 
@@ -72,7 +73,10 @@ export function createColumns(context: ColumnsContext): ColumnDef<Transaction>[]
       header: "Date",
       accessorFn: (row) => row.posted_date,
       cell: ({ row }) => (
-        <span className="whitespace-nowrap">{row.original.posted_date}</span>
+        <span className="whitespace-nowrap">
+          {row.original.posted_date}
+          {row.original.corrections?.posted_date != null ? <CorrectedMark /> : null}
+        </span>
       ),
       size: 104,
       meta: { sortKey: "posted_date" },
@@ -96,6 +100,7 @@ export function createColumns(context: ColumnsContext): ColumnDef<Transaction>[]
         >
           <span className="block truncate" title={row.original.description_clean}>
             {row.original.description_clean}
+            {row.original.corrections?.description_clean != null ? <CorrectedMark /> : null}
           </span>
         </button>
       ),
@@ -163,7 +168,10 @@ export function createColumns(context: ColumnsContext): ColumnDef<Transaction>[]
       id: "amount",
       header: "Amount",
       cell: ({ row }) => (
-        <Money minorUnits={row.original.amount_minor} currency={row.original.currency} />
+        <span className="whitespace-nowrap">
+          <Money minorUnits={row.original.amount_minor} currency={row.original.currency} />
+          {row.original.corrections?.amount_minor != null ? <CorrectedMark /> : null}
+        </span>
       ),
       size: 110,
       meta: { sortKey: "amount_minor" },

@@ -180,6 +180,43 @@ describe("TransactionsScreen", () => {
     expect(body).toMatchObject({ category_key: "groceries", subcategory_key: "supermarket" });
   });
 
+  it("sends corrected date, description and amount, and reverts, as snake_case PATCH fields", async () => {
+    const user = userEvent.setup();
+    const fetchMock = await mountWithFetch((request) => {
+      if (request.url.includes("/api/taxonomy")) return jsonResponse(CATEGORIES);
+      if (request.method === "GET" && request.url.includes("/api/transactions")) {
+        return jsonResponse({
+          items: [
+            { ...TRANSACTIONS[0], corrections: { amount_minor: 111 } },
+            TRANSACTIONS[1],
+          ],
+          total: 2,
+        });
+      }
+      if (request.method === "PATCH" && request.url.includes("/api/transactions/1")) {
+        return jsonResponse(TRANSACTIONS[0]);
+      }
+      throw new Error(`unexpected fetch: ${request.method} ${request.url}`);
+    });
+
+    await screen.findByText("Corner Store");
+    await user.click(screen.getByRole("button", { name: "Edit Corner Store" }));
+    const dialog = await screen.findByRole("dialog", { name: "Edit transaction 1" });
+    const description = within(dialog).getByLabelText("Description");
+    await user.clear(description);
+    await user.type(description, "Renamed");
+    await user.click(within(dialog).getByRole("button", { name: "Restore imported amount" }));
+    await user.click(within(dialog).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+
+    const body = (await callsTo(fetchMock, "PATCH", "/api/transactions/1")[0]!.clone().json()) as Record<
+      string,
+      unknown
+    >;
+    expect(body).toMatchObject({ description_clean: "Renamed", revert_fields: ["amount_minor"] });
+    expect(body).not.toHaveProperty("amount_minor");
+  });
+
   it("opens the editor from the keyboard and returns focus to the row's Edit button on Escape", async () => {
     const user = userEvent.setup();
     await mountWithFetch((request) => {
