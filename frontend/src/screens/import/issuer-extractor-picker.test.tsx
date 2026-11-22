@@ -44,6 +44,7 @@ async function renderPicker(
   const { IssuerExtractorPicker } = await import("./issuer-extractor-picker");
   const onIssuerChange = vi.fn();
   const onExtractorChange = vi.fn();
+  const onIssuerCreated = vi.fn();
   const item: ImportItem = {
     clientId: "c1",
     fileName: "statement.pdf",
@@ -66,10 +67,12 @@ async function renderPicker(
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <QueryClientProvider client={queryClient}>
-      <IssuerExtractorPicker item={item} onIssuerChange={onIssuerChange} onExtractorChange={onExtractorChange} />
+      <IssuerExtractorPicker item={item} onIssuerChange={onIssuerChange} onExtractorChange={onExtractorChange}
+        onIssuerCreated={onIssuerCreated}
+      />
     </QueryClientProvider>,
   );
-  return { onIssuerChange, onExtractorChange, fetchMock };
+  return { onIssuerChange, onExtractorChange, onIssuerCreated, fetchMock };
 }
 
 describe("IssuerExtractorPicker", () => {
@@ -113,6 +116,14 @@ describe("IssuerExtractorPicker", () => {
     await waitFor(() =>
       expect(onIssuerChange).toHaveBeenCalledWith(99, { kind: "parser", parserId: "layout_a_credit" }),
     );
+  });
+
+  it("tells the screen when an issuer was created, so pending files can be matched to it", async () => {
+    const { onIssuerCreated } = await renderPicker();
+    await userEvent.click(screen.getByRole("button", { name: "New" }));
+    await userEvent.type(screen.getByPlaceholderText(/Issuer name/), "New Bank");
+    await userEvent.click(screen.getByRole("button", { name: "Add" }));
+    await waitFor(() => expect(onIssuerCreated).toHaveBeenCalledWith(99));
   });
 
   it("shows the server's 409 inline and selects the existing issuer on request", async () => {

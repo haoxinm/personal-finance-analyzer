@@ -8,20 +8,39 @@ import { ErrorState, LoadingState } from "@/components/primitives/states";
 import { useSelectedUser } from "@/hooks/use-selected-user";
 import type { JobEvent } from "@/hooks/use-job-progress";
 
-import { useExtractStatement, useImportSettings, useUploadStatement } from "./api";
+import {
+  reproposeStatement,
+  useExtractStatement,
+  useImportSettings,
+  useIssuers,
+  useLayoutSpecs,
+  useUploadStatement,
+} from "./api";
 import { FolderImportsPanel } from "./folder-imports-panel";
 import { ImportedStatementsPanel, type OpenRequest } from "./imported-statements-panel";
 import { IssuerExtractorPicker } from "./issuer-extractor-picker";
 import { StatementCard } from "./statement-card";
 import { PageSelector } from "./page-selector";
 import { SummaryBar } from "./summary-bar";
-import type { ExtractorChoice, ImportItem } from "./types";
+import type { ExtractorChoice, ImportItem, LayoutSpec } from "./types";
 import {
+  applyRefreshedProposal,
   extractorChoiceFromProposal,
+  pendingPeers,
   refreshAfterJob,
   shouldAutoConfirm,
   useImportQueue,
 } from "./use-import-queue";
+
+/** A short name for an extractor choice, for the "remembered extractor" suggestion. */
+function describeChoice(choice: ExtractorChoice | null, specs: readonly LayoutSpec[]): string {
+  if (choice === null) return "an extractor";
+  if (choice.kind === "spec") {
+    const spec = specs.find((s) => s.id === choice.layoutSpecId);
+    return spec ? `${spec.name} v${spec.version}` : "a saved layout";
+  }
+  return choice.parserId === "llm" ? "the LLM" : choice.parserId.replace(/_/g, " ");
+}
 
 /** The Import screen (P3-A): drag-and-drop multiple statement PDFs, resolve the two-phase
  * import's user choice up front (D4) and its issuer/extractor choice per file (§2f.2), and
@@ -33,6 +52,8 @@ function ImportScreen() {
   const uploadStatement = useUploadStatement();
   const extractStatement = useExtractStatement();
   const settingsQuery = useImportSettings();
+  const issuersQuery = useIssuers();
+  const specsQuery = useLayoutSpecs();
   const llmMode = settingsQuery.data?.llm.mode;
   const llmConfigured = llmMode !== undefined && llmMode !== "none";
 
@@ -79,6 +100,51 @@ function ImportScreen() {
       }
     },
     [extractStatement, dispatch],
+  );
+
+  // Pending files are proposed an issuer and extractor once, at upload. When something changes
+  // what a fresh upload would be offered (an extractor remembered, an issuer created, "don't ask
+  // again" ticked), the other pending files are asked again, one after the other. Files the user
+  // has already decided about keep their choice and are only offered the new one.
+  const itemsRef = React.useRef(items);
+  itemsRef.current = items;
+  const peerQueue = React.useRef<Promise<void>>(Promise.resolve());
+  const autoStarted = React.useRef(new Set<string>());
+  const refreshPeers = React.useCallback(
+    (sourceClientId: string, issuerId: number | null) => {
+      peerQueue.current = peerQueue.current
+        .then(async () => {
+          for (const peer of pendingPeers(itemsRef.current, sourceClientId, issuerId)) {
+            let response: Awaited<ReturnType<typeof reproposeStatement>>;
+            try {
+              response = await reproposeStatement(peer.statementId as number);
+            } catch {
+              continue; // parsed meanwhile, or its PDF is gone: leave it as it is
+            }
+            const latest = itemsRef.current.find((candidate) => candidate.clientId === peer.clientId);
+            if (!latest || latest.status !== "awaiting_extractor") continue;
+            dispatch({
+              type: "proposal_refreshed",
+              clientId: latest.clientId,
+              statement: response.statement,
+              proposal: response.proposal,
+            });
+            const updated = applyRefreshedProposal(latest, response.statement, response.proposal);
+            // Exactly what a fresh upload gets: one click saved only where it would be.
+            if (
+              !updated.choiceTouched &&
+              response.statement.status === "awaiting_extractor" &&
+              shouldAutoConfirm(updated) &&
+              !autoStarted.current.has(updated.clientId)
+            ) {
+              autoStarted.current.add(updated.clientId);
+              await confirmImport(updated);
+            }
+          }
+        })
+        .catch(() => undefined);
+    },
+    [dispatch, confirmImport],
   );
 
   const uploadFile = React.useCallback(
@@ -157,9 +223,13 @@ function ImportScreen() {
         dispatch,
         queryClient,
         llmConfigured,
+        (job) => {
+          // The extractor was remembered by this import: the others from this issuer should use it.
+          if (item.remember && job?.remembered) refreshPeers(clientId, item.issuerId);
+        },
       );
     },
-    [items, dispatch, queryClient, llmConfigured],
+    [items, dispatch, queryClient, llmConfigured, refreshPeers],
   );
 
   // A statement awaiting an extractor (or whose import failed) is finished by dropping its PDF
@@ -172,8 +242,13 @@ function ImportScreen() {
     zone?.scrollIntoView?.({ block: "center", behavior: "smooth" });
     zone?.querySelector<HTMLElement>('[role="button"]')?.focus();
   }, []);
+  const nonceRef = React.useRef(0);
   const reimportExisting = React.useCallback((statementId: number) => {
-    setOpenRequest((prev) => ({ statementId, nonce: (prev?.nonce ?? 0) + 1 }));
+    nonceRef.current += 1;
+    setOpenRequest({ statementId, nonce: nonceRef.current });
+  }, []);
+  const requestHandled = React.useCallback((nonce: number) => {
+    setOpenRequest((prev) => (prev?.nonce === nonce ? null : prev));
   }, []);
 
   const header = (
@@ -248,6 +323,17 @@ function ImportScreen() {
               onJobEvent={handleJobEvent}
               onConfirm={() => void confirmImport(item)}
               onReimportExisting={reimportExisting}
+              onSkipConfirmChange={() => refreshPeers(item.clientId, item.issuerId)}
+              suggestion={
+                item.suggestedChoice
+                  ? {
+                      text: `${
+                        (issuersQuery.data ?? []).find((i) => i.id === item.suggestedChoice?.issuerId)?.name ?? "This issuer"
+                      }'s remembered extractor is ${describeChoice(item.suggestedChoice.extractorChoice, specsQuery.data ?? [])}.`,
+                      onUse: () => dispatch({ type: "suggestion_applied", clientId: item.clientId }),
+                    }
+                  : undefined
+              }
               onRememberChange={(remember) =>
                 dispatch({ type: "remember_toggled", clientId: item.clientId, remember })
               }
@@ -255,6 +341,7 @@ function ImportScreen() {
               picker={
                 <IssuerExtractorPicker
                   item={item}
+                  onIssuerCreated={(issuerId) => refreshPeers(item.clientId, issuerId)}
                   onIssuerChange={(issuerId: number, extractorChoice: ExtractorChoice | null) =>
                     dispatch({
                       type: "issuer_selected",
@@ -273,9 +360,14 @@ function ImportScreen() {
         </div>
       ) : null}
 
-      <ImportedStatementsPanel userId={sel.selectedUserId} onFinishImport={finishImport} request={openRequest} />
+      <ImportedStatementsPanel
+        userId={sel.selectedUserId}
+        onFinishImport={finishImport}
+        request={openRequest}
+        onRequestHandled={requestHandled}
+      />
 
-      <FolderImportsPanel />
+      <FolderImportsPanel onReimportStatement={reimportExisting} />
     </Page>
   );
 }

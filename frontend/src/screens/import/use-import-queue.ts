@@ -10,7 +10,8 @@ import {
   pollClassifyJobNeedsReview,
 } from "./api";
 import { isSkipConfirmForIssuer } from "./storage";
-import type { ExtractorChoice, ImportItem, ImportItemStatus, LayoutSpec, Statement } from "./types";
+import type { components } from "@/api/client";
+import type { ExtractorChoice, ExtractorProposal, ImportItem, ImportItemStatus, LayoutSpec, Statement } from "./types";
 
 /** A parser/spec is a "confident" proposal (§2f.2: "the parser's `detect_score` is >= 0.8")
  * worth pre-selecting and importable in one click. Mirrors the backend's own
@@ -65,6 +66,8 @@ function statusFromStatement(statement: Statement): ImportItemStatus {
   }
 }
 
+type Job = components["schemas"]["Job"];
+
 const LLM_CHOICE: ExtractorChoice = { kind: "parser", parserId: "llm" };
 
 /** Applies a (re)loaded statement to `item`. A statement that failed to parse — or one re-proposed
@@ -101,6 +104,43 @@ function applyStatement(item: ImportItem, statement: Statement, llmConfigured: b
   };
 }
 
+/** `item` with a fresh proposal applied (what a new upload of the same file would show): issuer,
+ * extractor, proposal and statement are replaced; the pages, "remember" and any earlier failure
+ * stay. A touched item keeps its own choice and only records the proposal as a suggestion when it
+ * is a remembered one that differs. Items no longer awaiting an extractor are left alone. */
+export function applyRefreshedProposal(item: ImportItem, statement: Statement, proposal: ExtractorProposal): ImportItem {
+  if (item.status !== "awaiting_extractor") return item;
+  const extractorChoice = extractorChoiceFromProposal(proposal);
+  if (item.choiceTouched) {
+    const differs = !sameChoice(item.extractorChoice, extractorChoice) || item.issuerId !== proposal.issuer_id;
+    return {
+      ...item,
+      statement,
+      suggestedChoice:
+        proposal.remembered && differs ? { issuerId: proposal.issuer_id, extractorChoice, proposal } : undefined,
+    };
+  }
+  return { ...item, statement, proposal, issuerId: proposal.issuer_id, extractorChoice, suggestedChoice: undefined };
+}
+
+function sameChoice(a: ExtractorChoice | null, b: ExtractorChoice | null): boolean {
+  if (a === null || b === null) return a === b;
+  if (a.kind !== b.kind) return false;
+  return a.kind === "spec" ? a.layoutSpecId === (b as typeof a).layoutSpecId : a.parserId === (b as typeof a).parserId;
+}
+
+/** Other items still waiting for the user's extractor decision that a change to `issuerId`'s
+ * remembered choice (or to the issuer list) could affect: the same issuer, or none matched yet. */
+export function pendingPeers(items: readonly ImportItem[], sourceClientId: string, issuerId: number | null): ImportItem[] {
+  return items.filter(
+    (item) =>
+      item.clientId !== sourceClientId &&
+      item.status === "awaiting_extractor" &&
+      item.statementId !== undefined &&
+      (item.issuerId === issuerId || item.issuerId === null),
+  );
+}
+
 export type Action =
   | { type: "files_queued"; items: ImportItem[] }
   | {
@@ -116,6 +156,8 @@ export type Action =
   | { type: "extractor_selected"; clientId: string; extractorChoice: ExtractorChoice }
   | { type: "pages_selected"; clientId: string; pages: number[] | null }
   | { type: "remember_toggled"; clientId: string; remember: boolean }
+  | { type: "proposal_refreshed"; clientId: string; statement: Statement; proposal: ExtractorProposal }
+  | { type: "suggestion_applied"; clientId: string }
   | { type: "extract_started"; clientId: string; jobId: string }
   | { type: "extract_failed"; clientId: string; message: string }
   | { type: "job_event"; clientId: string; event: JobEvent }
@@ -160,16 +202,34 @@ function reducer(items: ImportItem[], action: Action): ImportItem[] {
         ...item,
         issuerId: action.issuerId,
         extractorChoice: action.extractorChoice,
+        choiceTouched: true,
       }));
 
     case "extractor_selected":
-      return patch(action.clientId, (item) => ({ ...item, extractorChoice: action.extractorChoice }));
+      return patch(action.clientId, (item) => ({ ...item, extractorChoice: action.extractorChoice, choiceTouched: true }));
 
     case "pages_selected":
       return patch(action.clientId, (item) => ({ ...item, selectedPages: action.pages }));
 
     case "remember_toggled":
       return patch(action.clientId, (item) => ({ ...item, remember: action.remember }));
+
+    case "proposal_refreshed":
+      return patch(action.clientId, (item) => applyRefreshedProposal(item, action.statement, action.proposal));
+
+    case "suggestion_applied":
+      return patch(action.clientId, (item) =>
+        item.suggestedChoice
+          ? {
+              ...item,
+              issuerId: item.suggestedChoice.issuerId,
+              extractorChoice: item.suggestedChoice.extractorChoice,
+              proposal: item.suggestedChoice.proposal,
+              choiceTouched: false,
+              suggestedChoice: undefined,
+            }
+          : item,
+      );
 
     case "extract_started":
       return patch(action.clientId, (item) => ({
@@ -294,6 +354,7 @@ export async function refreshAfterJob(
   dispatch: React.Dispatch<Action>,
   queryClient: QueryClient,
   llmConfigured = false,
+  onParsed?: (job: Job | null) => void,
 ): Promise<void> {
   const statement = await fetchStatement(statementId);
   if (statement === null) return;
@@ -309,6 +370,7 @@ export async function refreshAfterJob(
         skippedDuplicates: importJob.skipped_duplicates ?? 0,
       });
     }
+    onParsed?.(importJob);
     const count =
       (await pollClassifyJobNeedsReview(jobId, { importJob })) ??
       (await fetchNeedsReviewCount({ statementId }));

@@ -13,6 +13,8 @@ export interface IssuerExtractorPickerProps {
   item: ImportItem;
   onIssuerChange: (issuerId: number, extractorChoice: ExtractorChoice | null) => void;
   onExtractorChange: (choice: ExtractorChoice) => void;
+  /** A new issuer was created here (after it is selected): other pending files may now match it. */
+  onIssuerCreated?: (issuerId: number) => void;
 }
 
 /** Issuer and extractor override (§2f.2/§2f.4): a select for the matched (or overridden) issuer,
@@ -23,6 +25,7 @@ export function IssuerExtractorPicker({
   item,
   onIssuerChange,
   onExtractorChange,
+  onIssuerCreated,
 }: IssuerExtractorPickerProps) {
   const issuersQuery = useIssuers();
   const specsQuery = useLayoutSpecs();
@@ -91,6 +94,7 @@ export function IssuerExtractorPicker({
                       onSuccess: (issuer) => {
                         closeCreateForm();
                         selectIssuer(issuer.id);
+                        onIssuerCreated?.(issuer.id);
                       },
                     },
                   );

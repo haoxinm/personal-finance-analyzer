@@ -85,6 +85,20 @@ export function useExtractStatement() {
   });
 }
 
+/** `POST /statements/{id}/propose`: re-run issuer matching and extractor scoring for a statement
+ * still awaiting its extractor (what a fresh upload of it would be offered now). Never changes
+ * the saved pages or status; rejects when the statement is parsed or its PDF is gone. */
+export async function reproposeStatement(
+  statementId: number,
+): Promise<components["schemas"]["StatementUploadResponse"]> {
+  const { data, error } = await apiClient.POST("/statements/{statement_id}/propose", {
+    params: { path: { statement_id: statementId } },
+  });
+  throwIfError(error);
+  if (!data) throw new Error("propose returned no data");
+  return data;
+}
+
 export async function fetchStatement(
   statementId: number,
 ): Promise<components["schemas"]["Statement"] | null> {

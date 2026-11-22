@@ -91,18 +91,24 @@ function RecentRow({ file }: { file: WatchFile }) {
 function ProblemRow({
   file,
   onRetry,
+  onReimport,
   retrying,
   onDismiss,
   dismissing,
 }: {
   file: WatchFile;
   onRetry: () => void;
+  /** Open the statement's Re-import panel (a file read as 0 transactions cannot be retried). */
+  onReimport?: (statementId: number) => void;
   retrying: boolean;
   onDismiss: () => void;
   dismissing: boolean;
 }) {
   const retryLabel = file.code === "deleted_in_app" ? "Import again" : "Retry";
   const busy = retrying || dismissing;
+  // Retry would do nothing for a statement that was read but empty (the server refuses it): the
+  // fix is a re-import with another extractor or other pages, in the Imported statements panel.
+  const reimportId = file.code === "no_transactions" && file.statement_id != null ? file.statement_id : null;
   return (
     <li
       className="flex flex-col gap-1 rounded-md border border-destructive/40 p-3 text-sm"
@@ -113,16 +119,30 @@ function ProblemRow({
       <div className="flex flex-wrap items-center justify-between gap-2">
         <span className="min-w-0 break-all font-mono text-xs">{file.path}</span>
         <div className="flex shrink-0 items-center gap-1">
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={onRetry}
-            disabled={busy}
-            aria-label={`${retryLabel} ${file.path}`}
-          >
-            {retrying ? <Spinner /> : null}
-            {retryLabel}
-          </Button>
+          {file.code === "no_transactions" ? (
+            reimportId !== null && onReimport ? (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => onReimport(reimportId)}
+                disabled={busy}
+                aria-label={`Re-import ${file.path}`}
+              >
+                Re-import…
+              </Button>
+            ) : null
+          ) : (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={onRetry}
+              disabled={busy}
+              aria-label={`${retryLabel} ${file.path}`}
+            >
+              {retrying ? <Spinner /> : null}
+              {retryLabel}
+            </Button>
+          )}
           <Button size="sm" variant="ghost" onClick={onDismiss} disabled={busy} aria-label={`Dismiss ${file.path}`}>
             {dismissing ? <Spinner /> : null}
             Dismiss
@@ -170,7 +190,7 @@ function DismissedRow({
  * last ran and will run next, a "Scan now" button, what was imported, and what needs attention
  * with a Retry per file. Turning it on is a setting (Settings, Folder imports).
  */
-export function FolderImportsPanel() {
+export function FolderImportsPanel({ onReimportStatement }: { onReimportStatement?: (statementId: number) => void } = {}) {
   const queryClient = useQueryClient();
   const status = useWatchStatus();
   const recent = useWatchFiles("recent");
@@ -398,6 +418,7 @@ export function FolderImportsPanel() {
                   retrying={retry.isPending && retry.variables === file.id}
                   dismissing={pendingDismiss.has(file.id)}
                   onRetry={() => retry.mutate(file.id)}
+                  onReimport={onReimportStatement}
                   onDismiss={() => handleDismiss(file, (problemItems[index + 1] ?? problemItems[index - 1])?.id ?? null)}
                 />
               ))}

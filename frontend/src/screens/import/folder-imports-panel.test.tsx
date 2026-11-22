@@ -134,7 +134,7 @@ function makeFetch(fixture: Fixture) {
   return { fn, calls };
 }
 
-async function renderPanel(fetchMock: typeof fetch) {
+async function renderPanel(fetchMock: typeof fetch, onReimportStatement?: (id: number) => void) {
   vi.resetModules();
   vi.stubGlobal("fetch", fetchMock);
   const { FolderImportsPanel } = await import("./folder-imports-panel");
@@ -146,7 +146,7 @@ async function renderPanel(fetchMock: typeof fetch) {
     <QueryClientProvider client={queryClient}>
       <ToastContextProvider>
         <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
-          <FolderImportsPanel />
+          <FolderImportsPanel onReimportStatement={onReimportStatement} />
         </MemoryRouter>
         <Toaster />
       </ToastContextProvider>
@@ -220,6 +220,27 @@ describe("FolderImportsPanel", () => {
     );
     await waitFor(() => expect(screen.queryByTestId("folder-import-problem")).not.toBeInTheDocument());
     expect(screen.getByText("Nothing needs attention.")).toBeInTheDocument();
+  });
+
+  it("offers Re-import, not Retry, for a statement that was read but had no transactions", async () => {
+    const empty = {
+      ...PROBLEM,
+      id: 6,
+      path: "Alex/Statements/Chase/empty.pdf",
+      code: "no_transactions",
+      message: "The statement was read, but no transactions were found.",
+      hint: "Re-import it with another extractor or other pages.",
+      statement_id: 21,
+    };
+    const { fn, calls } = makeFetch({ status: BASE_STATUS, recent: [], problems: [empty] });
+    const onReimport = vi.fn();
+    await renderPanel(fn, onReimport);
+    const row = await screen.findByTestId("folder-import-problem");
+    expect(within(row).queryByRole("button", { name: /^Retry / })).not.toBeInTheDocument();
+    await userEvent.click(within(row).getByRole("button", { name: "Re-import Alex/Statements/Chase/empty.pdf" }));
+    expect(onReimport).toHaveBeenCalledWith(21);
+    expect(calls.some((c) => c.url.includes("/retry"))).toBe(false);
+    expect(within(row).getByRole("button", { name: "Dismiss Alex/Statements/Chase/empty.pdf" })).toBeInTheDocument();
   });
 
   it("offers Import again for a file whose document was deleted in the app", async () => {
