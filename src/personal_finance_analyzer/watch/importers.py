@@ -79,7 +79,9 @@ def _other_person(ctx: Context, owner_id: int, where: str | None) -> Result:
         message=f"The same file is already imported for {who}{place}.",
         hint=(
             f"Delete this copy, or move it to {who}'s folder. To import it for "
-            f"{ctx.person_name} as well, upload it from the Import page."
+            f"{ctx.person_name} as well, upload it from the Import page. If it was filed under "
+            "the wrong person, use Imported statements → Change person on the Import page, "
+            "then press Retry."
         ),
     )
 
@@ -189,7 +191,8 @@ def import_statement(ctx: Context) -> Result:
             session,
             proposal.statement_id,
             issuer_id=issuer_id,
-            parser_id=proposal.parser_id,
+            # A spec proposal names the spec's own parser id too: exactly one may be given.
+            parser_id=None if proposal.layout_spec_id is not None else proposal.parser_id,
             layout_spec_id=proposal.layout_spec_id,
             remember=False,
             keep_in_place=True,
@@ -210,6 +213,18 @@ def import_statement(ctx: Context) -> Result:
         warnings.append("The statement's layout differs from the previous one; check the totals.")
     if result.transaction_ids:
         warnings.extend(_classify(ctx, result.transaction_ids))
+    if result.inserted == 0 and result.skipped_duplicates == 0:
+        return Result(
+            "failed",
+            code="no_transactions",
+            message="The statement was read, but no transactions were found.",
+            hint=(
+                "On the Import page, open Imported statements and re-import it with another "
+                "extractor or other pages."
+            ),
+            statement_id=proposal.statement_id,
+            warnings=warnings,
+        )
     inserted = f"{result.inserted} transaction(s)"
     skipped = (
         f", {result.skipped_duplicates} duplicate(s) skipped" if result.skipped_duplicates else ""

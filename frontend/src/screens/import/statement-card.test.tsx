@@ -24,6 +24,7 @@ function makeItem(overrides: Partial<ImportItem> = {}): ImportItem {
       layout_spec_id: null,
       confidence: 0.92,
       auto_confirmed: false,
+      remembered: false,
     },
     ...overrides,
   };
@@ -109,6 +110,7 @@ describe("StatementCard", () => {
           original_name: "statement.pdf",
           has_pdf: true,
           pdf_in_place: false,
+          pdf_missing: false,
         },
         needsReviewCount: 3,
       }),
@@ -135,6 +137,7 @@ describe("StatementCard", () => {
     original_name: "statement.pdf",
     has_pdf: true,
     pdf_in_place: false,
+    pdf_missing: false,
   };
 
   it("shows 'Already imported' for a duplicate PDF instead of a count of new transactions", () => {

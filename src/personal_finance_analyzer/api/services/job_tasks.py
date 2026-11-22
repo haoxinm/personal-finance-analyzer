@@ -66,6 +66,8 @@ def enqueue_import_then_classify(
             "transaction_ids": list(result.transaction_ids),
             "layout_drift": result.layout_drift,
             "warnings": list(result.warnings),
+            "parsed_count": result.parsed_count,
+            "remembered": result.remembered,
             # Surfaced by `GET /api/jobs/{id}` (jobs.py's `_job_response`) as `classify_job_id`,
             # so a caller can follow the chain and report an exact "N need review" once it's
             # done, without this module needing a `parent_job_id` column (db/** is frozen here).
@@ -85,6 +87,7 @@ def enqueue_reparse_then_classify(
     pages: Sequence[int] | None,
     discard_edits: bool,
     cfg: LLMConfig,
+    allow_empty: bool = False,
 ) -> str:
     """Enqueue a re-import of `statement_id` (rebuild its rows from the kept PDF); on success,
     enqueue a classify job for the rebuilt rows. Rows with a hand edit are skipped by the
@@ -100,6 +103,7 @@ def enqueue_reparse_then_classify(
                     layout_spec_id=layout_spec_id,
                     pages=pages,
                     discard_edits=discard_edits,
+                    allow_empty=allow_empty,
                 )
             except PfaError:
                 # A failed re-import must not change the already-parsed statement: discard
@@ -128,6 +132,8 @@ def enqueue_reparse_then_classify(
             "discarded_edits": result.discarded_edits,
             "layout_drift": result.layout_drift,
             "warnings": list(result.warnings),
+            "parsed_count": result.parsed_count,
+            "previous_txn_count": result.previous_txn_count,
             "classify_job_id": classify_job_id,
         }
 

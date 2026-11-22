@@ -69,6 +69,9 @@ class Issuer(Base):
         ForeignKey("layout_specs.id", use_alter=True, name="fk_issuers_default_spec_id"),
         nullable=True,
     )
+    #: The built-in parser id (or ``"llm"``) the user asked to remember for this issuer. Mutually
+    #: exclusive with `default_spec_id`: setting one clears the other.
+    default_parser_id: Mapped[str | None] = mapped_column(String, nullable=True)
     auto_confirm: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[str] = mapped_column(Text, nullable=False, default=utcnow_iso)
     last_used_at: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -156,6 +159,9 @@ class Statement(Base):
     # pending|awaiting_extractor|parsed|no_text_layer|unsupported_layout|error
     error_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
     txn_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    #: Rows the extractor returned, before dedupe (`txn_count` counts only the rows inserted).
+    #: NULL for a statement imported before this column existed.
+    parsed_row_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     parsed_total_minor: Mapped[int | None] = mapped_column(Integer, nullable=True)
     stated_total_minor: Mapped[int | None] = mapped_column(Integer, nullable=True)
     opening_balance_minor: Mapped[int | None] = mapped_column(Integer, nullable=True)  # A25
@@ -357,6 +363,8 @@ class Job(Base):
     payload_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     result_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     error_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: A machine-readable code for a failure the UI can act on (e.g. ``empty_result``).
+    error_code: Mapped[str | None] = mapped_column(String, nullable=True)
     llm_run_group_id: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[str] = mapped_column(Text, nullable=False, default=utcnow_iso)
     updated_at: Mapped[str] = mapped_column(Text, nullable=False, default=utcnow_iso)

@@ -123,8 +123,16 @@ class AccountUpdate(_Model):
 MAX_CORRECTED_AMOUNT_MINOR = 100_000_000_000
 
 
+#: Why a parsed statement needs a second look (`Statement.attention`).
+StatementAttention = Literal[
+    "no_transactions", "all_duplicates", "reconciliation_mismatch", "layout_drift", "pdf_missing"
+]
+
+
 class Statement(_Model):
     id: int
+    #: The person it belongs to: the account's owner once imported, else the user it was uploaded
+    #: for.
     user_id: int | None = None
     account_id: int | None
     issuer_id: int | None = None
@@ -150,6 +158,39 @@ class Statement(_Model):
     #: The PDF is a file the user put in the documents folder themselves (never removed unless
     #: the user asks when deleting the statement).
     pdf_in_place: bool = False
+    #: Rows the extractor returned before dedupe (`txn_count` counts only the rows added);
+    #: `None` for a statement imported before this was recorded.
+    parsed_row_count: int | None = None
+    #: What needs attention on a parsed statement (empty otherwise).
+    attention: list[StatementAttention] = Field(default_factory=list)
+    #: The account's currency (`None` until imported).
+    currency: str | None = None
+    #: A PDF copy was recorded but is no longer in the documents folder (re-import is impossible
+    #: until it is put back).
+    pdf_missing: bool = False
+
+
+class StatementPatchResult(Statement):
+    """`PATCH /api/statements/{id}`: the statement after the change, plus what moved."""
+
+    rows_moved: int = 0
+    duplicates_deleted: int = 0
+
+
+class ExtractorCandidate(_Model):
+    """`GET /api/statements/{id}/extractors` row: an extractor the statement could be re-imported
+    with. Send `parser_id` or `layout_spec_id` (exactly one) in the re-import request."""
+
+    kind: Literal["parser", "spec", "llm"]
+    parser_id: str | None = None
+    layout_spec_id: int | None = None
+    label: str
+    #: `detect()` on the statement's saved pages (0..1); `None` for the LLM or an unscorable spec.
+    score: float | None = None
+    #: The extractor the statement was imported with.
+    recorded: bool = False
+    #: The issuer's remembered extractor.
+    remembered: bool = False
 
 
 class ExtractorProposal(_Model):
@@ -158,6 +199,8 @@ class ExtractorProposal(_Model):
     layout_spec_id: int | None
     confidence: float
     auto_confirmed: bool
+    #: This is the extractor remembered for the issuer (not just the best-scoring one).
+    remembered: bool = False
 
 
 class StatementUploadResponse(_Model):
@@ -194,6 +237,9 @@ class ReparseRequest(_Model):
     #: Drop the user's edits (category, kind, notes, field corrections) on this statement's
     #: transactions instead of restoring them onto the rebuilt rows.
     discard_edits: bool = False
+    #: Allow a re-import that finds no transactions to replace a statement that has some. Without
+    #: it such a job fails with `error_code="empty_result"` and nothing is changed.
+    allow_empty: bool = False
 
 
 class StatementPageInfo(_Model):
@@ -259,6 +305,19 @@ class Job(_Model):
     unmatched_edits: int | None = None
     #: On a re-parse job run with `discard_edits`: edited rows whose edits were dropped.
     discarded_edits: int | None = None
+    #: Machine-readable failure code on an `error` job (`PfaError.code`): `empty_result` = a
+    #: re-import would have removed every transaction and was not applied (nothing changed).
+    error_code: str | None = None
+    #: On a finished `import` job: the shape warnings of the parse (reconciliation, drift, "no
+    #: transactions found" ...) and whether the layout drifted. `None` otherwise.
+    warnings: list[str] | None = None
+    layout_drift: bool | None = None
+    #: Rows the extractor returned (before dedupe): 0 means it found nothing.
+    parsed_count: int | None = None
+    #: On a finished re-parse job: how many transactions the statement had before.
+    previous_txn_count: int | None = None
+    #: On a finished extract job with `remember`: the extractor was stored for the issuer.
+    remembered: bool | None = None
 
 
 # --- Transactions ----------------------------------------------------------------------------------
@@ -602,6 +661,8 @@ class Issuer(_Model):
     slug: str
     match_terms: list[str]
     default_spec_id: int | None = None
+    #: A remembered built-in parser id (or `"llm"`); exclusive with `default_spec_id`.
+    default_parser_id: str | None = None
 
 
 class IssuerCreate(_Model):

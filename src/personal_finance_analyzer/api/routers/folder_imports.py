@@ -156,6 +156,14 @@ def undismiss_file(file_id: int, session: SessionDep) -> Response:
 @router.post("/watch/files/{file_id}/retry", status_code=204, response_class=Response)
 def retry_file(file_id: int, session: SessionDep) -> Response:
     """Forget a problem so the next scan looks at the file again (after the cause is fixed)."""
+    if scanner.needs_reimport(session, file_id):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "This statement was read but had no transactions. Re-import the statement "
+                "instead (Import page, Imported statements)."
+            ),
+        )
     if not scanner.retry(session, file_id):
         raise HTTPException(status_code=404, detail="no such problem to retry")
     return Response(status_code=204)

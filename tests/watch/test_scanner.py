@@ -24,8 +24,11 @@ from tests.llm_fakes import FakeLLM, install
 from tests.watch.support import (
     actions,
     add_bank,
+    add_layout_b_bank,
+    add_layout_b_spec,
     add_person,
     new_scanner,
+    put_layout_b,
     put_pdf_bytes,
     put_statement,
     put_tax,
@@ -713,3 +716,70 @@ def test_a_dismissed_failure_finished_by_hand_is_undismissed_when_settled(
     setup._settle_records(session, records(session))
     settled = records(session)["loose.pdf"]
     assert settled.outcome == "imported" and settled.dismissed_at is None
+
+
+# ---------------------------------------------------------------------------------- spec proposals
+
+
+LAYOUT_B = "Alex/Statements/Bank B/jan.pdf"
+
+
+def test_a_folder_file_that_proposes_a_layout_spec_is_imported(
+    setup: FolderScanner, session: Session
+) -> None:
+    add_layout_b_spec(session, add_layout_b_bank(session))
+    put_layout_b(LAYOUT_B)
+    report = scan_stable(setup)
+    assert actions(report) == {LAYOUT_B: "imported"}, report.items
+    (statement,) = statements(session)
+    assert statement.layout_spec_id is not None
+    assert (statement.txn_count or 0) > 0
+
+
+# ---------------------------------------------------------------------------------- 0-row imports
+
+
+def test_a_statement_read_with_no_transactions_needs_attention(
+    setup: FolderScanner, session: Session
+) -> None:
+    add_layout_b_spec(session, add_layout_b_bank(session), wrong=True)
+    put_layout_b(LAYOUT_B)
+    report = scan_stable(setup)
+    assert actions(report) == {LAYOUT_B: "failed"}, report.items
+    (statement,) = statements(session)
+    assert statement.status == "parsed" and statement.parsed_row_count == 0
+    record = records(session)[LAYOUT_B]
+    assert (record.outcome, record.code) == ("failed", "no_transactions")
+    assert record.statement_id == statement.id
+    # The file is known now, but the problem stays until the statement is fixed.
+    again = scan_stable(setup)
+    assert again.items == []
+    assert records(session)[LAYOUT_B].outcome == "failed"
+
+
+def test_a_reimport_that_finds_rows_settles_the_record(
+    setup: FolderScanner, session: Session, engine: Engine
+) -> None:
+    add_layout_b_spec(session, add_layout_b_bank(session), wrong=True)
+    put_layout_b(LAYOUT_B)
+    scan_stable(setup)
+    (statement,) = statements(session)
+    with make_session_factory(engine)() as fixer:
+        gateway.reparse(fixer, statement.id, parser_id="layout_b_credit", layout_spec_id=None)
+        fixer.commit()
+    scan_stable(setup)
+    record = records(session)[LAYOUT_B]
+    assert (record.outcome, record.code) == ("imported", None)
+    assert (statements(session)[0].txn_count or 0) > 0
+
+
+def test_a_failed_record_of_a_statement_that_stays_empty_is_not_settled(
+    setup: FolderScanner, session: Session
+) -> None:
+    add_layout_b_spec(session, add_layout_b_bank(session), wrong=True)
+    put_layout_b(LAYOUT_B)
+    scan_stable(setup)
+    record = records(session)[LAYOUT_B]
+    assert scanner_mod.retry(session, record.id) is False  # Retry cannot help; re-import instead
+    assert scanner_mod.needs_reimport(session, record.id) is True
+    assert LAYOUT_B in records(session)

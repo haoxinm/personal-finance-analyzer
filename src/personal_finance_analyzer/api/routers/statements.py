@@ -10,6 +10,7 @@ imports `ingest.pipeline` directly (see that module's docstring).
 
 from __future__ import annotations
 
+import dataclasses
 from pathlib import Path
 from typing import Annotated
 
@@ -31,14 +32,37 @@ from personal_finance_analyzer.api.services.uploads import (
     save_upload,
 )
 from personal_finance_analyzer.core.errors import PfaError
-from personal_finance_analyzer.db.models import Statement
+from personal_finance_analyzer.db.models import Account, LayoutSpec, Statement, User
 from personal_finance_analyzer.ingest.extract import extract
-from personal_finance_analyzer.ingest.pages import load_pages, parse_page_spec
+from personal_finance_analyzer.ingest.pages import load_pages, parse_page_spec, validate_pages
 
 router = APIRouter(tags=["statements"])
 
 
+def _attention(
+    statement: Statement, *, reconciliation_delta: int | None, pdf_missing: bool
+) -> list[schemas.StatementAttention]:
+    """What a *parsed* statement needs a second look for (empty for any other status)."""
+    if statement.status != "parsed":
+        return []
+    notes: list[schemas.StatementAttention] = []
+    if statement.parsed_row_count == 0:
+        notes.append("no_transactions")
+    elif statement.parsed_row_count is not None and not statement.txn_count:
+        notes.append("all_duplicates")
+    if reconciliation_delta:
+        notes.append("reconciliation_mismatch")
+    if statement.shape_warnings:
+        notes.append("layout_drift")
+    if pdf_missing:
+        notes.append("pdf_missing")
+    return notes
+
+
 def _statement_response(session: Session, statement: Statement) -> schemas.Statement:
+    account = session.get(Account, statement.account_id) if statement.account_id else None
+    delta = crud.reconciliation_delta_minor(session, statement)
+    pdf_missing = crud.statement_pdf_missing(statement, search=False)
     return schemas.Statement(
         id=statement.id,
         user_id=crud.statement_user_id(session, statement),
@@ -52,7 +76,7 @@ def _statement_response(session: Session, statement: Statement) -> schemas.State
         period_start=statement.period_start,
         period_end=statement.period_end,
         txn_count=statement.txn_count,
-        reconciliation_delta_minor=crud.reconciliation_delta_minor(session, statement),
+        reconciliation_delta_minor=delta,
         detect_score=statement.detect_score,
         shape_warnings=statement.shape_warnings,
         error_detail=statement.error_detail,
@@ -60,6 +84,21 @@ def _statement_response(session: Session, statement: Statement) -> schemas.State
         original_name=statement.original_name,
         has_pdf=statement.stored_path is not None,
         pdf_in_place=statement.pdf_in_place,
+        parsed_row_count=statement.parsed_row_count,
+        attention=_attention(statement, reconciliation_delta=delta, pdf_missing=pdf_missing),
+        currency=account.currency if account is not None else None,
+        pdf_missing=pdf_missing,
+    )
+
+
+def _proposal_schema(proposal: gateway.ImportProposal) -> schemas.ExtractorProposal:
+    return schemas.ExtractorProposal(
+        issuer_id=proposal.issuer_id,
+        parser_id=proposal.parser_id,
+        layout_spec_id=proposal.layout_spec_id,
+        confidence=proposal.detect_score or 0.0,
+        auto_confirmed=False,
+        remembered=proposal.remembered,
     )
 
 
@@ -86,13 +125,7 @@ async def upload_statement(
 
     return schemas.StatementUploadResponse(
         statement=_statement_response(session, statement),
-        proposal=schemas.ExtractorProposal(
-            issuer_id=proposal.issuer_id,
-            parser_id=proposal.parser_id,
-            layout_spec_id=proposal.layout_spec_id,
-            confidence=proposal.detect_score or 0.0,
-            auto_confirmed=False,
-        ),
+        proposal=_proposal_schema(proposal),
         duplicate=proposal.status == "duplicate",
     )
 
@@ -110,24 +143,63 @@ def get_statement(statement_id: int, session: SessionDep) -> schemas.Statement:
     return _statement_response(session, statement)
 
 
-@router.patch("/statements/{statement_id}", response_model=schemas.Statement)
+@router.patch("/statements/{statement_id}", response_model=schemas.StatementPatchResult)
 def patch_statement(
     statement_id: int, body: schemas.StatementPatch, session: SessionDep
-) -> schemas.Statement:
+) -> schemas.StatementPatchResult:
+    """Move a statement to another person and/or account ("change person").
+
+    * `user_id` alone: the statement and all its transactions move to that person's matching
+      account (same issuer, type, mask and currency), which is created when they have none.
+    * `account_id` alone: they move to that account; its owner becomes the statement's person.
+    * both: moved to that account as the given user.
+
+    Duplicates the target account already holds are merged (`duplicates_deleted`). Sending
+    nothing, or what is already the case, is a 400.
+    """
     statement = crud.get_statement(session, statement_id)
     if statement is None:
         raise HTTPException(status_code=404, detail="statement not found")
-    if body.user_id is not None and body.account_id is not None:
+    if body.user_id is None and body.account_id is None:
+        raise HTTPException(status_code=400, detail="give a user_id or an account_id to move to")
+
+    owner = crud.statement_user_id(session, statement)
+    rows_moved = duplicates_deleted = 0
+    if body.account_id is not None:
+        user_id = body.user_id
+        if user_id is None:
+            account = session.get(Account, body.account_id)
+            if account is None:
+                raise HTTPException(status_code=404, detail="account not found")
+            user_id = account.user_id
+        if body.account_id == statement.account_id and user_id == owner:
+            raise HTTPException(status_code=400, detail="nothing to change")
         # `reassign` (§3.5) recomputes `dedupe_hash` for every one of this statement's rows and
-        # updates `statement.account_id` itself; a plain CRUD field write here would race it and
-        # could set an account_id its own dedupe recompute never ran against.
-        gateway.reassign(session, statement_id, user_id=body.user_id, account_id=body.account_id)
-        session.commit()
-        session.refresh(statement)
-    elif body.account_id is not None:
-        statement = crud.patch_statement(session, statement, account_id=body.account_id)
-        session.commit()
-    return _statement_response(session, statement)
+        # updates `statement.account_id` itself; a plain CRUD field write would race it and could
+        # set an account_id its own dedupe recompute never ran against.
+        rows_moved, duplicates_deleted = gateway.reassign(
+            session, statement_id, user_id=user_id, account_id=body.account_id
+        )
+    else:
+        assert body.user_id is not None
+        if session.get(User, body.user_id) is None:
+            raise HTTPException(status_code=404, detail="user not found")
+        if body.user_id == owner:
+            raise HTTPException(status_code=400, detail="the statement already belongs to them")
+        if statement.account_id is None:
+            statement.user_id = body.user_id  # not imported yet: it is imported for them
+        else:
+            target = gateway.resolve_account_for_move(session, statement_id, user_id=body.user_id)
+            rows_moved, duplicates_deleted = gateway.reassign(
+                session, statement_id, user_id=body.user_id, account_id=target.id
+            )
+    session.commit()
+    session.refresh(statement)
+    return schemas.StatementPatchResult(
+        **_statement_response(session, statement).model_dump(),
+        rows_moved=rows_moved,
+        duplicates_deleted=duplicates_deleted,
+    )
 
 
 @router.delete("/statements/{statement_id}", status_code=204)
@@ -281,6 +353,46 @@ def llm_preview(
     )
 
 
+@router.get(
+    "/statements/{statement_id}/extractors", response_model=list[schemas.ExtractorCandidate]
+)
+def list_statement_extractors(
+    statement_id: int, session: SessionDep
+) -> list[schemas.ExtractorCandidate]:
+    """Every extractor the statement could be (re-)imported with, scored on its saved pages:
+    the built-in parsers, the approved layout specs of its issuer, and the LLM when configured.
+    The recorded one first, then best match first. Local only; no LLM call."""
+    _statement, _pdf = _pdf_or_404(statement_id, session)
+    return [
+        schemas.ExtractorCandidate.model_validate(dataclasses.asdict(c))
+        for c in gateway.extractor_candidates(session, statement_id)
+    ]
+
+
+@router.post("/statements/{statement_id}/propose", response_model=schemas.StatementUploadResponse)
+def repropose_statement(statement_id: int, session: SessionDep) -> schemas.StatementUploadResponse:
+    """Re-run issuer matching and extractor scoring for a statement that is not parsed yet, so a
+    choice made since it was uploaded (a remembered extractor, a new issuer or layout) is picked
+    up. Updates the statement's issuer, extractor and score; never calls the LLM."""
+    statement = crud.get_statement(session, statement_id)
+    if statement is None:
+        raise HTTPException(status_code=404, detail="statement not found")
+    if statement.status == "parsed":
+        raise HTTPException(status_code=409, detail="this statement is already imported")
+    _pdf_or_404(statement_id, session)
+    try:
+        proposal = gateway.repropose(session, statement_id)
+    except PfaError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    session.commit()
+    session.refresh(statement)
+    return schemas.StatementUploadResponse(
+        statement=_statement_response(session, statement),
+        proposal=_proposal_schema(proposal),
+        duplicate=False,
+    )
+
+
 @router.post(
     "/statements/{statement_id}/extract", response_model=schemas.JobIdResponse, status_code=202
 )
@@ -358,10 +470,40 @@ def reparse_statement(
                 status_code=400,
                 detail="this statement's recorded extractor is no longer available; choose one",
             )
+    else:
+        # An explicit choice must be usable: fail now, not later as a job error.
+        if layout_spec_id is not None:
+            spec = session.get(LayoutSpec, layout_spec_id)
+            if spec is None or not spec.approved:
+                raise HTTPException(
+                    status_code=400, detail="that layout spec does not exist or is not approved"
+                )
+        elif not gateway.extractor_exists(session, parser_id=parser_id, layout_spec_id=None):
+            raise HTTPException(status_code=400, detail=f"unknown extractor {parser_id!r}")
+    if body.pages is not None:
+        try:
+            if statement.page_count is not None:
+                validate_pages(body.pages, statement.page_count)
+            elif not body.pages:
+                raise PfaError("no pages selected")
+        except PfaError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
     if statement.stored_path is None:
         raise HTTPException(
             status_code=409,
             detail="no copy of this statement's PDF was kept; delete it and import the PDF again",
+        )
+    if crud.kept_pdf_path(statement) is None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "pdf_not_found",
+                "message": (
+                    "PDF not found: the copy of this statement is no longer in your documents "
+                    "folder (it was moved out or deleted). Put it back, or delete the statement "
+                    "and drop the PDF again."
+                ),
+            },
         )
 
     job_id = job_tasks.enqueue_reparse_then_classify(
@@ -373,5 +515,6 @@ def reparse_statement(
         pages=body.pages,
         discard_edits=body.discard_edits,
         cfg=settings.llm,
+        allow_empty=body.allow_empty,
     )
     return schemas.JobIdResponse(job_id=job_id)

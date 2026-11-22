@@ -409,6 +409,7 @@
           "statements"
         ],
         "summary": "Patch Statement",
+        "description": "Move a statement to another person and/or account (\"change person\").\n\n* `user_id` alone: the statement and all its transactions move to that person's matching\n  account (same issuer, type, mask and currency), which is created when they have none.\n* `account_id` alone: they move to that account; its owner becomes the statement's person.\n* both: moved to that account as the given user.\n\nDuplicates the target account already holds are merged (`duplicates_deleted`). Sending\nnothing, or what is already the case, is a 400.",
         "operationId": "patch_statement_api_statements__statement_id__patch",
         "parameters": [
           {
@@ -437,7 +438,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Statement"
+                  "$ref": "#/components/schemas/StatementPatchResult"
                 }
               }
             }
@@ -702,6 +703,96 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/LlmParsePreview"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/statements/{statement_id}/extractors": {
+      "get": {
+        "tags": [
+          "statements"
+        ],
+        "summary": "List Statement Extractors",
+        "description": "Every extractor the statement could be (re-)imported with, scored on its saved pages:\nthe built-in parsers, the approved layout specs of its issuer, and the LLM when configured.\nThe recorded one first, then best match first. Local only; no LLM call.",
+        "operationId": "list_statement_extractors_api_statements__statement_id__extractors_get",
+        "parameters": [
+          {
+            "name": "statement_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Statement Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ExtractorCandidate"
+                  },
+                  "title": "Response List Statement Extractors Api Statements  Statement Id  Extractors Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/statements/{statement_id}/propose": {
+      "post": {
+        "tags": [
+          "statements"
+        ],
+        "summary": "Repropose Statement",
+        "description": "Re-run issuer matching and extractor scoring for a statement that is not parsed yet, so a\nchoice made since it was uploaded (a remembered extractor, a new issuer or layout) is picked\nup. Updates the statement's issuer, extractor and score; never calls the LLM.",
+        "operationId": "repropose_statement_api_statements__statement_id__propose_post",
+        "parameters": [
+          {
+            "name": "statement_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Statement Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatementUploadResponse"
                 }
               }
             }
@@ -8066,6 +8157,73 @@
         ],
         "title": "ExtractRequest"
       },
+      "ExtractorCandidate": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "parser",
+              "spec",
+              "llm"
+            ],
+            "title": "Kind"
+          },
+          "parser_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parser Id"
+          },
+          "layout_spec_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Layout Spec Id"
+          },
+          "label": {
+            "type": "string",
+            "title": "Label"
+          },
+          "score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Score"
+          },
+          "recorded": {
+            "type": "boolean",
+            "title": "Recorded",
+            "default": false
+          },
+          "remembered": {
+            "type": "boolean",
+            "title": "Remembered",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "kind",
+          "label"
+        ],
+        "title": "ExtractorCandidate",
+        "description": "`GET /api/statements/{id}/extractors` row: an extractor the statement could be re-imported\nwith. Send `parser_id` or `layout_spec_id` (exactly one) in the re-import request."
+      },
       "ExtractorProposal": {
         "properties": {
           "issuer_id": {
@@ -8108,6 +8266,11 @@
           "auto_confirmed": {
             "type": "boolean",
             "title": "Auto Confirmed"
+          },
+          "remembered": {
+            "type": "boolean",
+            "title": "Remembered",
+            "default": false
           }
         },
         "type": "object",
@@ -9143,6 +9306,17 @@
               }
             ],
             "title": "Default Spec Id"
+          },
+          "default_parser_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Default Parser Id"
           }
         },
         "type": "object",
@@ -9469,6 +9643,75 @@
               }
             ],
             "title": "Discarded Edits"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
+          "warnings": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Warnings"
+          },
+          "layout_drift": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Layout Drift"
+          },
+          "parsed_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parsed Count"
+          },
+          "previous_txn_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Previous Txn Count"
+          },
+          "remembered": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Remembered"
           }
         },
         "type": "object",
@@ -10463,6 +10706,11 @@
             "type": "boolean",
             "title": "Discard Edits",
             "default": false
+          },
+          "allow_empty": {
+            "type": "boolean",
+            "title": "Allow Empty",
+            "default": false
           }
         },
         "type": "object",
@@ -11243,6 +11491,47 @@
             "type": "boolean",
             "title": "Pdf In Place",
             "default": false
+          },
+          "parsed_row_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parsed Row Count"
+          },
+          "attention": {
+            "items": {
+              "type": "string",
+              "enum": [
+                "no_transactions",
+                "all_duplicates",
+                "reconciliation_mismatch",
+                "layout_drift",
+                "pdf_missing"
+              ]
+            },
+            "type": "array",
+            "title": "Attention"
+          },
+          "currency": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Currency"
+          },
+          "pdf_missing": {
+            "type": "boolean",
+            "title": "Pdf Missing",
+            "default": false
           }
         },
         "type": "object",
@@ -11316,6 +11605,271 @@
         },
         "type": "object",
         "title": "StatementPatch"
+      },
+      "StatementPatchResult": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "user_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User Id"
+          },
+          "account_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Account Id"
+          },
+          "issuer_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Issuer Id"
+          },
+          "parser_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parser Id"
+          },
+          "layout_spec_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Layout Spec Id"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "awaiting_extractor",
+              "parsed",
+              "no_text_layer",
+              "unsupported_layout",
+              "error"
+            ],
+            "title": "Status"
+          },
+          "period_start": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Period Start"
+          },
+          "period_end": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Period End"
+          },
+          "txn_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Txn Count"
+          },
+          "reconciliation_delta_minor": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reconciliation Delta Minor"
+          },
+          "detect_score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detect Score"
+          },
+          "shape_warnings": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shape Warnings"
+          },
+          "error_detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Detail"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "page_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page Count"
+          },
+          "selected_pages": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "integer"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Selected Pages"
+          },
+          "original_name": {
+            "type": "string",
+            "title": "Original Name",
+            "default": ""
+          },
+          "has_pdf": {
+            "type": "boolean",
+            "title": "Has Pdf",
+            "default": false
+          },
+          "pdf_in_place": {
+            "type": "boolean",
+            "title": "Pdf In Place",
+            "default": false
+          },
+          "parsed_row_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parsed Row Count"
+          },
+          "attention": {
+            "items": {
+              "type": "string",
+              "enum": [
+                "no_transactions",
+                "all_duplicates",
+                "reconciliation_mismatch",
+                "layout_drift",
+                "pdf_missing"
+              ]
+            },
+            "type": "array",
+            "title": "Attention"
+          },
+          "currency": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Currency"
+          },
+          "pdf_missing": {
+            "type": "boolean",
+            "title": "Pdf Missing",
+            "default": false
+          },
+          "rows_moved": {
+            "type": "integer",
+            "title": "Rows Moved",
+            "default": 0
+          },
+          "duplicates_deleted": {
+            "type": "integer",
+            "title": "Duplicates Deleted",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "account_id",
+          "status",
+          "period_start",
+          "period_end",
+          "txn_count",
+          "detect_score",
+          "shape_warnings",
+          "error_detail",
+          "created_at"
+        ],
+        "title": "StatementPatchResult",
+        "description": "`PATCH /api/statements/{id}`: the statement after the change, plus what moved."
       },
       "StatementPreviewPage": {
         "properties": {

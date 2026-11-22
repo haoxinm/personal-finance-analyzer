@@ -112,7 +112,18 @@ export interface paths {
         delete: operations["delete_statement_api_statements__statement_id__delete"];
         options?: never;
         head?: never;
-        /** Patch Statement */
+        /**
+         * Patch Statement
+         * @description Move a statement to another person and/or account ("change person").
+         *
+         *     * `user_id` alone: the statement and all its transactions move to that person's matching
+         *       account (same issuer, type, mask and currency), which is created when they have none.
+         *     * `account_id` alone: they move to that account; its owner becomes the statement's person.
+         *     * both: moved to that account as the given user.
+         *
+         *     Duplicates the target account already holds are merged (`duplicates_deleted`). Sending
+         *     nothing, or what is already the case, is a 400.
+         */
         patch: operations["patch_statement_api_statements__statement_id__patch"];
         trace?: never;
     };
@@ -192,6 +203,50 @@ export interface paths {
         get: operations["llm_preview_api_statements__statement_id__llm_preview_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/statements/{statement_id}/extractors": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Statement Extractors
+         * @description Every extractor the statement could be (re-)imported with, scored on its saved pages:
+         *     the built-in parsers, the approved layout specs of its issuer, and the LLM when configured.
+         *     The recorded one first, then best match first. Local only; no LLM call.
+         */
+        get: operations["list_statement_extractors_api_statements__statement_id__extractors_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/statements/{statement_id}/propose": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Repropose Statement
+         * @description Re-run issuer matching and extractor scoring for a statement that is not parsed yet, so a
+         *     choice made since it was uploaded (a remembered extractor, a new issuer or layout) is picked
+         *     up. Updates the statement's issuer, extractor and score; never calls the LLM.
+         */
+        post: operations["repropose_statement_api_statements__statement_id__propose_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2122,6 +2177,36 @@ export interface components {
             /** Pages */
             pages?: number[] | null;
         };
+        /**
+         * ExtractorCandidate
+         * @description `GET /api/statements/{id}/extractors` row: an extractor the statement could be re-imported
+         *     with. Send `parser_id` or `layout_spec_id` (exactly one) in the re-import request.
+         */
+        ExtractorCandidate: {
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "parser" | "spec" | "llm";
+            /** Parser Id */
+            parser_id?: string | null;
+            /** Layout Spec Id */
+            layout_spec_id?: number | null;
+            /** Label */
+            label: string;
+            /** Score */
+            score?: number | null;
+            /**
+             * Recorded
+             * @default false
+             */
+            recorded: boolean;
+            /**
+             * Remembered
+             * @default false
+             */
+            remembered: boolean;
+        };
         /** ExtractorProposal */
         ExtractorProposal: {
             /** Issuer Id */
@@ -2134,6 +2219,11 @@ export interface components {
             confidence: number;
             /** Auto Confirmed */
             auto_confirmed: boolean;
+            /**
+             * Remembered
+             * @default false
+             */
+            remembered: boolean;
         };
         /** ForecastBaseline */
         ForecastBaseline: {
@@ -2435,6 +2525,8 @@ export interface components {
             match_terms: string[];
             /** Default Spec Id */
             default_spec_id?: number | null;
+            /** Default Parser Id */
+            default_parser_id?: string | null;
         };
         /** IssuerConflictDetail */
         IssuerConflictDetail: {
@@ -2526,6 +2618,18 @@ export interface components {
             unmatched_edits?: number | null;
             /** Discarded Edits */
             discarded_edits?: number | null;
+            /** Error Code */
+            error_code?: string | null;
+            /** Warnings */
+            warnings?: string[] | null;
+            /** Layout Drift */
+            layout_drift?: boolean | null;
+            /** Parsed Count */
+            parsed_count?: number | null;
+            /** Previous Txn Count */
+            previous_txn_count?: number | null;
+            /** Remembered */
+            remembered?: boolean | null;
         };
         /** JobIdResponse */
         JobIdResponse: {
@@ -2937,6 +3041,11 @@ export interface components {
              * @default false
              */
             discard_edits: boolean;
+            /**
+             * Allow Empty
+             * @default false
+             */
+            allow_empty: boolean;
         };
         /**
          * RevertToAutomaticResponse
@@ -3232,6 +3341,17 @@ export interface components {
              * @default false
              */
             pdf_in_place: boolean;
+            /** Parsed Row Count */
+            parsed_row_count?: number | null;
+            /** Attention */
+            attention?: ("no_transactions" | "all_duplicates" | "reconciliation_mismatch" | "layout_drift" | "pdf_missing")[];
+            /** Currency */
+            currency?: string | null;
+            /**
+             * Pdf Missing
+             * @default false
+             */
+            pdf_missing: boolean;
         };
         /**
          * StatementPageInfo
@@ -3254,6 +3374,88 @@ export interface components {
             user_id?: number | null;
             /** Account Id */
             account_id?: number | null;
+        };
+        /**
+         * StatementPatchResult
+         * @description `PATCH /api/statements/{id}`: the statement after the change, plus what moved.
+         */
+        StatementPatchResult: {
+            /** Id */
+            id: number;
+            /** User Id */
+            user_id?: number | null;
+            /** Account Id */
+            account_id: number | null;
+            /** Issuer Id */
+            issuer_id?: number | null;
+            /** Parser Id */
+            parser_id?: string | null;
+            /** Layout Spec Id */
+            layout_spec_id?: number | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "pending" | "awaiting_extractor" | "parsed" | "no_text_layer" | "unsupported_layout" | "error";
+            /** Period Start */
+            period_start: string | null;
+            /** Period End */
+            period_end: string | null;
+            /** Txn Count */
+            txn_count: number | null;
+            /** Reconciliation Delta Minor */
+            reconciliation_delta_minor?: number | null;
+            /** Detect Score */
+            detect_score: number | null;
+            /** Shape Warnings */
+            shape_warnings: string | null;
+            /** Error Detail */
+            error_detail: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Page Count */
+            page_count?: number | null;
+            /** Selected Pages */
+            selected_pages?: number[] | null;
+            /**
+             * Original Name
+             * @default
+             */
+            original_name: string;
+            /**
+             * Has Pdf
+             * @default false
+             */
+            has_pdf: boolean;
+            /**
+             * Pdf In Place
+             * @default false
+             */
+            pdf_in_place: boolean;
+            /** Parsed Row Count */
+            parsed_row_count?: number | null;
+            /** Attention */
+            attention?: ("no_transactions" | "all_duplicates" | "reconciliation_mismatch" | "layout_drift" | "pdf_missing")[];
+            /** Currency */
+            currency?: string | null;
+            /**
+             * Pdf Missing
+             * @default false
+             */
+            pdf_missing: boolean;
+            /**
+             * Rows Moved
+             * @default 0
+             */
+            rows_moved: number;
+            /**
+             * Duplicates Deleted
+             * @default 0
+             */
+            duplicates_deleted: number;
         };
         /** StatementPreviewPage */
         StatementPreviewPage: {
@@ -4979,7 +5181,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Statement"];
+                    "application/json": components["schemas"]["StatementPatchResult"];
                 };
             };
             /** @description Validation Error */
@@ -5111,6 +5313,68 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["LlmParsePreview"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_statement_extractors_api_statements__statement_id__extractors_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                statement_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExtractorCandidate"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    repropose_statement_api_statements__statement_id__propose_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                statement_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StatementUploadResponse"];
                 };
             };
             /** @description Validation Error */

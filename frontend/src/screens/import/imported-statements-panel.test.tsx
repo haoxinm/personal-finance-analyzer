@@ -51,6 +51,7 @@ function statement(overrides: Record<string, unknown> = {}) {
     original_name: "chase-march.pdf",
     has_pdf: true,
     pdf_in_place: false,
+    pdf_missing: false,
     ...overrides,
   };
 }
@@ -205,7 +206,7 @@ describe("ImportedStatementsPanel", () => {
 
     await waitFor(() => expect(calls.some((c) => c.url.includes("/statements/1/reparse"))).toBe(true));
     const post = calls.find((c) => c.url.includes("/reparse"))!;
-    expect(post.body).toEqual({ discard_edits: false, remember: false });
+    expect(post.body).toEqual({ discard_edits: false, remember: false, allow_empty: false });
 
     await waitFor(() => expect(MockEventSource.instances).toHaveLength(1));
     act(() => {
@@ -238,6 +239,7 @@ describe("ImportedStatementsPanel", () => {
     expect(calls.find((c) => c.url.includes("/reparse"))!.body).toEqual({
       layout_spec_id: 9,
       discard_edits: true,
+      allow_empty: false,
       remember: false,
     });
     await waitFor(() => expect(MockEventSource.instances).toHaveLength(1));

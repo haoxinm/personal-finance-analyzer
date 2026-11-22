@@ -29,6 +29,7 @@ function makeStatement(overrides: Partial<Statement> = {}): Statement {
     original_name: "statement.pdf",
     has_pdf: true,
     pdf_in_place: false,
+    pdf_missing: false,
     ...overrides,
   };
 }
@@ -40,6 +41,7 @@ function makeProposal(overrides: Partial<ExtractorProposal> = {}): ExtractorProp
     layout_spec_id: null,
     confidence: 0.9,
     auto_confirmed: false,
+    remembered: false,
     ...overrides,
   };
 }

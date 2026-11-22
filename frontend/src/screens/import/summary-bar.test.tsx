@@ -36,6 +36,7 @@ function makeParsedItem(overrides: Partial<ImportItem> = {}): ImportItem {
       original_name: "statement.pdf",
       has_pdf: true,
       pdf_in_place: false,
+      pdf_missing: false,
     },
     ...overrides,
   };

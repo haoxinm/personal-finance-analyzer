@@ -84,8 +84,9 @@ statement.pdf: statement #7 awaiting_extractor (detect_score=0.4); confirm with:
 ```
 
 Options: `--user-id`, `--issuer-id` / `--parser-id` / `--layout-spec-id` (pin the extractor
-instead of accepting the proposal), `--remember` (make this the issuer's default extractor for
-future imports), `--pages` (see below). Re-importing a byte-identical file is a no-op; an
+instead of accepting the proposal), `--remember` (make this the issuer's remembered extractor,
+a layout spec or a built-in parser or the LLM, which later proposals for that issuer use first;
+nothing is remembered when the import finds no transactions), `--pages` (see below). Re-importing a byte-identical file is a no-op; an
 overlapping statement period never creates duplicate transaction rows.
 
 ### Choosing pages and the LLM extractor

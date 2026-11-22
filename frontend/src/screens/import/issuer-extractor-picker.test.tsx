@@ -58,6 +58,7 @@ async function renderPicker(
       layout_spec_id: null,
       confidence: 0.9,
       auto_confirmed: false,
+      remembered: false,
     },
     ...itemOverrides,
   };

@@ -154,7 +154,7 @@ export function ReimportPanel({ statement, specs, llmConfigured, onClose }: Reim
   }, [classifyJobId, classifyEvent, queryClient]);
 
   const start = () => {
-    const body: ReparseRequest = { discard_edits: discard, remember: false };
+    const body: ReparseRequest = { discard_edits: discard, remember: false, allow_empty: false };
     if (choice === "llm") body.parser_id = "llm";
     else if (choice.startsWith("spec:")) body.layout_spec_id = Number(choice.slice(5));
     setSubmitError(null);

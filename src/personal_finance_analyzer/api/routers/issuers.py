@@ -38,6 +38,7 @@ def _issuer_schema(issuer: IssuerModel) -> schemas.Issuer:
         slug=issuer.slug,
         match_terms=json.loads(issuer.match_terms),
         default_spec_id=issuer.default_spec_id,
+        default_parser_id=issuer.default_parser_id,
     )
 
 

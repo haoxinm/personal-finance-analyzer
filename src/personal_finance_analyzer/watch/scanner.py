@@ -70,6 +70,9 @@ LOCK_NAME = "watch.lock"
 
 SUCCESS_OUTCOMES = ("imported", "known")
 
+#: A failed record for a statement that was read but had no transactions in it (see `retry`).
+NO_TRANSACTIONS_CODE = "no_transactions"
+
 
 def lock_path() -> Path:
     return get_home() / LOCK_NAME
@@ -524,14 +527,19 @@ class FolderScanner:
         session.commit()
 
     def _settle_records(self, session: Session, records: dict[str, WatchedFile]) -> None:
-        """A failed statement the user later finished by hand (the Import page) is a success."""
+        """A failed statement the user later finished by hand (the Import page) is a success, but
+        one that parsed to no rows at all stays a problem until a re-import finds some."""
         linked = {
             r.statement_id: r for r in records.values() if r.outcome == "failed" and r.statement_id
         }
         if not linked:
             return
         parsed = session.scalars(
-            select(Statement.id).where(Statement.id.in_(list(linked)), Statement.status == "parsed")
+            select(Statement.id).where(
+                Statement.id.in_(list(linked)),
+                Statement.status == "parsed",
+                or_(Statement.parsed_row_count.is_(None), Statement.parsed_row_count > 0),
+            )
         ).all()
         for statement_id in parsed:
             record = linked[statement_id]
@@ -625,13 +633,24 @@ def _resolved(path: Path) -> Path | None:
 
 
 def retry(session: Session, record_id: int) -> bool:
-    """Forget a failed or ignored file's record so the next scan looks at it again."""
+    """Forget a failed or ignored file's record so the next scan looks at it again. Not for a
+    statement that was read but had no transactions (`needs_reimport`): the file is already known,
+    so a rescan would do nothing; it is fixed by re-importing the statement."""
     record = session.get(WatchedFile, record_id)
     if record is None or record.outcome not in ("failed", "ignored"):
+        return False
+    if record.code == NO_TRANSACTIONS_CODE:
         return False
     session.delete(record)
     session.commit()
     return True
+
+
+def needs_reimport(session: Session, record_id: int) -> bool:
+    """Whether the problem is a statement read with no transactions: Retry cannot help, it must
+    be re-imported on the Import page."""
+    record = session.get(WatchedFile, record_id)
+    return record is not None and record.code == NO_TRANSACTIONS_CODE
 
 
 def dismiss(session: Session, record_id: int) -> bool:

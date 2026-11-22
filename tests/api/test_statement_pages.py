@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
 from personal_finance_analyzer.api.services import gateway
-from personal_finance_analyzer.core.paths import staging_dir
+from personal_finance_analyzer.core.paths import documents_dir, staging_dir
 from personal_finance_analyzer.db.models import Statement, utcnow_iso
 from personal_finance_analyzer.ingest.extract import sha256_file
 from tests.fixtures.gen.base import render_lines_pdf
@@ -58,6 +58,9 @@ def _confirm_in_place(session: Session, sid: int) -> None:
     assert statement is not None
     statement.account_id = account.id
     statement.stored_path = "Re/s.pdf"
+    kept = documents_dir() / "Re" / "s.pdf"  # the kept copy a re-import reads must exist
+    kept.parent.mkdir(parents=True, exist_ok=True)
+    kept.write_bytes((staging_dir() / f"{statement.file_sha256}.pdf").read_bytes())
     session.commit()
 
 

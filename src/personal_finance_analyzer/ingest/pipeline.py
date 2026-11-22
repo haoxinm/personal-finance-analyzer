@@ -20,7 +20,7 @@ PHASE 2 (`confirm_import`, on user confirmation, or automatically when the propo
   -> drift evaluation against the account's previous statement   [A18]
   -> dedupe against existing rows                [ingest.dedupe, §3.5]
   -> persist statement + transactions in one atomic DB transaction
-  -> clean import only: update issuers.default_spec_id / last_used_at   [A23]
+  -> remember + at least one row: update issuers.default_spec_id / default_parser_id [A23]
   -> pair checking-side card payments with their card-side payment      [I11, A26]
   -> return an ImportResult
 ```
@@ -42,14 +42,19 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import cast
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from personal_finance_analyzer.classify.kinds import is_spend, resolve_kind
 from personal_finance_analyzer.config import Settings, load_settings
 from personal_finance_analyzer.core import documents as docs
-from personal_finance_analyzer.core.errors import ParserError, PfaError, UnsupportedLayoutError
+from personal_finance_analyzer.core.errors import (
+    EmptyReparseError,
+    ParserError,
+    PfaError,
+    UnsupportedLayoutError,
+)
 from personal_finance_analyzer.core.logging import get_logger
 from personal_finance_analyzer.core.paths import ensure_home, staging_dir
 from personal_finance_analyzer.core.pii import merge_entries
@@ -94,6 +99,9 @@ NO_TEXT_LAYER_MESSAGE = (
     "website rather than a photo or scanned copy."
 )
 
+#: The shape warning recorded (and so `layout_drift`) when the extractor returned no rows at all.
+NO_TRANSACTIONS_WARNING = "No transactions were found in the selected pages."
+
 #: A parser must score strictly above this for a proposal to be `confident` (§3.12a).
 CONFIDENT_SCORE_THRESHOLD = 0.8
 
@@ -125,6 +133,8 @@ class ImportProposal:
     layout_spec_id: int | None
     detect_score: float | None
     confident: bool  # issuer matched AND spec/parser resolved AND score >= 0.8
+    #: The extractor is the one the user asked to remember for this issuer.
+    remembered: bool = False
 
 
 @dataclass(frozen=True)
@@ -142,6 +152,12 @@ class ImportResult:
     unmatched_edits: int = 0
     #: `reparse(discard_edits=True)` only: hand-edited rows whose edits were deliberately dropped.
     discarded_edits: int = 0
+    #: Rows the extractor returned, before dedupe (`inserted + skipped_duplicates`).
+    parsed_count: int = 0
+    #: `reparse` only: how many transactions the statement had before the rebuild.
+    previous_txn_count: int | None = None
+    #: `confirm_import(remember=True)` stored this extractor as the issuer's remembered choice.
+    remembered: bool = False
 
 
 # ------------------------------------------------------------------------------------------------
@@ -263,6 +279,7 @@ def propose_import(
     )
     if existing is not None:
         retry_after_failure = existing.status in (STATUS_UNSUPPORTED_LAYOUT, STATUS_ERROR)
+        rescored: _Proposed | None = None
         if existing.status != STATUS_PARSED:
             if in_place is not None:
                 _adopt_in_place(existing, in_place)
@@ -274,6 +291,11 @@ def propose_import(
                 # (the failure message stays in `error_detail` as a warning) and it is never
                 # reported as confident, so nothing auto-confirms the parser that just failed.
                 existing.status = STATUS_AWAITING_EXTRACTOR
+            if existing.status == STATUS_AWAITING_EXTRACTOR:
+                # Re-score: the issuers, specs and remembered choices may have changed since the
+                # proposal was recorded.
+                rescored = _propose_extractor(session, extract(pdf_path), load_settings())
+                _apply_proposal(existing, rescored)
             session.commit()
         if existing.status == STATUS_PARSED:
             # Nothing to confirm and the kept copy (if any) is already filed under its readable
@@ -288,7 +310,9 @@ def propose_import(
             layout_spec_id=existing.layout_spec_id,
             detect_score=existing.detect_score,
             confident=not retry_after_failure
-            and _is_confident(existing.issuer_id, existing.detect_score, existing.status),
+            and _is_confident(existing.issuer_id, existing.detect_score, existing.status)
+            and (rescored is None or rescored.confident),
+            remembered=rescored is not None and rescored.remembered,
         )
 
     doc = extract(pdf_path)
@@ -327,23 +351,7 @@ def propose_import(
             confident=False,
         )
 
-    table_bands = locate_table_bands(doc)
-    issuer_id = issuer_match.match_issuer(session, doc, table_bands)
-    llm_default = settings.ingest.default_extractor == "llm" and settings.llm.is_configured
-    score: float | None
-    layout_spec_id: int | None
-    if llm_default:
-        # LLM imports are never auto-confirmed: the user picks the pages to send first.
-        from personal_finance_analyzer.llm.statement_parser import LLM_PARSER_ID, LLMStatementParser
-
-        parser_id_value: str = LLM_PARSER_ID
-        parser_version: str = LLMStatementParser.version
-        score = None
-        layout_spec_id = None
-    else:
-        selected, score, layout_spec_id = _select_parser(session, doc, issuer_id)
-        parser_id_value = selected.id
-        parser_version = selected.version
+    proposed = _propose_extractor(session, doc, settings)
 
     statement = Statement(
         user_id=user_id,
@@ -352,28 +360,121 @@ def propose_import(
         stored_path=in_place,
         pdf_in_place=in_place is not None,
         page_count=doc.page_count,
-        issuer_id=issuer_id,
-        layout_spec_id=layout_spec_id,
-        parser_id=parser_id_value,
-        parser_version=parser_version,
-        detect_score=score,
         status=STATUS_AWAITING_EXTRACTOR,
         ingested_at=_utcnow_iso(),
     )
+    _apply_proposal(statement, proposed)
     session.add(statement)
     session.commit()
 
     return ImportProposal(
         statement_id=statement.id,
         status=STATUS_AWAITING_EXTRACTOR,
-        issuer_id=issuer_id,
-        parser_id=parser_id_value,
-        layout_spec_id=layout_spec_id,
-        detect_score=score,
-        confident=(
-            False if llm_default else _is_confident(issuer_id, score, STATUS_AWAITING_EXTRACTOR)
-        ),
+        issuer_id=proposed.issuer_id,
+        parser_id=proposed.parser_id,
+        layout_spec_id=proposed.layout_spec_id,
+        detect_score=proposed.detect_score,
+        confident=proposed.confident,
+        remembered=proposed.remembered,
     )
+
+
+@dataclass(frozen=True)
+class _Proposed:
+    """What `_propose_extractor` decided for a document."""
+
+    issuer_id: int | None
+    parser_id: str
+    parser_version: str
+    detect_score: float | None
+    layout_spec_id: int | None
+    confident: bool
+    #: The extractor is the issuer's remembered choice (`issuers.default_spec_id` /
+    #: `default_parser_id`), not just the best-scoring one.
+    remembered: bool
+
+
+def _propose_extractor(session: Session, doc: ExtractedDoc, settings: Settings) -> _Proposed:
+    """Match the issuer and choose the extractor to propose for ``doc``: the issuer's remembered
+    choice first, else the configured LLM default, else the best-scoring built-in/spec. Pure: it
+    reads the database but writes nothing (the LLM is never called)."""
+    issuer_id = issuer_match.match_issuer(session, doc, locate_table_bands(doc))
+    selection = _remembered_selection(session, doc, issuer_id, settings)
+    if selection is not None:
+        parser_id, version, score, spec_id = selection
+        return _Proposed(
+            issuer_id=issuer_id,
+            parser_id=parser_id,
+            parser_version=version,
+            detect_score=score,
+            layout_spec_id=spec_id,
+            confident=_is_confident(issuer_id, score, STATUS_AWAITING_EXTRACTOR),
+            remembered=True,
+        )
+    if settings.ingest.default_extractor == "llm" and settings.llm.is_configured:
+        # LLM imports are never auto-confirmed: the user picks the pages to send first.
+        from personal_finance_analyzer.llm.statement_parser import LLM_PARSER_ID, LLMStatementParser
+
+        return _Proposed(
+            issuer_id=issuer_id,
+            parser_id=LLM_PARSER_ID,
+            parser_version=LLMStatementParser.version,
+            detect_score=None,
+            layout_spec_id=None,
+            confident=False,
+            remembered=False,
+        )
+    selected, score, layout_spec_id = _select_parser(session, doc, issuer_id)
+    return _Proposed(
+        issuer_id=issuer_id,
+        parser_id=selected.id,
+        parser_version=selected.version,
+        detect_score=score,
+        layout_spec_id=layout_spec_id,
+        confident=_is_confident(issuer_id, score, STATUS_AWAITING_EXTRACTOR),
+        remembered=False,
+    )
+
+
+def _apply_proposal(statement: Statement, proposed: _Proposed) -> None:
+    """Record a proposal on the statement row (never touches ``selected_pages``)."""
+    statement.issuer_id = proposed.issuer_id
+    statement.layout_spec_id = proposed.layout_spec_id
+    statement.parser_id = proposed.parser_id
+    statement.parser_version = proposed.parser_version
+    statement.detect_score = proposed.detect_score
+
+
+def _remembered_selection(
+    session: Session, doc: ExtractedDoc, issuer_id: int | None, settings: Settings
+) -> tuple[str, str, float | None, int | None] | None:
+    """The issuer's remembered extractor as ``(parser_id, version, detect_score, spec_id)``, or
+    ``None`` when there is none or it can no longer be used (a spec that was un-approved or
+    deleted, a parser that is no longer registered or does not recognise this document, the LLM
+    when it is not configured): selection then falls back to normal scoring."""
+    issuer = session.get(Issuer, issuer_id) if issuer_id is not None else None
+    if issuer is None:
+        return None
+    if issuer.default_spec_id is not None:
+        row = session.get(LayoutSpec, issuer.default_spec_id)
+        if row is not None and row.approved:
+            spec_parser = cast(StatementParser, build_parser_for_row(row))
+            return spec_parser.id, spec_parser.version, _detect_score(spec_parser, doc), row.id
+        return None
+    remembered = issuer.default_parser_id
+    if remembered is None:
+        return None
+    if remembered == "llm":
+        if not settings.llm.is_configured:
+            return None
+        from personal_finance_analyzer.llm.statement_parser import LLM_PARSER_ID, LLMStatementParser
+
+        return LLM_PARSER_ID, LLMStatementParser.version, None, None
+    for parser in (*discover_all_parsers(), generic_table):
+        if parser.id == remembered:
+            score = _detect_score(parser, doc)
+            return (parser.id, parser.version, score, None) if score > 0 else None
+    return None
 
 
 def _is_confident(issuer_id: int | None, score: float | None, status: str) -> bool:
@@ -449,9 +550,10 @@ def confirm_import(
         parser_id: a built-in parser id to use, or `None` when `layout_spec_id` selects one.
         layout_spec_id: an approved `layout_specs.id` to use, or `None` when `parser_id` selects
             one. Exactly one of `parser_id`/`layout_spec_id` must be given.
-        remember: when `True` and the import reconciles cleanly with no drift, updates
-            `issuers.default_spec_id` (only when a layout spec, not a built-in parser, was used)
-            and `issuers.last_used_at` (A23).
+        remember: when `True` and the extractor returned at least one row, stores it as the
+            issuer's remembered choice (`issuers.default_spec_id` for a layout spec, else
+            `issuers.default_parser_id`; setting one clears the other) and updates
+            `issuers.last_used_at` (A23). `ImportResult.remembered` reports whether it was stored.
         pages: 1-based pages to parse (deduped, sorted, validated against the PDF's page count)
             and saved to `statements.selected_pages`; `None` keeps the saved selection (default:
             all pages). Every parser, template or LLM, sees only the selected pages.
@@ -695,8 +797,9 @@ def _persist_parsed_statement(
     )
 
     previous = _previous_statement(session, account.id, exclude_statement_id=statement.id)
+    empty_warning = (NO_TRANSACTIONS_WARNING,) if not parsed.transactions else ()
     layout_drift, shape_warnings = _evaluate_drift(
-        parsed_warnings=parsed.warnings + section_warnings,
+        parsed_warnings=parsed.warnings + section_warnings + empty_warning,
         reconciliation_mismatch=reconciliation_mismatch,
         detect_score=statement.detect_score,
         previous_detect_score=previous.detect_score if previous is not None else None,
@@ -714,16 +817,23 @@ def _persist_parsed_statement(
     statement.period_start = parsed.period_start.isoformat() if parsed.period_start else None
     statement.period_end = parsed.period_end.isoformat() if parsed.period_end else None
     statement.txn_count = len(inserted_ids)
+    statement.parsed_row_count = len(parsed.transactions)
     statement.parsed_total_minor = sum(t.amount_minor for t in parsed.transactions)
     statement.stated_total_minor = parsed.stated_total_minor
     statement.opening_balance_minor = parsed.opening_balance_minor
     statement.closing_balance_minor = parsed.closing_balance_minor
     statement.shape_warnings = json.dumps(list(shape_warnings)) if shape_warnings else None
 
-    clean_import = not layout_drift and not reconciliation_mismatch
-    if remember and clean_import:
+    # "Remember" is an explicit decision of the user, so a reconciliation mismatch or drift does
+    # not block it; an extractor that found nothing is not worth remembering.
+    remembered = remember and bool(parsed.transactions)
+    if remembered:
         if layout_spec_id is not None:
             issuer.default_spec_id = layout_spec_id
+            issuer.default_parser_id = None
+        else:
+            issuer.default_parser_id = parser.id
+            issuer.default_spec_id = None
         issuer.last_used_at = _utcnow_iso()
 
     if commit:
@@ -746,6 +856,8 @@ def _persist_parsed_statement(
         reconciliation_delta_minor=reconciliation_delta,
         layout_drift=layout_drift,
         warnings=shape_warnings,
+        parsed_count=len(rows),
+        remembered=remembered,
     )
 
 
@@ -1000,6 +1112,7 @@ def reparse(
     layout_spec_id: int | None,
     pages: Sequence[int] | None = None,
     discard_edits: bool = False,
+    allow_empty: bool = False,
 ) -> ImportResult:
     """Re-run a *previously confirmed* statement with a different extractor, rebuilding its rows
     (the API surface's ``POST /api/statements/{id}/reparse``).
@@ -1018,9 +1131,14 @@ def reparse(
     nothing is restored (the rebuilt rows are plain parses) and
     `ImportResult.discarded_edits` counts the edited rows that were thrown away.
 
+    A re-import that would leave a statement which has rows with none is refused
+    (`EmptyReparseError`, nothing changed) unless ``allow_empty`` says that is intended.
+    `ImportResult.previous_txn_count` is the number of rows the statement had before.
+
     Raises:
         PfaError: the statement was not found, has no account yet (never confirmed), or
             has no PDF copy on disk to re-parse from.
+        EmptyReparseError: the new parse found no transactions and the statement had some.
         ValueError: neither or both of `parser_id`/`layout_spec_id` were given.
     """
     statement = session.get(Statement, statement_id)
@@ -1044,10 +1162,7 @@ def reparse(
     # the file by content when the user moved or renamed it.
     pdf_path = docs.kept_pdf(statement.stored_path, statement.file_sha256)
     if pdf_path is None:
-        raise PfaError(
-            f"the PDF of statement {statement_id} was not found in the documents folder "
-            "(it was moved out or deleted); put it back to reparse"
-        )
+        raise PfaError(_pdf_gone_message(statement))
     full_doc = extract(pdf_path)
     # An already-parsed statement must be left untouched by a failed re-import: neither the page
     # selection nor status/error_detail is written until the new parse has succeeded (the error
@@ -1063,6 +1178,19 @@ def reparse(
     )
 
     parsed = parser.parse(doc)  # UnsupportedLayoutError/ParserError propagate; nothing persisted
+    previous_txn_count = (
+        session.scalar(
+            select(func.count())
+            .select_from(Transaction)
+            .where(Transaction.statement_id == statement.id)
+        )
+        or 0
+    )
+    if not parsed.transactions and previous_txn_count > 0 and not allow_empty:
+        raise EmptyReparseError(
+            "The re-import found no transactions, so nothing was changed. "
+            f"Your {previous_txn_count} transactions are kept."
+        )
     if new_selection is not None:
         statement.selected_pages = new_selection
 
@@ -1096,7 +1224,26 @@ def reparse(
             unmatched,
         )
     return replace(
-        result, restored_edits=restored, unmatched_edits=unmatched, discarded_edits=discarded
+        result,
+        restored_edits=restored,
+        unmatched_edits=unmatched,
+        discarded_edits=discarded,
+        previous_txn_count=previous_txn_count,
+    )
+
+
+def _pdf_gone_message(statement: Statement) -> str:
+    """Why a kept PDF cannot be found: moved out or deleted, or replaced in place by a file with
+    different content (the folder scan then imports that file as a new statement)."""
+    stored = docs.resolve(statement.stored_path) if statement.stored_path else None
+    if stored is not None and stored.is_file() and sha256_file(stored) != statement.file_sha256:
+        return (
+            f"The file at {statement.stored_path} now holds a different PDF; "
+            "this statement's original is gone."
+        )
+    return (
+        f"the PDF of statement {statement.id} was not found in the documents folder "
+        "(it was moved out or deleted); put it back to reparse"
     )
 
 
@@ -1432,5 +1579,179 @@ def reassign(
         rows_moved += 1
 
     statement.account_id = account_id
+    statement.user_id = user_id
     session.flush()
     return rows_moved, duplicates_deleted
+
+
+def resolve_account_for_move(session: Session, statement_id: int, *, user_id: int) -> Account:
+    """The account of ``user_id`` that matches the statement's current account (same issuer, type,
+    mask and currency), created when that person has none yet: where "change person" moves it.
+    Flushes (a new account needs its id), does not commit.
+
+    Raises:
+        PfaError: the statement was not found or has no account yet.
+    """
+    statement = session.get(Statement, statement_id)
+    if statement is None:
+        raise PfaError(f"no statement with id={statement_id}")
+    current = session.get(Account, statement.account_id) if statement.account_id else None
+    if current is None:
+        raise PfaError(f"statement {statement_id} has no account yet")
+    issuer = session.get(Issuer, current.issuer_id)
+    return _resolve_account(
+        session,
+        user_id=user_id,
+        issuer_id=current.issuer_id,
+        account_type=current.account_type,
+        mask=current.mask,
+        currency=current.currency,
+        issuer_name=issuer.name if issuer is not None else "Unknown",
+    )
+
+
+# ------------------------------------------------------------------------------------------------
+# Re-proposing and listing extractors for an existing statement
+# ------------------------------------------------------------------------------------------------
+
+
+def _statement_pdf(statement: Statement) -> Path | None:
+    """The PDF a not-yet-parsed or parsed statement can be re-read from: its kept copy (found by
+    content when moved), else the staged upload."""
+    return docs.kept_pdf(statement.stored_path, statement.file_sha256) or docs.staged_pdf(
+        statement.file_sha256
+    )
+
+
+def repropose(session: Session, statement_id: int) -> ImportProposal:
+    """Re-run issuer matching and extractor scoring for a statement that is not parsed yet
+    (`awaiting_extractor`, `unsupported_layout` or `error`), e.g. after the user remembered an
+    extractor or created an issuer for an earlier statement of the same batch. Updates the row's
+    issuer, extractor and detect score (not the page selection); the status is left as it is.
+    Never calls the LLM. Does not commit.
+
+    Raises:
+        PfaError: the statement was not found, is already parsed, or its PDF is unavailable.
+    """
+    statement = session.get(Statement, statement_id)
+    if statement is None:
+        raise PfaError(f"no statement with id={statement_id}")
+    if statement.status not in (
+        STATUS_AWAITING_EXTRACTOR,
+        STATUS_UNSUPPORTED_LAYOUT,
+        STATUS_ERROR,
+    ):
+        raise PfaError(f"statement {statement_id} is {statement.status}; it cannot be re-proposed")
+    path = _statement_pdf(statement)
+    if path is None:
+        raise PfaError(f"statement {statement_id} has no PDF on disk to re-propose from")
+    proposed = _propose_extractor(session, extract(path), load_settings())
+    _apply_proposal(statement, proposed)
+    session.flush()
+    return ImportProposal(
+        statement_id=statement.id,
+        status=statement.status,
+        issuer_id=proposed.issuer_id,
+        parser_id=proposed.parser_id,
+        layout_spec_id=proposed.layout_spec_id,
+        detect_score=proposed.detect_score,
+        confident=proposed.confident and statement.status == STATUS_AWAITING_EXTRACTOR,
+        remembered=proposed.remembered,
+    )
+
+
+@dataclass(frozen=True)
+class ExtractorCandidate:
+    """One extractor a statement could be (re-)imported with."""
+
+    kind: str  # 'parser' | 'spec' | 'llm'
+    parser_id: str | None  # the built-in parser id, or 'llm'; None for a spec
+    layout_spec_id: int | None
+    label: str
+    score: float | None  # `detect()` on the statement's selected pages; None for the LLM
+    recorded: bool  # the extractor the statement was imported with
+    remembered: bool  # the issuer's remembered choice
+
+
+def _parser_label(parser_id: str) -> str:
+    """``layout_b_credit`` -> ``Layout B credit``."""
+    words = parser_id.split("_")
+    return " ".join(
+        w.upper() if len(w) == 1 else (w.capitalize() if i == 0 else w) for i, w in enumerate(words)
+    )
+
+
+def extractor_candidates(session: Session, statement_id: int) -> list[ExtractorCandidate]:
+    """Every extractor that could re-import this statement, scored against its saved page
+    selection: each built-in parser (and the generic table parser), every *approved* layout spec
+    of the statement's issuer (every version and account type), and the LLM when configured.
+    Recorded one first, then best score first. Needs the PDF; makes no LLM call.
+
+    Raises:
+        PfaError: the statement was not found or its PDF is unavailable.
+    """
+    statement = session.get(Statement, statement_id)
+    if statement is None:
+        raise PfaError(f"no statement with id={statement_id}")
+    path = _statement_pdf(statement)
+    if path is None:
+        raise PfaError(f"statement {statement_id} has no PDF on disk to score extractors on")
+    doc = extract(path).select_pages(load_pages(statement.selected_pages))
+    issuer = session.get(Issuer, statement.issuer_id) if statement.issuer_id is not None else None
+
+    out: list[ExtractorCandidate] = []
+    for parser in (*discover_all_parsers(), generic_table):
+        out.append(
+            ExtractorCandidate(
+                kind="parser",
+                parser_id=parser.id,
+                layout_spec_id=None,
+                label=_parser_label(parser.id),
+                score=_detect_score(parser, doc),
+                recorded=statement.layout_spec_id is None and statement.parser_id == parser.id,
+                remembered=issuer is not None
+                and issuer.default_spec_id is None
+                and issuer.default_parser_id == parser.id,
+            )
+        )
+    if issuer is not None:
+        rows = session.execute(
+            select(LayoutSpec)
+            .where(LayoutSpec.issuer_id == issuer.id, LayoutSpec.approved.is_(True))
+            .order_by(LayoutSpec.name, LayoutSpec.version.desc())
+        ).scalars()
+        for row in rows:
+            try:
+                spec_score: float | None = _detect_score(
+                    cast(StatementParser, build_parser_for_row(row)), doc
+                )
+            except Exception:  # a spec that no longer builds is listed, just unscored
+                logger.warning("layout spec %s could not be built", row.id, exc_info=True)
+                spec_score = None
+            out.append(
+                ExtractorCandidate(
+                    kind="spec",
+                    parser_id=None,
+                    layout_spec_id=row.id,
+                    label=f"{row.name} (v{row.version})",
+                    score=spec_score,
+                    recorded=statement.layout_spec_id == row.id,
+                    remembered=issuer.default_spec_id == row.id,
+                )
+            )
+    if load_settings().llm.is_configured:
+        out.append(
+            ExtractorCandidate(
+                kind="llm",
+                parser_id="llm",
+                layout_spec_id=None,
+                label="LLM",
+                score=None,
+                recorded=statement.layout_spec_id is None and statement.parser_id == "llm",
+                remembered=issuer is not None
+                and issuer.default_spec_id is None
+                and issuer.default_parser_id == "llm",
+            )
+        )
+    out.sort(key=lambda c: (not c.recorded, -(c.score if c.score is not None else -1.0), c.label))
+    return out

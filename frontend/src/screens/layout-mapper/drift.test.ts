@@ -22,6 +22,7 @@ function statement(overrides: Partial<Statement>): Statement {
     original_name: "statement.pdf",
     has_pdf: true,
     pdf_in_place: false,
+    pdf_missing: false,
     ...overrides,
   };
 }

@@ -45,6 +45,20 @@ class ImportProposal:
     layout_spec_id: int | None
     detect_score: float | None
     confident: bool
+    remembered: bool = False
+
+
+@dataclass(frozen=True)
+class ExtractorCandidate:
+    """Mirrors `ingest.pipeline.ExtractorCandidate`."""
+
+    kind: str  # 'parser' | 'spec' | 'llm'
+    parser_id: str | None
+    layout_spec_id: int | None
+    label: str
+    score: float | None
+    recorded: bool
+    remembered: bool
 
 
 @dataclass(frozen=True)
@@ -61,6 +75,9 @@ class ImportResult:
     restored_edits: int = 0
     unmatched_edits: int = 0
     discarded_edits: int = 0
+    parsed_count: int = 0
+    previous_txn_count: int | None = None
+    remembered: bool = False
 
 
 @dataclass(frozen=True)
@@ -179,13 +196,16 @@ def reparse(
     layout_spec_id: int | None,
     pages: Sequence[int] | None = None,
     discard_edits: bool = False,
+    allow_empty: bool = False,
 ) -> ImportResult:
-    """Re-run extraction with a different extractor, rebuilding the statement's rows.
+    """Re-run extraction with a different extractor, rebuilding the statement's rows. A result
+    with no transactions replaces a statement that has some only with ``allow_empty``.
 
     Raises:
         ModuleNotFoundError: `ingest/pipeline.py` (P2-A) is not present in this build.
     """
     fn = _resolve("personal_finance_analyzer.ingest.pipeline", "reparse")
+    extra: dict[str, Any] = {"allow_empty": True} if allow_empty else {}
     return cast(
         ImportResult,
         fn(
@@ -195,6 +215,7 @@ def reparse(
             layout_spec_id=layout_spec_id,
             pages=pages,
             discard_edits=discard_edits,
+            **extra,
         ),
     )
 
@@ -205,6 +226,26 @@ def extractor_exists(
     """Whether the named extractor (parser id or layout spec) can be resolved."""
     fn = _resolve("personal_finance_analyzer.ingest.pipeline", "extractor_exists")
     return cast(bool, fn(session, parser_id=parser_id, layout_spec_id=layout_spec_id))
+
+
+def repropose(session: Session, statement_id: int) -> ImportProposal:
+    """Re-run issuer matching and extractor scoring for a not-yet-parsed statement. Does not
+    commit. Raises `PfaError` when it is parsed or its PDF is unavailable."""
+    fn = _resolve("personal_finance_analyzer.ingest.pipeline", "repropose")
+    return cast(ImportProposal, fn(session, statement_id))
+
+
+def extractor_candidates(session: Session, statement_id: int) -> list[ExtractorCandidate]:
+    """Every extractor the statement could be re-imported with, scored on its saved pages."""
+    fn = _resolve("personal_finance_analyzer.ingest.pipeline", "extractor_candidates")
+    return cast(list[ExtractorCandidate], fn(session, statement_id))
+
+
+def resolve_account_for_move(session: Session, statement_id: int, *, user_id: int) -> Any:
+    """The account of ``user_id`` matching the statement's account, created when missing (flushes,
+    does not commit). Returns the `Account` row."""
+    fn = _resolve("personal_finance_analyzer.ingest.pipeline", "resolve_account_for_move")
+    return fn(session, statement_id, user_id=user_id)
 
 
 def reassign(

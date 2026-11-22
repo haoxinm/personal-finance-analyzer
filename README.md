@@ -62,7 +62,12 @@ counterpart except the layout mapper and the forecast.
   choose to discard them; edits that cannot be matched to exactly one rebuilt row are reported, not
   guessed. You can also correct a single transaction's **date, amount or description** in the edit
   dialog: the imported value is remembered ("Imported as ..." with a restore), rules still match the
-  merchant as imported, and overlapping re-imports still skip the row as a duplicate.
+  merchant as imported, and overlapping re-imports still skip the row as a duplicate. A statement
+  that was read but yielded **no transactions** is flagged as needing attention (also in the folder
+  scan's problem list) instead of counted as imported, and a re-import that would leave a statement
+  with no rows is refused unless you confirm it. The re-import offers every extractor that fits the
+  PDF, scored, and the pages to read. If a statement was filed under the wrong person, *change
+  person* moves it and its rows to that person's matching account.
 - **Reconcile every import** against the statement's own printed totals and warn, rather than
   silently accept numbers that don't add up; **never double-count a card payment** (a payment from
   a tracked checking account is a transfer on both sides, not spend).

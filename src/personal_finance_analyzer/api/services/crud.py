@@ -194,26 +194,48 @@ def staged_pdf_path(statement: Statement) -> Path | None:
     return docs.staged_pdf(statement.file_sha256)
 
 
-def statement_pdf_missing(statement: Statement) -> bool:
+def kept_pdf_path(statement: Statement) -> Path | None:
+    """The statement's *kept* copy (recorded path, else found by content: a moved file still
+    counts), not the staged upload: what a re-import reads."""
+    return docs.kept_pdf(statement.stored_path, statement.file_sha256)
+
+
+def statement_pdf_missing(statement: Statement, *, search: bool = True) -> bool:
     """The statement recorded a kept copy, but it is gone from the documents folder (moved out or
-    deleted by hand) and no upload is left to fall back to."""
-    return bool(statement.stored_path) and staged_pdf_path(statement) is None
+    deleted by hand) and no upload is left to fall back to.
+
+    ``search=False`` is for list views: the folder is never walked or hashed (a file that was
+    moved is only found when its new place is already known), see `core.documents.kept_pdf`."""
+    if not statement.stored_path:
+        return False
+    if search:
+        return staged_pdf_path(statement) is None
+    kept = docs.kept_pdf(statement.stored_path, statement.file_sha256, search=False)
+    return kept is None and docs.staged_pdf(statement.file_sha256) is None
 
 
 def list_statements(session: Session, *, user_id: int | None) -> Sequence[Statement]:
     stmt: Select[Statement] = select(Statement).order_by(Statement.id.desc())
     if user_id is not None:
+        # A person's statements: those imported into one of their accounts, plus those uploaded
+        # for them that have no account yet (awaiting an extractor, failed, unreadable).
         stmt = stmt.join(Account, Statement.account_id == Account.id, isouter=True).where(
-            Account.user_id == user_id
+            or_(
+                Account.user_id == user_id,
+                and_(Statement.account_id.is_(None), Statement.user_id == user_id),
+            )
         )
     return session.execute(stmt).scalars().all()
 
 
 def statement_user_id(session: Session, statement: Statement) -> int | None:
-    if statement.account_id is None:
-        return None
-    account = session.get(Account, statement.account_id)
-    return account.user_id if account is not None else None
+    """Whose statement it is: the owner of its account once imported, else the user it was
+    uploaded for (`statements.user_id`)."""
+    if statement.account_id is not None:
+        account = session.get(Account, statement.account_id)
+        if account is not None:
+            return account.user_id
+    return statement.user_id
 
 
 def reconciliation_delta_minor(session: Session, statement: Statement) -> int | None:
@@ -237,13 +259,6 @@ def reconciliation_delta_minor(session: Session, statement: Statement) -> int | 
     closing = statement.closing_balance_minor
     expected = (closing - opening) if account.account_type == "credit" else (opening - closing)
     return statement.parsed_total_minor - expected
-
-
-def patch_statement(session: Session, statement: Statement, *, account_id: int | None) -> Statement:
-    if account_id is not None:
-        statement.account_id = account_id
-    session.flush()
-    return statement
 
 
 def delete_statement(session: Session, statement: Statement) -> tuple[str | None, str]:
@@ -690,6 +705,7 @@ def update_issuer(
         issuer.match_terms = json.dumps(match_terms)
     if default_spec_id is not None:
         issuer.default_spec_id = default_spec_id
+        issuer.default_parser_id = None  # the remembered extractor is one or the other
     session.flush()
     return issuer
 

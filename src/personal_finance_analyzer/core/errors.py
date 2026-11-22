@@ -13,7 +13,12 @@ from __future__ import annotations
 
 
 class PfaError(Exception):
-    """Base class for every domain error raised by this application."""
+    """Base class for every domain error raised by this application.
+
+    A subclass may set `code`, a short machine-readable identifier (stored on a failed job as
+    `jobs.error_code`) that lets the UI offer the right next step instead of parsing the message."""
+
+    code: str | None = None
 
 
 class NoTextLayerError(PfaError):
@@ -29,6 +34,13 @@ class UnsupportedLayoutError(PfaError):
 class ParserError(PfaError):
     """A parser recognized the layout but failed to parse it, or a required reconciliation
     signal (e.g. the statement period) could not be read. Maps to `statements.status = 'error'`."""
+
+
+class EmptyReparseError(PfaError):
+    """A re-import would have replaced a statement's transactions with none. Nothing was changed;
+    repeating the re-import with ``allow_empty=True`` confirms that is what the user wants."""
+
+    code = "empty_result"
 
 
 class EgressViolation(PfaError):
