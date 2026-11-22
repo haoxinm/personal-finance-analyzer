@@ -2,12 +2,14 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { apiClient, throwIfError, type components } from "@/api/client";
 
+import { errorMessage, useSafeToast } from "./use-safe-toast";
+
 /** Hooks of the "Folder imports" panel: PDFs put into the documents folder by hand are imported by
  * a background scan (`/api/watch/*`). */
 
 export type WatchStatus = components["schemas"]["WatchStatus"];
 export type WatchFile = components["schemas"]["WatchFile"];
-export type WatchView = "recent" | "problems";
+export type WatchView = "recent" | "problems" | "dismissed";
 
 const WATCH_KEY = ["watch"] as const;
 
@@ -42,6 +44,7 @@ export function useWatchFiles(view: WatchView) {
 /** "Scan now": starts a scan in the background; the status query shows it running. */
 export function useScanNow() {
   const queryClient = useQueryClient();
+  const toast = useSafeToast();
   return useMutation({
     mutationFn: async () => {
       const { data, error } = await apiClient.POST("/watch/scan");
@@ -53,12 +56,16 @@ export function useScanNow() {
       queryClient.setQueryData([...WATCH_KEY, "status"], data.status);
       void queryClient.invalidateQueries({ queryKey: WATCH_KEY });
     },
+    onError: (error: unknown) => {
+      toast({ title: "Could not start a scan", description: errorMessage(error), variant: "destructive" });
+    },
   });
 }
 
 /** Retry: forget a problem so the next scan looks at the file again. */
 export function useRetryWatchFile() {
   const queryClient = useQueryClient();
+  const toast = useSafeToast();
   return useMutation({
     mutationFn: async (fileId: number) => {
       const { error } = await apiClient.POST("/watch/files/{file_id}/retry", {
@@ -68,6 +75,68 @@ export function useRetryWatchFile() {
     },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: WATCH_KEY });
+    },
+    onError: (error: unknown) => {
+      toast({ title: "Could not retry", description: errorMessage(error), variant: "destructive" });
+    },
+  });
+}
+
+/** Dismiss a failed file: hide it from "Needs attention" until the file changes. Undo is offered
+ * by a toast (`undismiss`). */
+export function useDismissWatchFile() {
+  const queryClient = useQueryClient();
+  const toast = useSafeToast();
+  return useMutation({
+    mutationFn: async (fileId: number) => {
+      const { error } = await apiClient.POST("/watch/files/{file_id}/dismiss", {
+        params: { path: { file_id: fileId } },
+      });
+      throwIfError(error);
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: WATCH_KEY });
+    },
+    onError: (error: unknown) => {
+      toast({ title: "Could not dismiss", description: errorMessage(error), variant: "destructive" });
+    },
+  });
+}
+
+/** Put a dismissed file back under "Needs attention" (the toast's Undo, and "Show again"). */
+export function useUndismissWatchFile() {
+  const queryClient = useQueryClient();
+  const toast = useSafeToast();
+  return useMutation({
+    mutationFn: async (fileId: number) => {
+      const { error } = await apiClient.POST("/watch/files/{file_id}/undismiss", {
+        params: { path: { file_id: fileId } },
+      });
+      throwIfError(error);
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: WATCH_KEY });
+    },
+    onError: (error: unknown) => {
+      toast({ title: "Could not show it again", description: errorMessage(error), variant: "destructive" });
+    },
+  });
+}
+
+export function useDismissAllWatchFiles() {
+  const queryClient = useQueryClient();
+  const toast = useSafeToast();
+  return useMutation({
+    mutationFn: async () => {
+      const { data, error } = await apiClient.POST("/watch/files/dismiss-all");
+      throwIfError(error);
+      return data?.dismissed ?? 0;
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: WATCH_KEY });
+    },
+    onError: (error: unknown) => {
+      toast({ title: "Could not dismiss", description: errorMessage(error), variant: "destructive" });
     },
   });
 }

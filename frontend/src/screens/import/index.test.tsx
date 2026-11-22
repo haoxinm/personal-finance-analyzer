@@ -101,6 +101,20 @@ describe("ImportScreen", () => {
     vi.restoreAllMocks();
   });
 
+  it("shows the Imported statements panel above the folder imports", async () => {
+    const fetchMock = vi.fn<typeof fetch>((input) => {
+      const { url } = describeRequest(input);
+      if (url.includes("/api/users")) return Promise.resolve(jsonResponse([USER]));
+      if (url.includes("/api/settings")) return Promise.resolve(jsonResponse({ llm: { mode: "none" } }));
+      return Promise.resolve(jsonResponse([]));
+    });
+    await renderScreen(fetchMock);
+    const imported = await screen.findByRole("region", { name: "Imported statements" });
+    expect(await screen.findByText("No statements imported yet.")).toBeInTheDocument();
+    const folder = await screen.findByTestId("folder-imports-panel");
+    expect(imported.compareDocumentPosition(folder) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
   it("defaults the user selector to the default user and lets the user drop a file through to a confident, pre-selected proposal", async () => {
     const fetchMock = vi.fn<typeof fetch>((input) => {
       const { url, method } = describeRequest(input);

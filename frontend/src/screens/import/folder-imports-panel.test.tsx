@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
+
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -81,20 +82,47 @@ interface Fixture {
   status: Record<string, unknown>;
   recent: unknown[];
   problems: unknown[];
+  dismissed?: unknown[];
+  /** Force an answer (status code) for any POST whose URL contains the key. */
+  failPost?: Record<string, number>;
 }
 
 function makeFetch(fixture: Fixture) {
+  fixture.dismissed ??= [];
   const calls: { url: string; method: string }[] = [];
+  const move = (from: unknown[], to: unknown[], id: number | null) => {
+    const moving = from.filter((f) => id === null || (f as { id: number }).id === id);
+    from.splice(0, from.length, ...from.filter((f) => !moving.includes(f)));
+    to.push(...moving);
+    return moving.length;
+  };
   const fn = vi.fn<typeof fetch>((input) => {
     const { url, method } = describeRequest(input);
     calls.push({ url, method });
+    if (method === "POST") {
+      for (const [key, status] of Object.entries(fixture.failPost ?? {})) {
+        if (url.includes(key)) return Promise.resolve(jsonResponse({ detail: "the server said no" }, status));
+      }
+    }
     if (url.includes("/api/watch/status")) return Promise.resolve(jsonResponse(fixture.status));
-    if (url.includes("/api/watch/files") && url.includes("retry") && method === "POST") {
-      fixture.problems = [];
+    if (url.includes("/api/watch/files/dismiss-all") && method === "POST") {
+      const n = move(fixture.problems, fixture.dismissed!, null);
+      return Promise.resolve(jsonResponse({ dismissed: n }));
+    }
+    const action = /\/api\/watch\/files\/(\d+)\/(dismiss|undismiss|retry)/.exec(url);
+    if (action && method === "POST") {
+      const id = Number(action[1]);
+      if (action[2] === "retry") fixture.problems = [];
+      if (action[2] === "dismiss") move(fixture.problems, fixture.dismissed!, id);
+      if (action[2] === "undismiss") move(fixture.dismissed!, fixture.problems, id);
       return Promise.resolve(new Response(null, { status: 204 }));
     }
     if (url.includes("/api/watch/files")) {
-      const items = url.includes("view=problems") ? fixture.problems : fixture.recent;
+      const items = url.includes("view=problems")
+        ? fixture.problems
+        : url.includes("view=dismissed")
+          ? fixture.dismissed!
+          : fixture.recent;
       return Promise.resolve(jsonResponse({ items, total: items.length }));
     }
     if (url.includes("/api/watch/scan") && method === "POST") {
@@ -110,12 +138,18 @@ async function renderPanel(fetchMock: typeof fetch) {
   vi.resetModules();
   vi.stubGlobal("fetch", fetchMock);
   const { FolderImportsPanel } = await import("./folder-imports-panel");
+  // Same module graph as the panel (resetModules above), or the toast context would differ.
+  const { Toaster } = await import("@/components/ui/toaster");
+  const { ToastContextProvider } = await import("@/components/ui/toast-provider");
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
-        <FolderImportsPanel />
-      </MemoryRouter>
+      <ToastContextProvider>
+        <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+          <FolderImportsPanel />
+        </MemoryRouter>
+        <Toaster />
+      </ToastContextProvider>
     </QueryClientProvider>,
   );
 }
@@ -236,5 +270,139 @@ describe("FolderImportsPanel", () => {
     const fn = vi.fn<typeof fetch>(() => Promise.resolve(jsonResponse({ detail: "boom" }, 500)));
     await renderPanel(fn);
     expect(await screen.findByRole("alert")).toHaveTextContent("Could not load the folder-import status");
+  });
+
+  it("Dismiss hides a failed file, offers Undo, and the Dismissed list can bring it back", async () => {
+    const fixture: Fixture = { status: BASE_STATUS, recent: [], problems: [PROBLEM] };
+    const { fn, calls } = makeFetch(fixture);
+    await renderPanel(fn);
+
+    const row = await screen.findByTestId("folder-import-problem");
+    await userEvent.click(within(row).getByRole("button", { name: "Dismiss Taylor/Statements/jan.pdf" }));
+    await waitFor(() =>
+      expect(calls.some((c) => c.method === "POST" && c.url.includes("/api/watch/files/3/dismiss"))).toBe(true),
+    );
+    await waitFor(() => expect(screen.queryByTestId("folder-import-problem")).not.toBeInTheDocument());
+    expect(screen.getByText("Nothing needs attention.")).toBeInTheDocument();
+    expect(await screen.findByText("It will show again if the file changes.")).toBeInTheDocument();
+
+    // The collapsed "Dismissed" list holds it.
+    const dismissed = await screen.findByTestId("folder-imports-dismissed");
+    expect(dismissed).not.toHaveAttribute("open");
+    expect(within(dismissed).getByText("Dismissed (1)")).toBeInTheDocument();
+
+    // Undo from the toast puts it back.
+    await userEvent.click(screen.getByRole("button", { name: "Undo" }));
+    await waitFor(() =>
+      expect(calls.some((c) => c.method === "POST" && c.url.includes("/api/watch/files/3/undismiss"))).toBe(true),
+    );
+    expect(await screen.findByTestId("folder-import-problem")).toBeInTheDocument();
+    expect(screen.queryByTestId("folder-imports-dismissed")).not.toBeInTheDocument();
+  });
+
+  it("Show again restores a dismissed file", async () => {
+    const fixture: Fixture = { status: BASE_STATUS, recent: [], problems: [], dismissed: [PROBLEM] };
+    const { fn, calls } = makeFetch(fixture);
+    await renderPanel(fn);
+    const dismissed = await screen.findByTestId("folder-imports-dismissed");
+    await userEvent.click(within(dismissed).getByText("Dismissed (1)"));
+    await userEvent.click(within(dismissed).getByRole("button", { name: "Show again Taylor/Statements/jan.pdf" }));
+    await waitFor(() =>
+      expect(calls.some((c) => c.method === "POST" && c.url.includes("/api/watch/files/3/undismiss"))).toBe(true),
+    );
+    expect(await screen.findByTestId("folder-import-problem")).toBeInTheDocument();
+  });
+
+  it("Dismiss all asks first, then dismisses every problem", async () => {
+    const second = { ...PROBLEM, id: 4, path: "Taylor/Statements/feb.pdf" };
+    const fixture: Fixture = { status: BASE_STATUS, recent: [], problems: [PROBLEM, second] };
+    const { fn, calls } = makeFetch(fixture);
+    await renderPanel(fn);
+    await screen.findAllByTestId("folder-import-problem");
+    await userEvent.click(screen.getByRole("button", { name: "Dismiss all" }));
+    const confirm = screen.getByRole("alertdialog", { name: "Confirm dismiss all" });
+    expect(confirm).toHaveTextContent("Dismiss 2 files? They show again if they change.");
+    expect(calls.some((c) => c.url.includes("dismiss-all"))).toBe(false);
+
+    await userEvent.click(within(confirm).getByRole("button", { name: "Dismiss all" }));
+    await waitFor(() => expect(calls.some((c) => c.method === "POST" && c.url.includes("dismiss-all"))).toBe(true));
+    await waitFor(() => expect(screen.queryByTestId("folder-import-problem")).not.toBeInTheDocument());
+    expect(await screen.findByText("Dismissed 2 files")).toBeInTheDocument();
+    expect(await screen.findByText("Dismissed (2)")).toBeInTheDocument();
+  });
+
+  it("does not offer Dismiss all for a single problem, and Cancel closes the confirmation", async () => {
+    const second = { ...PROBLEM, id: 4, path: "Taylor/Statements/feb.pdf" };
+    const single = makeFetch({ status: BASE_STATUS, recent: [], problems: [PROBLEM] });
+    const view = await renderPanel(single.fn);
+    await screen.findByTestId("folder-import-problem");
+    expect(screen.queryByRole("button", { name: "Dismiss all" })).not.toBeInTheDocument();
+    view.unmount();
+
+    const two = makeFetch({ status: BASE_STATUS, recent: [], problems: [PROBLEM, second] });
+    await renderPanel(two.fn);
+    await screen.findAllByTestId("folder-import-problem");
+    await userEvent.click(screen.getByRole("button", { name: "Dismiss all" }));
+    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+    expect(two.calls.some((c) => c.url.includes("dismiss-all"))).toBe(false);
+  });
+
+  it("shows an error toast when Retry fails and keeps the row", async () => {
+    const { fn } = makeFetch({
+      status: BASE_STATUS,
+      recent: [],
+      problems: [PROBLEM],
+      failPost: { "/retry": 500 },
+    });
+    await renderPanel(fn);
+    const row = await screen.findByTestId("folder-import-problem");
+    await userEvent.click(within(row).getByRole("button", { name: "Retry Taylor/Statements/jan.pdf" }));
+    expect(await screen.findByText("Could not retry")).toBeInTheDocument();
+    expect(screen.getByText("the server said no")).toBeInTheDocument();
+    expect(screen.getByTestId("folder-import-problem")).toBeInTheDocument();
+  });
+
+  it("shows an error toast when Dismiss or Scan now fails", async () => {
+    const { fn } = makeFetch({
+      status: BASE_STATUS,
+      recent: [],
+      problems: [PROBLEM],
+      failPost: { "/dismiss": 404, "/watch/scan": 500 },
+    });
+    await renderPanel(fn);
+    const row = await screen.findByTestId("folder-import-problem");
+    await userEvent.click(within(row).getByRole("button", { name: /^Dismiss / }));
+    expect(await screen.findByText("Could not dismiss")).toBeInTheDocument();
+    expect(screen.getByTestId("folder-import-problem")).toBeInTheDocument();
+
+    const scanButton = await screen.findByRole("button", { name: "Scan now" });
+    await userEvent.click(scanButton);
+    expect(await screen.findByText("Could not start a scan")).toBeInTheDocument();
+  });
+
+  it("disables only the Retry/Dismiss of the row that is in flight", async () => {
+    const second = { ...PROBLEM, id: 4, path: "Taylor/Statements/feb.pdf" };
+    const fixture: Fixture = { status: BASE_STATUS, recent: [], problems: [PROBLEM, second] };
+    const { fn } = makeFetch(fixture);
+    // Hold the retry answer so the mutation stays pending.
+    let release: () => void = () => undefined;
+    const base = fn.getMockImplementation()!;
+    fn.mockImplementation((input, init) => {
+      const { url, method } = describeRequest(input);
+      if (method === "POST" && url.includes("/files/3/retry")) {
+        return new Promise<Response>((resolve) => {
+          release = () => resolve(new Response(null, { status: 204 }));
+        });
+      }
+      return base(input, init);
+    });
+    await renderPanel(fn);
+    const rows = await screen.findAllByTestId("folder-import-problem");
+    await userEvent.click(within(rows[0]!).getByRole("button", { name: /^Retry / }));
+    await waitFor(() => expect(within(rows[0]!).getByRole("button", { name: /^Retry / })).toBeDisabled());
+    expect(within(rows[1]!).getByRole("button", { name: /^Retry / })).toBeEnabled();
+    expect(within(rows[1]!).getByRole("button", { name: /^Dismiss / })).toBeEnabled();
+    release();
   });
 });
