@@ -66,6 +66,10 @@ def update_issuer(
     issuer = crud.get_issuer(session, issuer_id)
     if issuer is None:
         raise HTTPException(status_code=404, detail="issuer not found")
+    if body.default_spec_id is not None:
+        problem = crud.remembered_spec_problem(session, issuer_id, body.default_spec_id)
+        if problem is not None:
+            raise HTTPException(status_code=400, detail=problem)
     try:
         issuer = crud.update_issuer(
             session,

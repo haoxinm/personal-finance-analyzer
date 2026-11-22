@@ -119,7 +119,8 @@ export interface paths {
          *     * `user_id` alone: the statement and all its transactions move to that person's matching
          *       account (same issuer, type, mask and currency), which is created when they have none.
          *     * `account_id` alone: they move to that account; its owner becomes the statement's person.
-         *     * both: moved to that account as the given user.
+         *     * both: moved to that account; the account must belong to the given user (400 otherwise).
+         *       An `account_id` needs an imported statement (409 otherwise) and an existing account (404).
          *
          *     Duplicates the target account already holds are merged (`duplicates_deleted`). Sending
          *     nothing, or what is already the case, is a 400.

@@ -162,7 +162,12 @@ def import_statement(ctx: Context) -> Result:
         return Result(
             "failed",
             code="needs_extractor",
-            message="Statements are set to be read by the LLM, which needs you to choose pages.",
+            message=(
+                "This bank's statements are remembered as read by the LLM, which needs you to "
+                "choose pages."
+                if proposal.remembered
+                else "Statements are set to be read by the LLM, which needs you to choose pages."
+            ),
             hint="Open the Import page and upload this file to choose the pages to send.",
             statement_id=proposal.statement_id,
         )

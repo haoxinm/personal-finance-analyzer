@@ -85,3 +85,35 @@ def test_a_fresh_database_already_has_the_columns(tmp_path: Path) -> None:
     command.upgrade(build_alembic_config(f"sqlite:///{db}"), "head")
     for table, column in _COLUMNS:
         assert column in _columns(db, table)
+
+
+def test_upgrade_backfills_the_row_count_of_statements_that_have_rows(tmp_path: Path) -> None:
+    url, db = _database_before_0015(tmp_path)
+    con = sqlite3.connect(db)
+    try:
+        cols = [r[1] for r in con.execute("PRAGMA table_info(statements)")]
+        base = {
+            "file_sha256": "x",
+            "original_name": "a.pdf",
+            "page_count": 1,
+            "status": "parsed",
+            "ingested_at": "x",
+        }
+        for sha, count in (("a", 3), ("b", 0)):
+            row = {**base, "file_sha256": sha, "txn_count": count}
+            row = {k: v for k, v in row.items() if k in cols}
+            con.execute(
+                f"INSERT INTO statements ({', '.join(row)}) VALUES ({', '.join('?' * len(row))})",
+                tuple(row.values()),
+            )
+        con.commit()
+    finally:
+        con.close()
+    command.upgrade(build_alembic_config(url), "head")
+    con = sqlite3.connect(db)
+    try:
+        assert con.execute(
+            "SELECT file_sha256, parsed_row_count FROM statements ORDER BY file_sha256"
+        ).fetchall() == [("a", 3), ("b", None)]
+    finally:
+        con.close()

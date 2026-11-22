@@ -40,9 +40,9 @@ from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import CursorResult, delete, func, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
@@ -286,6 +286,7 @@ def propose_import(
             else:
                 _stage_pdf(pdf_path, file_sha256)
             existing.user_id = user_id
+            failed_parser = existing.parser_id if retry_after_failure else None
             if retry_after_failure:
                 # A failed built-in parse is retryable: re-proposing reopens the statement
                 # (the failure message stays in `error_detail` as a warning) and it is never
@@ -294,7 +295,13 @@ def propose_import(
             if existing.status == STATUS_AWAITING_EXTRACTOR:
                 # Re-score: the issuers, specs and remembered choices may have changed since the
                 # proposal was recorded.
-                rescored = _propose_extractor(session, extract(pdf_path), load_settings())
+                rescored = _propose_extractor(
+                    session,
+                    extract(pdf_path),
+                    load_settings(),
+                    # The extractor that just failed is not proposed again.
+                    exclude=frozenset({failed_parser}) if failed_parser else frozenset(),
+                )
                 _apply_proposal(existing, rescored)
             session.commit()
         if existing.status == STATUS_PARSED:
@@ -394,13 +401,24 @@ class _Proposed:
     remembered: bool
 
 
-def _propose_extractor(session: Session, doc: ExtractedDoc, settings: Settings) -> _Proposed:
-    """Match the issuer and choose the extractor to propose for ``doc``: the issuer's remembered
-    choice first, else the configured LLM default, else the best-scoring built-in/spec. Pure: it
-    reads the database but writes nothing (the LLM is never called)."""
+def _propose_extractor(
+    session: Session,
+    doc: ExtractedDoc,
+    settings: Settings,
+    *,
+    exclude: frozenset[str] = frozenset(),
+) -> _Proposed:
+    """Match the issuer and choose the extractor to propose for ``doc``.
+
+    Order: the issuer's remembered choice when it is *confident* for this document (its
+    `detect()` score reaches `CONFIDENT_SCORE_THRESHOLD`), else the configured LLM default, else
+    the best-scoring built-in/spec. A remembered LLM has no score, so it never beats a confident
+    local extractor: it is proposed only when normal scoring is not confident. ``exclude`` holds
+    parser ids that must not be proposed (the extractor that just failed on this statement).
+    Pure: it reads the database but writes nothing (the LLM is never called)."""
     issuer_id = issuer_match.match_issuer(session, doc, locate_table_bands(doc))
-    selection = _remembered_selection(session, doc, issuer_id, settings)
-    if selection is not None:
+    selection = _remembered_selection(session, doc, issuer_id, settings, exclude=exclude)
+    if selection is not None and selection[0] != "llm":
         parser_id, version, score, spec_id = selection
         return _Proposed(
             issuer_id=issuer_id,
@@ -409,6 +427,20 @@ def _propose_extractor(session: Session, doc: ExtractedDoc, settings: Settings) 
             detect_score=score,
             layout_spec_id=spec_id,
             confident=_is_confident(issuer_id, score, STATUS_AWAITING_EXTRACTOR),
+            remembered=True,
+        )
+    scored = _scored_proposal(session, doc, issuer_id, exclude)
+    if selection is not None:
+        if scored.confident:
+            return scored  # a confident local extractor beats the remembered LLM
+        parser_id, version, score, spec_id = selection
+        return _Proposed(
+            issuer_id=issuer_id,
+            parser_id=parser_id,
+            parser_version=version,
+            detect_score=score,
+            layout_spec_id=spec_id,
+            confident=False,
             remembered=True,
         )
     if settings.ingest.default_extractor == "llm" and settings.llm.is_configured:
@@ -424,7 +456,13 @@ def _propose_extractor(session: Session, doc: ExtractedDoc, settings: Settings) 
             confident=False,
             remembered=False,
         )
-    selected, score, layout_spec_id = _select_parser(session, doc, issuer_id)
+    return scored
+
+
+def _scored_proposal(
+    session: Session, doc: ExtractedDoc, issuer_id: int | None, exclude: frozenset[str]
+) -> _Proposed:
+    selected, score, layout_spec_id = _select_parser(session, doc, issuer_id, exclude=exclude)
     return _Proposed(
         issuer_id=issuer_id,
         parser_id=selected.id,
@@ -445,24 +483,53 @@ def _apply_proposal(statement: Statement, proposed: _Proposed) -> None:
     statement.detect_score = proposed.detect_score
 
 
+def _newest_approved_version(session: Session, row: LayoutSpec) -> LayoutSpec | None:
+    """The highest approved version of the spec ``row`` belongs to (same name and issuer): a
+    revision approved after the user remembered ``row`` supersedes it."""
+    stmt = (
+        select(LayoutSpec)
+        .where(
+            LayoutSpec.name == row.name,
+            LayoutSpec.approved.is_(True),
+            LayoutSpec.issuer_id.is_(None)
+            if row.issuer_id is None
+            else LayoutSpec.issuer_id == row.issuer_id,
+        )
+        .order_by(LayoutSpec.version.desc())
+    )
+    return session.execute(stmt).scalars().first()
+
+
 def _remembered_selection(
-    session: Session, doc: ExtractedDoc, issuer_id: int | None, settings: Settings
+    session: Session,
+    doc: ExtractedDoc,
+    issuer_id: int | None,
+    settings: Settings,
+    *,
+    exclude: frozenset[str] = frozenset(),
 ) -> tuple[str, str, float | None, int | None] | None:
     """The issuer's remembered extractor as ``(parser_id, version, detect_score, spec_id)``, or
-    ``None`` when there is none or it can no longer be used (a spec that was un-approved or
-    deleted, a parser that is no longer registered or does not recognise this document, the LLM
-    when it is not configured): selection then falls back to normal scoring."""
+    ``None`` when there is none or it cannot be used: a spec with no approved version left, a
+    parser that is no longer registered, the LLM when it is not configured, an extractor in
+    ``exclude``, or a spec/parser that is not *confident* for this document (score below
+    `CONFIDENT_SCORE_THRESHOLD`). Selection then falls back to normal scoring. A remembered spec
+    resolves to the newest approved version of the same spec. The LLM has no score and is
+    returned as ``("llm", ..., None, None)``; the caller decides whether it may win."""
     issuer = session.get(Issuer, issuer_id) if issuer_id is not None else None
     if issuer is None:
         return None
     if issuer.default_spec_id is not None:
-        row = session.get(LayoutSpec, issuer.default_spec_id)
-        if row is not None and row.approved:
-            spec_parser = cast(StatementParser, build_parser_for_row(row))
-            return spec_parser.id, spec_parser.version, _detect_score(spec_parser, doc), row.id
-        return None
+        remembered_row = session.get(LayoutSpec, issuer.default_spec_id)
+        row = _newest_approved_version(session, remembered_row) if remembered_row else None
+        if row is None or row.parser_id in exclude:
+            return None
+        spec_parser = cast(StatementParser, build_parser_for_row(row))
+        score = _detect_score(spec_parser, doc)
+        if score < CONFIDENT_SCORE_THRESHOLD:
+            return None
+        return spec_parser.id, spec_parser.version, score, row.id
     remembered = issuer.default_parser_id
-    if remembered is None:
+    if remembered is None or remembered in exclude:
         return None
     if remembered == "llm":
         if not settings.llm.is_configured:
@@ -473,7 +540,9 @@ def _remembered_selection(
     for parser in (*discover_all_parsers(), generic_table):
         if parser.id == remembered:
             score = _detect_score(parser, doc)
-            return (parser.id, parser.version, score, None) if score > 0 else None
+            if score < CONFIDENT_SCORE_THRESHOLD:
+                return None
+            return parser.id, parser.version, score, None
     return None
 
 
@@ -498,19 +567,27 @@ def _detect_score(parser: StatementParser, doc: ExtractedDoc) -> float:
 
 
 def _select_parser(
-    session: Session, doc: ExtractedDoc, issuer_id: int | None
+    session: Session,
+    doc: ExtractedDoc,
+    issuer_id: int | None,
+    *,
+    exclude: frozenset[str] = frozenset(),
 ) -> tuple[StatementParser, float, int | None]:
     """Score every built-in/entry-point parser plus, when an issuer matched, every approved
     layout spec remembered for that issuer (§2f.1, §2f.2) — for every account type, since the
     account type is not known until parsing runs and a spec's own `account_type` is usually a
     stronger signal than guessing one first. Returns the winning parser, its `detect()` score,
     and the `layout_specs.id` it came from (`None` for a built-in parser)."""
-    candidates: list[StatementParser] = list(discover_all_parsers())
+    candidates: list[StatementParser] = [p for p in discover_all_parsers() if p.id not in exclude]
     spec_by_parser_id: dict[str, LayoutSpec] = {}
     if issuer_id is not None:
         for account_type in ("credit", "checking", "savings"):
             spec_row = resolve_spec(session, issuer_id=issuer_id, account_type=account_type)
-            if spec_row is not None and spec_row.parser_id not in spec_by_parser_id:
+            if (
+                spec_row is not None
+                and spec_row.parser_id not in spec_by_parser_id
+                and spec_row.parser_id not in exclude
+            ):
                 spec_by_parser_id[spec_row.parser_id] = spec_row
                 candidates.append(cast(StatementParser, build_parser_for_row(spec_row)))
 
@@ -1581,6 +1658,17 @@ def reassign(
     statement.account_id = account_id
     statement.user_id = user_id
     session.flush()
+    if duplicates_deleted:
+        # Deleted duplicates no longer belong to this statement: keep its count truthful.
+        statement.txn_count = (
+            session.scalar(
+                select(func.count())
+                .select_from(Transaction)
+                .where(Transaction.statement_id == statement_id)
+            )
+            or 0
+        )
+        session.flush()
     return rows_moved, duplicates_deleted
 
 
@@ -1645,9 +1733,44 @@ def repropose(session: Session, statement_id: int) -> ImportProposal:
     path = _statement_pdf(statement)
     if path is None:
         raise PfaError(f"statement {statement_id} has no PDF on disk to re-propose from")
-    proposed = _propose_extractor(session, extract(path), load_settings())
-    _apply_proposal(statement, proposed)
-    session.flush()
+    # A statement whose import failed is re-proposed without the extractor that just failed.
+    failed_parser = (
+        statement.parser_id
+        if statement.status in (STATUS_UNSUPPORTED_LAYOUT, STATUS_ERROR)
+        else None
+    )
+    proposed = _propose_extractor(
+        session,
+        extract(path),
+        load_settings(),
+        exclude=frozenset({failed_parser}) if failed_parser else frozenset(),
+    )
+    # Conditional update: the (slow) extraction above may have raced a confirm that parsed this
+    # statement meanwhile; never overwrite a parsed statement's extractor.
+    updated = cast(
+        "CursorResult[Any]",
+        session.execute(
+            update(Statement)
+            .where(
+                Statement.id == statement_id,
+                Statement.status.in_(
+                    (STATUS_AWAITING_EXTRACTOR, STATUS_UNSUPPORTED_LAYOUT, STATUS_ERROR)
+                ),
+            )
+            .values(
+                issuer_id=proposed.issuer_id,
+                layout_spec_id=proposed.layout_spec_id,
+                parser_id=proposed.parser_id,
+                parser_version=proposed.parser_version,
+                detect_score=proposed.detect_score,
+            )
+            .execution_options(synchronize_session=False)
+        ),
+    )
+    if updated.rowcount == 0:
+        session.expire(statement)
+        raise PfaError(f"statement {statement_id} is no longer pending; it cannot be re-proposed")
+    session.expire(statement)
     return ImportProposal(
         statement_id=statement.id,
         status=statement.status,

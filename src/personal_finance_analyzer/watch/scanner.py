@@ -538,7 +538,11 @@ class FolderScanner:
             select(Statement.id).where(
                 Statement.id.in_(list(linked)),
                 Statement.status == "parsed",
-                or_(Statement.parsed_row_count.is_(None), Statement.parsed_row_count > 0),
+                or_(
+                    Statement.parsed_row_count > 0,
+                    # (imported before row counts were recorded: rows mean it found some)
+                    Statement.parsed_row_count.is_(None) & (Statement.txn_count > 0),
+                ),
             )
         ).all()
         for statement_id in parsed:

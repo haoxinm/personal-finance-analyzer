@@ -703,7 +703,12 @@ def test_a_dismissed_failure_finished_by_hand_is_undismissed_when_settled(
     put_statement("loose.pdf")
     scan_stable(setup)
     statement = Statement(
-        file_sha256="e" * 64, original_name="loose.pdf", status="parsed", ingested_at=utcnow_iso()
+        file_sha256="e" * 64,
+        original_name="loose.pdf",
+        status="parsed",
+        txn_count=3,
+        parsed_row_count=3,
+        ingested_at=utcnow_iso(),
     )
     session.add(statement)
     session.flush()

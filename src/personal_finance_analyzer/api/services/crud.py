@@ -686,6 +686,19 @@ def create_issuer(session: Session, *, name: str, match_terms: list[str]) -> Iss
     return issuer
 
 
+def remembered_spec_problem(session: Session, issuer_id: int, spec_id: int) -> str | None:
+    """Why ``spec_id`` cannot be the remembered extractor of issuer ``issuer_id`` (None when it
+    can): it must exist, be approved and belong to that issuer."""
+    spec = session.get(LayoutSpec, spec_id)
+    if spec is None:
+        return "layout spec not found"
+    if spec.issuer_id != issuer_id:
+        return "that layout spec belongs to another issuer"
+    if not spec.approved:
+        return "that layout spec is not approved yet"
+    return None
+
+
 def update_issuer(
     session: Session,
     issuer: Issuer,
@@ -779,6 +792,12 @@ def revise_layout_spec(
 
 def approve_layout_spec(session: Session, spec: LayoutSpec) -> LayoutSpec:
     spec.approved = True
+    # A revision supersedes the version an issuer remembered (same name and issuer).
+    issuer = session.get(Issuer, spec.issuer_id) if spec.issuer_id is not None else None
+    if issuer is not None and issuer.default_spec_id not in (None, spec.id):
+        current = session.get(LayoutSpec, issuer.default_spec_id)
+        if current is not None and current.name == spec.name and current.version < spec.version:
+            issuer.default_spec_id = spec.id
     session.flush()
     return spec
 

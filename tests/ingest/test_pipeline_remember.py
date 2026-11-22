@@ -7,12 +7,13 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from sqlalchemy import update
 from sqlalchemy.orm import Session
 
 from personal_finance_analyzer.db.models import Issuer, LayoutSpec, Statement, User
 from personal_finance_analyzer.ingest import pipeline
 from tests.ingest.tax_support import generated_pdf
-from tests.watch.support import add_layout_b_bank, add_layout_b_spec
+from tests.watch.support import add_layout_b_bank, add_layout_b_spec, statement_pdf
 
 _FIRST = "normal"
 _SECOND = "multiline"
@@ -130,9 +131,120 @@ def test_a_remembered_llm_is_proposed_but_never_confident(
     monkeypatch.setenv("PFA_LLM__ENABLED", "true")
     monkeypatch.setenv("PFA_LLM__BASE_URL", "https://api.example.com")
     monkeypatch.setenv("PFA_LLM__MODEL", "m")
+    # The built-in is confident for this layout: a remembered LLM does not override it.
+    again = pipeline.repropose(session, first.statement_id)
+    assert again.parser_id == "layout_b_credit" and again.remembered is False
+    assert again.confident is True
+
+
+def test_a_remembered_llm_is_proposed_when_no_local_extractor_is_confident(
+    session: Session, user: User, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    issuer = Issuer(name="Invented", slug="invented", match_terms='["Invented Card Co"]')
+    session.add(issuer)
+    session.commit()
+    pdf = statement_pdf(tmp_path / "x.pdf")
+    first = pipeline.propose_import(session, pdf, user_id=user.id, original_name="x.pdf")
+    session.commit()
+    issuer.default_parser_id = "llm"
+    session.commit()
+    monkeypatch.setenv("PFA_LLM__ENABLED", "true")
+    monkeypatch.setenv("PFA_LLM__BASE_URL", "https://api.example.com")
+    monkeypatch.setenv("PFA_LLM__MODEL", "m")
     again = pipeline.repropose(session, first.statement_id)
     assert again.parser_id == "llm" and again.remembered is True
     assert again.confident is False and again.detect_score is None
+
+
+def test_a_remembered_extractor_that_is_not_confident_falls_back_to_scoring(
+    session: Session, user: User
+) -> None:
+    issuer = add_layout_b_bank(session)
+    spec = add_layout_b_spec(session, issuer, score=0.5)  # below the confident threshold
+    first = _propose(session, user, _FIRST)
+    assert first.layout_spec_id is None  # the built-in (0.95) beats it
+    issuer.default_spec_id = spec.id
+    session.commit()
+    again = pipeline.repropose(session, first.statement_id)
+    assert (again.parser_id, again.layout_spec_id, again.remembered) == (
+        "layout_b_credit",
+        None,
+        False,
+    )
+    assert again.confident is True
+
+
+def test_a_remembered_spec_resolves_to_its_newest_approved_revision(
+    session: Session, user: User
+) -> None:
+    issuer = add_layout_b_bank(session)
+    v1 = add_layout_b_spec(session, issuer, score=0.85)
+    first = _propose(session, user, _FIRST)
+    second = _propose(session, user, _SECOND)
+    _confirm(session, first, issuer=issuer, parser_id=None, layout_spec_id=v1.id)
+    v2 = LayoutSpec(
+        name=v1.name,
+        version=2,
+        parser_id=f"{v1.parser_id[:-2]}v2",
+        issuer_id=issuer.id,
+        account_type=v1.account_type,
+        spec_yaml=v1.spec_yaml,
+        source="pasted",
+        approved=False,
+    )
+    session.add(v2)
+    session.commit()
+    # An unapproved revision changes nothing.
+    assert pipeline.repropose(session, second.statement_id).layout_spec_id == v1.id
+    from personal_finance_analyzer.ingest.layout_spec import approve_spec
+
+    approve_spec(session, v2)
+    session.commit()
+    session.refresh(issuer)
+    assert issuer.default_spec_id == v2.id  # advanced when the revision was approved
+    issuer.default_spec_id = v1.id  # (a pointer left on the old version still resolves to v2)
+    session.commit()
+    again = pipeline.repropose(session, second.statement_id)
+    assert (again.layout_spec_id, again.remembered) == (v2.id, True)
+
+
+def test_a_failed_extractor_is_not_proposed_again(session: Session, user: User) -> None:
+    add_layout_b_bank(session)
+    first = _propose(session, user, _FIRST)
+    assert first.parser_id == "layout_b_credit"
+    row = session.get(Statement, first.statement_id)
+    assert row is not None
+    row.status = pipeline.STATUS_UNSUPPORTED_LAYOUT
+    session.commit()
+    again = pipeline.repropose(session, first.statement_id)
+    assert again.parser_id != "layout_b_credit" and again.confident is False
+    row.status = pipeline.STATUS_AWAITING_EXTRACTOR
+    session.commit()
+    assert pipeline.repropose(session, first.statement_id).parser_id == "layout_b_credit"
+
+
+def test_repropose_never_overwrites_a_statement_that_became_parsed(
+    session: Session, user: User, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    add_layout_b_bank(session)
+    first = _propose(session, user, _FIRST)
+    real = pipeline._propose_extractor
+
+    def racing(*args: object, **kwargs: object) -> pipeline._Proposed:
+        proposed = real(*args, **kwargs)  # type: ignore[arg-type]
+        session.execute(
+            update(Statement)
+            .where(Statement.id == first.statement_id)
+            .values(status=pipeline.STATUS_PARSED, parser_id="winner")
+        )
+        return proposed
+
+    monkeypatch.setattr(pipeline, "_propose_extractor", racing)
+    with pytest.raises(pipeline.PfaError, match="no longer pending"):
+        pipeline.repropose(session, first.statement_id)
+    session.expire_all()
+    row = session.get(Statement, first.statement_id)
+    assert row is not None and row.parser_id == "winner"
 
 
 def test_a_remembered_spec_that_was_unapproved_falls_back_to_scoring(

@@ -44,9 +44,19 @@ def _has(table: str, column: str) -> bool:
 
 
 def upgrade() -> None:
+    added_row_count = not _has("statements", "parsed_row_count")
     for table, column, type_ in _COLUMNS:
         if not _has(table, column):
             op.add_column(table, sa.Column(column, type_(), nullable=True))
+    if added_row_count:
+        # A statement that has rows found at least that many. (One with no rows stays NULL: an
+        # empty extraction and an all-duplicates one cannot be told apart after the fact.)
+        op.execute(
+            sa.text(
+                "UPDATE statements SET parsed_row_count = txn_count "
+                "WHERE status = 'parsed' AND txn_count > 0"
+            )
+        )
 
 
 def downgrade() -> None:

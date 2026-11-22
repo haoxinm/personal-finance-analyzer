@@ -46,7 +46,11 @@ def _attention(
     if statement.status != "parsed":
         return []
     notes: list[schemas.StatementAttention] = []
-    if statement.parsed_row_count == 0:
+    if statement.parsed_row_count == 0 or (
+        statement.parsed_row_count is None and not statement.txn_count
+    ):
+        # (A statement imported before row counts were recorded and with no rows: whether it
+        # found nothing or only duplicates is unknown, but either way it has no transactions.)
         notes.append("no_transactions")
     elif statement.parsed_row_count is not None and not statement.txn_count:
         notes.append("all_duplicates")
@@ -152,7 +156,8 @@ def patch_statement(
     * `user_id` alone: the statement and all its transactions move to that person's matching
       account (same issuer, type, mask and currency), which is created when they have none.
     * `account_id` alone: they move to that account; its owner becomes the statement's person.
-    * both: moved to that account as the given user.
+    * both: moved to that account; the account must belong to the given user (400 otherwise).
+      An `account_id` needs an imported statement (409 otherwise) and an existing account (404).
 
     Duplicates the target account already holds are merged (`duplicates_deleted`). Sending
     nothing, or what is already the case, is a 400.
@@ -166,12 +171,17 @@ def patch_statement(
     owner = crud.statement_user_id(session, statement)
     rows_moved = duplicates_deleted = 0
     if body.account_id is not None:
-        user_id = body.user_id
-        if user_id is None:
-            account = session.get(Account, body.account_id)
-            if account is None:
-                raise HTTPException(status_code=404, detail="account not found")
-            user_id = account.user_id
+        account = session.get(Account, body.account_id)
+        if account is None:
+            raise HTTPException(status_code=404, detail="account not found")
+        if statement.status != "parsed":
+            raise HTTPException(
+                status_code=409,
+                detail="this statement is not imported yet; finish importing it first",
+            )
+        if body.user_id is not None and body.user_id != account.user_id:
+            raise HTTPException(status_code=400, detail="that account belongs to someone else")
+        user_id = account.user_id
         if body.account_id == statement.account_id and user_id == owner:
             raise HTTPException(status_code=400, detail="nothing to change")
         # `reassign` (§3.5) recomputes `dedupe_hash` for every one of this statement's rows and
@@ -409,6 +419,10 @@ def extract_statement(
     statement = crud.get_statement(session, statement_id)
     if statement is None:
         raise HTTPException(status_code=404, detail="statement not found")
+    if body.remember and body.layout_spec_id is not None:
+        problem = crud.remembered_spec_problem(session, body.issuer_id, body.layout_spec_id)
+        if problem is not None:
+            raise HTTPException(status_code=400, detail=problem)
 
     job_id = enqueue_import_then_classify(
         runner,
