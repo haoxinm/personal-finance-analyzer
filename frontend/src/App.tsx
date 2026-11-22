@@ -150,7 +150,7 @@ function Shell() {
                       search: carriedSearch(first, search, false),
                     }}
                     active={info.section?.key === section.key}
-                    className={section.pushRight ? "ml-auto" : undefined}
+                    className={section.pushRight ? "sm:ml-auto" : undefined}
                   >
                     {section.label}
                   </NavItem>

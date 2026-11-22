@@ -32,6 +32,7 @@ import {
   useUserBreakdown,
 } from "./hooks";
 import {
+  buildCategoryDrillParams,
   computeMonthOverMonthDelta,
   defaultCategoryLabel,
   detectOtherCurrencies,
@@ -125,10 +126,12 @@ export default function DashboardScreen() {
 
   // Pie slice / legend click: the Transactions grid for that category in the current range.
   function showCategoryTransactions(key: string) {
-    const next = new URLSearchParams();
-    next.set("category_keys", key);
-    if (params.dateFrom) next.set("date_from", params.dateFrom);
-    if (params.dateTo) next.set("date_to", params.dateTo);
+    const next = buildCategoryDrillParams(key, {
+      currency,
+      userIds: filters.userIds,
+      dateFrom: params.dateFrom,
+      dateTo: params.dateTo,
+    });
     // Keep the user view and an active compare.
     for (const carried of [SELECTED_USER_PARAM, COMPARE_USER_PARAM]) {
       const value = new URLSearchParams(currentSearch).get(carried);

@@ -433,6 +433,17 @@ describe("EditPopover unsaved changes", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
+  it("ignores Escape and an outside press while saving", async () => {
+    const onClose = vi.fn();
+    render(
+      <EditPopover transaction={makeTransaction()} categories={CATEGORIES} onSave={vi.fn()} onClose={onClose} saving />,
+    );
+    await userEvent.keyboard("{Escape}");
+    await userEvent.click(screen.getByTestId("dialog-overlay"));
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+  });
+
   it("shows a save error inline in the footer", () => {
     render(
       <EditPopover

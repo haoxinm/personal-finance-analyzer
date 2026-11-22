@@ -19,7 +19,7 @@ export function SectionTabs({ section }: SectionTabsProps) {
   if (tabs.length < 2) return null;
   return (
     <div className="border-b border-border">
-      <nav aria-label={`${section.label} sections`} className="mx-auto flex max-w-screen-2xl flex-nowrap items-center gap-1 overflow-x-auto px-4 py-1.5">
+      <nav aria-label={`${section.label} sections`} className="mx-auto flex max-w-screen-2xl flex-wrap items-center gap-1 px-4 py-1.5 md:flex-nowrap md:overflow-x-auto">
         {tabs.map((tab) => (
           <NavLink
             key={tab.path}

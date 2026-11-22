@@ -213,8 +213,9 @@ export function EditPopover({
 
   // Escape, a press outside and Cancel never throw away edits silently: ask first, in the footer.
   function requestClose() {
+    if (saving) return; // a save in flight: Escape / outside click must not close the dialog
     if (confirmingDiscard) setConfirmingDiscard(false);
-    else if (dirty && !saving) setConfirmingDiscard(true);
+    else if (dirty) setConfirmingDiscard(true);
     else onClose();
   }
 

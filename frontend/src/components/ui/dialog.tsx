@@ -22,9 +22,36 @@ function tabStops(root: HTMLElement): HTMLElement[] {
   });
 }
 
+/** Per-element hide state shared by every open dialog: stacked dialogs each hide the background,
+ * and an element only comes back once the last dialog that hid it has closed. */
+const hidden = new Map<Element, { count: number; ariaHidden: string | null; wasInert: boolean }>();
+
+function hide(el: Element): () => void {
+  const entry = hidden.get(el);
+  if (entry) entry.count += 1;
+  else {
+    hidden.set(el, { count: 1, ariaHidden: el.getAttribute("aria-hidden"), wasInert: el.hasAttribute("inert") });
+    el.setAttribute("inert", "");
+    el.setAttribute("aria-hidden", "true");
+  }
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    const current = hidden.get(el);
+    if (!current) return;
+    current.count -= 1;
+    if (current.count > 0) return;
+    hidden.delete(el);
+    if (!current.wasInert) el.removeAttribute("inert");
+    if (current.ariaHidden === null) el.removeAttribute("aria-hidden");
+    else el.setAttribute("aria-hidden", current.ariaHidden);
+  };
+}
+
 /** Marks an element (and anything holding a `data-dialog-exempt` element, one level at a time)
  * `inert` + `aria-hidden`, returning an undo function. The dialog's own host and exempt
- * elements (the toast viewport) stay live. */
+ * elements (the toast viewport) stay live. Reference-counted so stacked dialogs compose. */
 function hideBackground(host: HTMLElement): () => void {
   const undo: Array<() => void> = [];
   const visit = (parent: Element) => {
@@ -34,15 +61,8 @@ function hideBackground(host: HTMLElement): () => void {
         visit(child);
         continue;
       }
-      if (child.tagName === "SCRIPT" || child.hasAttribute("inert")) continue;
-      const hadAriaHidden = child.getAttribute("aria-hidden");
-      child.setAttribute("inert", "");
-      child.setAttribute("aria-hidden", "true");
-      undo.push(() => {
-        child.removeAttribute("inert");
-        if (hadAriaHidden === null) child.removeAttribute("aria-hidden");
-        else child.setAttribute("aria-hidden", hadAriaHidden);
-      });
+      if (child.tagName === "SCRIPT") continue;
+      undo.push(hide(child));
     }
   };
   visit(document.body);

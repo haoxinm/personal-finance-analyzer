@@ -245,3 +245,20 @@ export function defaultCategoryLabel(key: string): string {
   if (key === "uncategorized") return "Uncategorized";
   return key;
 }
+
+/** The Transactions-grid query for a pie slice / legend click. The "uncategorized" pseudo-key
+ * becomes the grid's `uncategorized=true` filter (`category_keys=uncategorized` matches nothing);
+ * the Overview's currency, users and dates are carried so the list matches the slice. */
+export function buildCategoryDrillParams(
+  key: string,
+  filters: { currency: string; userIds?: readonly number[]; dateFrom?: string; dateTo?: string },
+): URLSearchParams {
+  const next = new URLSearchParams();
+  if (key === "uncategorized") next.set("uncategorized", "true");
+  else next.set("category_keys", key);
+  next.set("currency", filters.currency);
+  for (const id of filters.userIds ?? []) next.append("user_ids", String(id));
+  if (filters.dateFrom) next.set("date_from", filters.dateFrom);
+  if (filters.dateTo) next.set("date_to", filters.dateTo);
+  return next;
+}

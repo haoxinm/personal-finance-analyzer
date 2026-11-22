@@ -35,6 +35,26 @@ function Harness({ onClose = vi.fn(), long = false }: { onClose?: () => void; lo
   );
 }
 
+describe("Dialog stacking", () => {
+  it("keeps the background inert until the last stacked dialog closes", () => {
+    const root = document.createElement("div");
+    root.setAttribute("data-testid", "bg");
+    document.body.appendChild(root);
+    const first = render(<Dialog aria-label="One" onClose={vi.fn()}><p>one</p></Dialog>);
+    expect(root).toHaveAttribute("inert");
+    const second = render(<Dialog aria-label="Two" onClose={vi.fn()}><p>two</p></Dialog>);
+    const overlays = screen.getAllByTestId("dialog-overlay");
+    expect(overlays[0]).toHaveAttribute("inert");
+    second.unmount();
+    expect(overlays[0]).not.toHaveAttribute("inert");
+    expect(root).toHaveAttribute("inert");
+    first.unmount();
+    expect(root).not.toHaveAttribute("inert");
+    expect(root).not.toHaveAttribute("aria-hidden");
+    root.remove();
+  });
+});
+
 describe("Dialog", () => {
   it("portals to document.body with dialog semantics, above the sticky header", async () => {
     render(<Harness />);

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   OTHER_KEY,
+  buildCategoryDrillParams,
   computeMonthOverMonthDelta,
   defaultCategoryLabel,
   detectOtherCurrencies,
@@ -266,5 +267,23 @@ describe("merged bucket label", () => {
     const merged = pieSlicesFromTotals(totals, 8).slices.at(-1)!;
     expect(merged.key).toBe(OTHER_KEY);
     expect(merged.members).toEqual(["c8", "c9"]);
+  });
+});
+
+describe("buildCategoryDrillParams", () => {
+  it("maps the uncategorized pseudo-key to the grid's uncategorized filter", () => {
+    const q = buildCategoryDrillParams("uncategorized", { currency: "EUR", userIds: [1, 2], dateFrom: "2025-01-01" });
+    expect(q.get("uncategorized")).toBe("true");
+    expect(q.has("category_keys")).toBe(false);
+    expect(q.get("currency")).toBe("EUR");
+    expect(q.getAll("user_ids")).toEqual(["1", "2"]);
+    expect(q.get("date_from")).toBe("2025-01-01");
+  });
+
+  it("uses category_keys for a real category", () => {
+    const q = buildCategoryDrillParams("groceries", { currency: "USD" });
+    expect(q.get("category_keys")).toBe("groceries");
+    expect(q.has("uncategorized")).toBe(false);
+    expect(q.has("user_ids")).toBe(false);
   });
 });
