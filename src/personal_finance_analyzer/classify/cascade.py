@@ -67,7 +67,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import cast
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from personal_finance_analyzer.classify.kinds import is_spend as kind_is_spend
@@ -205,7 +205,8 @@ def classify_transactions(
             if outcome is None:
                 pending_llm.setdefault(txn.merchant_key, []).append(txn.id)
             else:
-                _apply_outcome(session, txn, outcome, cfg=cfg)
+                if not _apply_outcome(session, txn, outcome, cfg=cfg):
+                    continue
                 classified += 1
                 if txn.needs_review:
                     needs_review += 1
@@ -309,7 +310,10 @@ def _run_llm_phase(
                 if txn is None or txn.classified_by == USER_CLASSIFIED:
                     # Edited by hand while the model was running: the edit stands.
                     continue
-                _apply_outcome(session, txn, outcome, cfg=cfg, llm_run_id=primary_llm_run_id)
+                if not _apply_outcome(
+                    session, txn, outcome, cfg=cfg, llm_run_id=primary_llm_run_id
+                ):
+                    continue
                 classified += 1
                 if txn.needs_review:
                     needs_review += 1
@@ -1374,7 +1378,26 @@ def _apply_outcome(
     *,
     cfg: LLMConfig,
     llm_run_id: int | None = None,
-) -> None:
+) -> bool:
+    """Write `outcome` onto `txn` unless a hand edit got there first; True if it was written.
+
+    The `classified_by == 'user'` check done when the row was read can be stale by the time we
+    write: a PATCH may commit in between (a classify job runs concurrently with the UI). So claim
+    the row first with a guarded no-op UPDATE. It takes SQLite's write lock, so no edit can
+    commit after it, and matches nothing when the row is already a one-time edit.
+    """
+    claimed = session.execute(
+        update(Transaction)
+        .where(
+            Transaction.id == txn.id,
+            Transaction.classified_by.is_distinct_from(USER_CLASSIFIED),
+        )
+        .values(id=Transaction.id)
+        .execution_options(synchronize_session=False)
+    )
+    if claimed.rowcount == 0:  # type: ignore[attr-defined]
+        session.refresh(txn)
+        return False
     below_threshold = (
         outcome.confidence is not None and outcome.confidence < cfg.confidence_threshold
     )
@@ -1385,6 +1408,7 @@ def _apply_outcome(
         needs_review=outcome.needs_review_override or below_threshold,
         llm_run_id=llm_run_id,
     )
+    return True
 
 
 def _write_outcome(

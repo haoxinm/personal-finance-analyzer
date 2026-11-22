@@ -468,3 +468,153 @@ def test_the_issuer_exposes_its_remembered_parser(
     session.commit()
     issuers = client.get("/api/issuers").json()
     assert next(i for i in issuers if i["id"] == bank.id)["default_parser_id"] == "layout_b_credit"
+
+
+# ------------------------------------------------------------------- edge-case review fixes
+
+
+def test_moving_onto_an_account_with_duplicates_keeps_txn_count_truthful(
+    client: TestClient, session: Session, full: int, scan: Callable[[], None]
+) -> None:
+    sam = add_person(session, "Sam")
+    original = documents_dir() / REL
+    put_pdf_bytes("Sam/Statements/Bank B/copy.pdf", original.read_bytes() + b"\n% copy\n")
+    scan()
+    session.expire_all()
+    copy = session.scalars(select(Statement).order_by(Statement.id.desc())).first()
+    assert copy is not None
+    assert _reparse(client, copy.id, parser_id="layout_b_credit")["status"] == "done"
+    count = len(_rows(session, full))
+    body = client.patch(f"/api/statements/{full}", json={"user_id": sam.id}).json()
+    assert body["duplicates_deleted"] == count
+    assert body["txn_count"] == 0
+    session.expire_all()
+    assert session.get(Statement, full).txn_count == 0  # type: ignore[union-attr]
+    assert "all_duplicates" in body["attention"]
+
+
+def test_patch_with_user_and_account_validates_the_account(
+    client: TestClient, session: Session, alex: User, full: int
+) -> None:
+    sam = add_person(session, "Sam")
+    statement = session.get(Statement, full)
+    assert statement is not None and statement.account_id is not None
+    mine = session.get(Account, statement.account_id)
+    assert mine is not None
+    theirs = Account(
+        user_id=sam.id,
+        issuer_id=mine.issuer_id,
+        account_type=mine.account_type,
+        display_name="Sam's card",
+        mask=mine.mask,
+    )
+    session.add(theirs)
+    session.commit()
+    url = f"/api/statements/{full}"
+    assert client.patch(url, json={"user_id": sam.id, "account_id": 99999}).status_code == 404
+    assert client.patch(url, json={"user_id": alex.id, "account_id": theirs.id}).status_code == 400
+    assert client.patch(url, json={"account_id": 99999}).status_code == 404
+    ok = client.patch(url, json={"user_id": sam.id, "account_id": theirs.id})
+    assert ok.status_code == 200 and ok.json()["user_id"] == sam.id
+
+
+def test_patching_an_account_of_an_unparsed_statement_is_409(
+    client: TestClient, session: Session, alex: User, empty: int
+) -> None:
+    from personal_finance_analyzer.ingest import pipeline
+    from tests.ingest.tax_support import generated_pdf
+
+    pending = pipeline.propose_import(
+        session,
+        generated_pdf("layout_b_credit", "multiline"),
+        user_id=alex.id,
+        original_name="m.pdf",
+    )
+    session.commit()
+    statement = session.get(Statement, empty)
+    assert statement is not None and statement.account_id is not None
+    url = f"/api/statements/{pending.statement_id}"
+    assert client.patch(url, json={"account_id": statement.account_id}).status_code == 409
+    sam = add_person(session, "Sam")
+    assert client.patch(url, json={"user_id": sam.id}).status_code == 200  # person alone is fine
+    assert client.patch(url, json={"account_id": 99999}).status_code == 404
+
+
+def test_a_legacy_statement_with_no_rows_needs_attention_and_stays_a_problem(
+    client: TestClient, session: Session, empty: int, scan: Callable[[], None]
+) -> None:
+    from personal_finance_analyzer.db.models import WatchedFile
+
+    statement = session.get(Statement, empty)
+    assert statement is not None
+    statement.parsed_row_count = None  # imported before row counts were recorded
+    session.commit()
+    assert client.get(f"/api/statements/{empty}").json()["attention"][0] == "no_transactions"
+    session.expire_all()
+    record = session.scalars(select(WatchedFile)).one()
+    record.outcome = "failed"
+    session.commit()
+    scan()
+    session.expire_all()
+    assert session.scalars(select(WatchedFile)).one().outcome == "failed"
+    # With rows, a legacy statement is fine and the problem settles.
+    assert _reparse(client, empty, parser_id="layout_b_credit")["status"] == "done"
+    statement = session.get(Statement, empty)
+    assert statement is not None
+    statement.parsed_row_count = None
+    session.commit()
+    assert client.get(f"/api/statements/{empty}").json()["attention"] == []
+    scan()
+    session.expire_all()
+    assert session.scalars(select(WatchedFile)).one().outcome == "imported"
+
+
+def test_the_issuer_default_spec_must_be_an_approved_spec_of_that_issuer(
+    client: TestClient, session: Session, bank: Issuer
+) -> None:
+    other = Issuer(name="Other Bank", slug="other-bank", match_terms="[]")
+    session.add(other)
+    session.commit()
+    mine = add_layout_b_spec(session, bank, name="Mine")
+    foreign = add_layout_b_spec(session, other, name="Foreign")
+    draft = add_layout_b_spec(session, bank, name="Draft", approved=False)
+    url = f"/api/issuers/{bank.id}"
+    assert client.patch(url, json={"default_spec_id": foreign.id}).status_code == 400
+    assert client.patch(url, json={"default_spec_id": draft.id}).status_code == 400
+    assert client.patch(url, json={"default_spec_id": 99999}).status_code == 400
+    ok = client.patch(url, json={"default_spec_id": mine.id})
+    assert ok.status_code == 200 and ok.json()["default_spec_id"] == mine.id
+
+
+def test_remembering_a_spec_of_another_issuer_or_an_unapproved_one_is_400(
+    client: TestClient, session: Session, alex: User, bank: Issuer, empty: int
+) -> None:
+    other = Issuer(name="Other Bank", slug="other-bank", match_terms="[]")
+    session.add(other)
+    session.commit()
+    foreign = add_layout_b_spec(session, other, name="Foreign")
+    draft = add_layout_b_spec(session, bank, name="Draft", approved=False)
+    url = f"/api/statements/{empty}/extract"
+    for spec in (foreign, draft):
+        body = {"issuer_id": bank.id, "layout_spec_id": spec.id, "remember": True}
+        assert client.post(url, json=body).status_code == 400
+    session.expire_all()
+    assert session.get(Issuer, bank.id).default_spec_id is None  # type: ignore[union-attr]
+
+
+def test_approving_a_revision_advances_the_remembered_spec(
+    client: TestClient, session: Session, bank: Issuer
+) -> None:
+    v1 = add_layout_b_spec(session, bank, name="Mine")
+    bank.default_spec_id = v1.id
+    session.commit()
+    revised = client.post(
+        f"/api/layout-specs/{v1.id}/revise",
+        json={"name": "Mine", "spec_yaml": v1.spec_yaml, "issuer_id": bank.id},
+    )
+    assert revised.status_code in (200, 201), revised.text
+    v2 = revised.json()["id"]
+    assert client.get("/api/issuers").json()[0]["default_spec_id"] == v1.id  # not approved yet
+    assert client.post(f"/api/layout-specs/{v2}/approve").status_code == 200
+    issuer = next(i for i in client.get("/api/issuers").json() if i["id"] == bank.id)
+    assert issuer["default_spec_id"] == v2
