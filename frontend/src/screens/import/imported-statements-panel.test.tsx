@@ -101,6 +101,11 @@ function makeFetch(world: World) {
       return jsonResponse(world.job ?? { id: "job-1", kind: "import", status: "done", progress: 1, inserted: 42, restored_edits: 3 });
     }
     if (url.includes("/api/statements/") && method === "DELETE") return new Response(null, { status: 204 });
+    const byId = /\/api\/statements\/(\d+)$/.exec(url);
+    if (byId && method === "GET") {
+      const found = world.statements.find((r) => String(r.id) === byId[1]);
+      return found ? jsonResponse(found) : jsonResponse({ detail: "not found" }, 404);
+    }
     if (url.includes("/api/statements")) {
       const owner = new URL(url).searchParams.get("user_id");
       return jsonResponse(owner === null ? world.statements : world.statements.filter((r) => String(r.user_id) === owner));
@@ -789,6 +794,60 @@ describe("followInBackground", () => {
   });
 });
 
+describe("followInBackground limits", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("keeps following a slow job well past three minutes, with backed-off polling, and stays bounded", async () => {
+    vi.useFakeTimers();
+    let polls = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>(() => {
+        polls += 1;
+        return Promise.resolve(jsonResponse({ id: "slow", kind: "import", status: "running", progress: 0.1 }));
+      }),
+    );
+    vi.resetModules();
+    const { followInBackground: follow } = await import("./imported-statements-api");
+    const client = new QueryClient();
+    let finished = false;
+    void follow(client, "slow").then(() => {
+      finished = true;
+    });
+    await vi.advanceTimersByTimeAsync(10 * 60 * 1000);
+    expect(finished).toBe(false);
+    // Backed off: far fewer requests than one per second.
+    expect(polls).toBeGreaterThan(20);
+    expect(polls).toBeLessThan(80);
+    await vi.advanceTimersByTimeAsync(25 * 60 * 1000);
+    expect(finished).toBe(true);
+  });
+
+  it("does not follow the same job twice at once", async () => {
+    vi.useFakeTimers();
+    let polls = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>(() => {
+        polls += 1;
+        return Promise.resolve(jsonResponse({ id: "j", kind: "import", status: polls < 3 ? "running" : "done", progress: 0.5 }));
+      }),
+    );
+    vi.resetModules();
+    const { followInBackground: follow } = await import("./imported-statements-api");
+    const client = new QueryClient();
+    const first = follow(client, "j");
+    const second = follow(client, "j");
+    await vi.advanceTimersByTimeAsync(5000);
+    await Promise.all([first, second]);
+    expect(polls).toBe(3);
+  });
+});
+
 describe("open requests, person and delete warnings", () => {
   beforeEach(() => {
     MockEventSource.instances = [];
@@ -817,6 +876,31 @@ describe("open requests, person and delete warnings", () => {
     await userEvent.click(screen.getByRole("button", { name: /Show all/ }));
     expect(screen.queryByTestId("reimport-panel")).not.toBeInTheDocument();
     expect(handled).toHaveBeenCalledTimes(1);
+  });
+
+  it("pins a requested statement that belongs to someone else, opens its Re-import and says whose it is", async () => {
+    const handled = vi.fn();
+    const { fn } = makeFetch({
+      statements: [
+        statement(),
+        statement({ id: 8, user_id: 2, original_name: "sams-lake.pdf", txn_count: 0 }),
+      ],
+    });
+    await renderPanel(fn, 1, undefined, { request: { statementId: 8, nonce: 4 }, onRequestHandled: handled });
+    expect(await screen.findByRole("region", { name: /Re-import sams-lake.pdf/ })).toBeInTheDocument();
+    expect(screen.getByTestId("pinned-note")).toHaveTextContent("Sam\u2019s statement");
+    expect(handled).toHaveBeenCalledWith(4);
+    // Alex's own list is untouched: his one statement plus the pinned one.
+    expect(screen.getAllByTestId("imported-statement")).toHaveLength(2);
+  });
+
+  it("tells the user, rather than doing nothing, when the requested statement cannot be found", async () => {
+    const handled = vi.fn();
+    const { fn } = makeFetch({ statements: [statement()] });
+    await renderPanel(fn, 1, undefined, { request: { statementId: 99, nonce: 2 }, onRequestHandled: handled });
+    expect(await screen.findByText("Could not find that statement")).toBeInTheDocument();
+    expect(handled).toHaveBeenCalledWith(2);
+    expect(screen.queryByTestId("pinned-note")).not.toBeInTheDocument();
   });
 
   it("lists only the selected person's statements and never badges an uploaded-for statement", async () => {

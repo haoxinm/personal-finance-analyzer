@@ -9,6 +9,7 @@ import { useSelectedUser } from "@/hooks/use-selected-user";
 import type { JobEvent } from "@/hooks/use-job-progress";
 
 import {
+  fetchStatement,
   reproposeStatement,
   useExtractStatement,
   useImportSettings,
@@ -22,7 +23,7 @@ import { IssuerExtractorPicker } from "./issuer-extractor-picker";
 import { StatementCard } from "./statement-card";
 import { PageSelector } from "./page-selector";
 import { SummaryBar } from "./summary-bar";
-import type { ExtractorChoice, ImportItem, LayoutSpec } from "./types";
+import type { ExtractorChoice, ImportItem, Issuer, LayoutSpec } from "./types";
 import {
   applyRefreshedProposal,
   extractorChoiceFromProposal,
@@ -40,6 +41,36 @@ function describeChoice(choice: ExtractorChoice | null, specs: readonly LayoutSp
     return spec ? `${spec.name} v${spec.version}` : "a saved layout";
   }
   return choice.parserId === "llm" ? "the LLM" : choice.parserId.replace(/_/g, " ");
+}
+
+/** The "remember" checkbox's wording for `item`: exactly which extractor is kept for which bank,
+ * and, when the bank already remembers a different one, that this replaces it. */
+function rememberInfoFor(
+  item: ImportItem,
+  issuers: readonly Issuer[],
+  specs: readonly LayoutSpec[],
+): { label: string; note?: string } | undefined {
+  const issuer = issuers.find((i) => i.id === item.issuerId);
+  if (!issuer || item.extractorChoice === null) return undefined;
+  const chosen = describeChoice(item.extractorChoice, specs);
+  const stored = extractorChoiceFromProposal({
+    layout_spec_id: issuer.default_spec_id ?? null,
+    parser_id: issuer.default_parser_id ?? null,
+  });
+  const info: { label: string; note?: string } = { label: `Use ${chosen} for future ${issuer.name} statements` };
+  const same =
+    stored !== null &&
+    stored.kind === item.extractorChoice.kind &&
+    (stored.kind === "spec"
+      ? stored.layoutSpecId === (item.extractorChoice as typeof stored).layoutSpecId
+      : stored.parserId === (item.extractorChoice as typeof stored).parserId);
+  if (stored !== null && !same) {
+    const was = describeChoice(stored, specs);
+    info.note = item.remember
+      ? `${issuer.name} currently remembers ${was}. Importing will replace it with ${chosen}; untick the box to keep ${was}.`
+      : `${issuer.name} currently remembers ${was}; it will stay that way.`;
+  }
+  return info;
 }
 
 /** The Import screen (P3-A): drag-and-drop multiple statement PDFs, resolve the two-phase
@@ -72,12 +103,17 @@ function ImportScreen() {
   // callbacks only for the *latest* `mutate` on a shared `useMutation`, so with several files in
   // flight every earlier file would sit at "Uploading…" forever. Each promise settles for its own
   // call regardless of how many others are running.
+  // Items whose extract request is in flight: a second confirm (a peer refresh racing the
+  // user's click, or a double click) must never send another.
+  const inFlight = React.useRef(new Set<string>());
   const confirmImport = React.useCallback(
     async (item: ImportItem) => {
       if (item.statementId === undefined || item.issuerId === null || item.extractorChoice === null) {
         return;
       }
       if (item.selectedPages?.length === 0) return;
+      if (inFlight.current.has(item.clientId)) return;
+      inFlight.current.add(item.clientId);
       const choice = item.extractorChoice;
       try {
         const response = await extractStatement.mutateAsync({
@@ -97,6 +133,8 @@ function ImportScreen() {
           clientId: item.clientId,
           message: error instanceof Error ? error.message : "Import failed",
         });
+      } finally {
+        inFlight.current.delete(item.clientId);
       }
     },
     [extractStatement, dispatch],
@@ -115,14 +153,27 @@ function ImportScreen() {
       peerQueue.current = peerQueue.current
         .then(async () => {
           for (const peer of pendingPeers(itemsRef.current, sourceClientId, issuerId)) {
+            // Never touch an item that is importing (or about to): an in-flight request, or one
+            // the screen already started on its own.
+            if (inFlight.current.has(peer.clientId) || autoStarted.current.has(peer.clientId)) continue;
             let response: Awaited<ReturnType<typeof reproposeStatement>>;
             try {
               response = await reproposeStatement(peer.statementId as number);
             } catch {
-              continue; // parsed meanwhile, or its PDF is gone: leave it as it is
+              // 409: already parsed (another tab, or it was started meanwhile), or its PDF is gone.
+              // Quietly show the statement as it is now; never an error.
+              if (!inFlight.current.has(peer.clientId) && peer.statementId !== undefined) {
+                const current = await fetchStatement(peer.statementId).catch(() => null);
+                const again = itemsRef.current.find((candidate) => candidate.clientId === peer.clientId);
+                if (current?.status === "parsed" && again?.status === "awaiting_extractor" && !inFlight.current.has(peer.clientId)) {
+                  dispatch({ type: "statement_refreshed", clientId: peer.clientId, statement: current, llmConfigured });
+                }
+              }
+              continue;
             }
             const latest = itemsRef.current.find((candidate) => candidate.clientId === peer.clientId);
             if (!latest || latest.status !== "awaiting_extractor") continue;
+            if (inFlight.current.has(latest.clientId) || autoStarted.current.has(latest.clientId)) continue;
             dispatch({
               type: "proposal_refreshed",
               clientId: latest.clientId,
@@ -144,7 +195,7 @@ function ImportScreen() {
         })
         .catch(() => undefined);
     },
-    [dispatch, confirmImport],
+    [dispatch, confirmImport, llmConfigured],
   );
 
   const uploadFile = React.useCallback(
@@ -186,6 +237,7 @@ function ImportScreen() {
           : undefined,
       };
       if (response.statement.status === "awaiting_extractor" && shouldAutoConfirm(updatedItem)) {
+        autoStarted.current.add(clientId);
         await confirmImport(updatedItem);
       }
     },
@@ -334,6 +386,7 @@ function ImportScreen() {
                     }
                   : undefined
               }
+              rememberInfo={rememberInfoFor(item, issuersQuery.data ?? [], specsQuery.data ?? [])}
               onRememberChange={(remember) =>
                 dispatch({ type: "remember_toggled", clientId: item.clientId, remember })
               }

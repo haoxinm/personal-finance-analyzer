@@ -1,3 +1,4 @@
+import { useQuery } from "@tanstack/react-query";
 import * as React from "react";
 import { Link } from "react-router-dom";
 
@@ -12,7 +13,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
 import { useAccounts } from "@/screens/dashboard/hooks";
 
-import { useImportSettings, useIssuers, useLayoutSpecs } from "./api";
+import { fetchStatement, useImportSettings, useIssuers, useLayoutSpecs } from "./api";
 import { useDeleteStatement, usePatchStatementOwner } from "./imported-statements-api";
 import { ReimportPanel } from "./reimport-panel";
 import {
@@ -255,7 +256,7 @@ function ChangePersonPanel({
 
 type RowMode = "idle" | "reimport" | "delete" | "person";
 
-function StatementRow({ statement, ctx }: { statement: Statement; ctx: RowContext }) {
+function StatementRow({ statement, ctx, note }: { statement: Statement; ctx: RowContext; note?: string }) {
   const [mode, setMode] = React.useState<RowMode>("idle");
   const [highlight, setHighlight] = React.useState(false);
   const rowRef = React.useRef<HTMLLIElement>(null);
@@ -336,6 +337,11 @@ function StatementRow({ statement, ctx }: { statement: Statement; ctx: RowContex
           {(statement.txn_count ?? 0).toLocaleString()} transaction{statement.txn_count === 1 ? "" : "s"}
         </span>
       </div>
+      {note ? (
+        <p className="text-xs text-muted-foreground" data-testid="pinned-note">
+          {note}
+        </p>
+      ) : null}
       {parsed && delta != null && delta !== 0 ? (
         <p className="text-xs text-amber-700 dark:text-amber-400">
           Totals don&rsquo;t reconcile (off by <Money minorUnits={Math.abs(delta)} tone="neutral" />)
@@ -463,6 +469,38 @@ export function ImportedStatementsPanel({
 
   const rows = React.useMemo(() => sortStatements(statements.data ?? []), [statements.data]);
 
+  // A request for a statement outside the current person's list (a folder problem that belongs to
+  // someone else): fetch it and show it pinned above the list, so "Re-import…" always lands
+  // somewhere. If it cannot be found, say so rather than do nothing.
+  const toast = useSafeToast();
+  const [pinnedId, setPinnedId] = React.useState<number | null>(null);
+  const requestedStatementId = request?.statementId;
+  const listLoaded = statements.isSuccess;
+  const inList = requestedStatementId !== undefined && rows.some((r) => r.id === requestedStatementId);
+  React.useEffect(() => {
+    if (requestedStatementId === undefined || !listLoaded) return;
+    setPinnedId(inList ? null : requestedStatementId);
+  }, [requestedStatementId, listLoaded, inList]);
+  const pinnedQuery = useQuery({
+    queryKey: ["statement", pinnedId],
+    enabled: pinnedId !== null,
+    queryFn: () => fetchStatement(pinnedId as number),
+  });
+  const pinned = pinnedId !== null && !rows.some((r) => r.id === pinnedId) ? (pinnedQuery.data ?? null) : null;
+  const missingRequest = React.useRef<number | null>(null);
+  React.useEffect(() => {
+    if (pinnedId === null || !pinnedQuery.isFetched || pinnedQuery.data) return;
+    if (missingRequest.current === pinnedId) return;
+    missingRequest.current = pinnedId;
+    toast({
+      title: "Could not find that statement",
+      description: "It may have been deleted. Nothing was re-imported.",
+      variant: "destructive",
+    });
+    onHandledRef.current?.(request?.nonce ?? -1);
+    setPinnedId(null);
+  }, [pinnedId, pinnedQuery.isFetched, pinnedQuery.data, toast, request?.nonce]);
+
   const ctx = React.useMemo<RowContext>(() => {
     const issuerName = new Map((issuers.data ?? []).map((i) => [i.id, i.name]));
     const accountById = new Map((accounts.data ?? []).map((a) => [a.id, a]));
@@ -525,11 +563,19 @@ export function ImportedStatementsPanel({
           </div>
         ) : statements.isError ? (
           <ErrorState description="Could not load the imported statements." onRetry={() => void statements.refetch()} />
-        ) : rows.length === 0 ? (
+        ) : rows.length === 0 && !pinned ? (
           <p className="text-sm text-muted-foreground">No statements imported yet.</p>
         ) : (
           <>
             <ul className="flex flex-col gap-2">
+              {pinned ? (
+                <StatementRow
+                  key={`pinned-${pinned.id}`}
+                  statement={pinned}
+                  ctx={ctx}
+                  note={`${(users.data ?? []).find((u) => u.id === pinned.user_id)?.name ?? "Another person"}\u2019s statement (not in the list below)`}
+                />
+              ) : null}
               {visible.map((statement) => (
                 <StatementRow key={statement.id} statement={statement} ctx={ctx} />
               ))}

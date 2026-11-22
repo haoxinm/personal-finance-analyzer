@@ -31,6 +31,9 @@ export interface StatementCardProps {
   /** A remembered extractor the user's own pick does not match: shown as an offer, never applied
    * on its own. `text` says what it is; `onUse` applies it. */
   suggestion?: { text: string; onUse: () => void };
+  /** What the "remember" checkbox remembers, spelled out, and (when the issuer already has a
+   * different remembered extractor) what it would replace. */
+  rememberInfo?: { label: string; note?: string };
 }
 
 const STATUS_LABEL: Record<ImportItem["status"], string> = {
@@ -80,6 +83,7 @@ export function StatementCard({
   item,
   onJobEvent,
   onRememberChange,
+  rememberInfo,
   onConfirm,
   picker,
   pages,
@@ -178,6 +182,11 @@ export function StatementCard({
             ) : null}
             {picker}
             {pages}
+            {rememberInfo?.note ? (
+              <p className="text-xs text-muted-foreground" data-testid="remember-note">
+                {rememberInfo.note}
+              </p>
+            ) : null}
             <div className="flex flex-wrap items-center gap-4">
               <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
                 <input
@@ -185,7 +194,7 @@ export function StatementCard({
                   checked={item.remember}
                   onChange={(event_) => onRememberChange(event_.target.checked)}
                 />
-                Remember this extractor for this issuer
+                {rememberInfo?.label ?? "Remember this extractor for this issuer"}
               </label>
               {item.issuerId !== null ? (
                 <label className="flex items-center gap-1.5 text-xs text-muted-foreground">

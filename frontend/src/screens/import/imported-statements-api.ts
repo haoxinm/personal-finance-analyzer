@@ -12,38 +12,61 @@ export type ExtractorCandidate = components["schemas"]["ExtractorCandidate"];
 export type StatementPatchResult = components["schemas"]["StatementPatchResult"];
 
 const TERMINAL = new Set(["done", "error", "cancelled"]);
-const POLL_MS = 1000;
-const POLL_MAX = 180;
+/** Polling starts quick and backs off, so a slow LLM job is followed for a long while without
+ * hammering the server; each job is followed for at most `POLL_BUDGET_MS`. */
+const POLL_START_MS = 1000;
+const POLL_CAP_MS = 15_000;
+const POLL_FACTOR = 1.5;
+const POLL_BUDGET_MS = 30 * 60 * 1000;
+
+/** Jobs already being followed (keyed per query client), so a job is never followed twice. */
+const following = new WeakMap<QueryClient, Set<string>>();
 
 /** Follow a job (and the classification job it spawned) to the end, refreshing everything that
  * shows imported data after each, whatever happens to the component that started it. Accepts the
  * job id or the promise of one (a request still in flight); never throws. Module-level on purpose:
- * unmounting a panel must not lose the follow-up. */
+ * unmounting a panel must not lose the follow-up. A job id already being followed is skipped. */
 export async function followInBackground(
   queryClient: QueryClient,
   jobIdOrPromise: string | Promise<string | null | undefined>,
 ): Promise<void> {
+  let active = following.get(queryClient);
+  if (!active) {
+    active = new Set();
+    following.set(queryClient, active);
+  }
+  const claimed: string[] = [];
   try {
     const first = await jobIdOrPromise;
     const seen = new Set<string>();
     let next: string | null | undefined = first;
     while (next && !seen.has(next)) {
       seen.add(next);
+      if (active.has(next)) return; // another follower already has this job (and its classify job)
+      active.add(next);
+      claimed.push(next);
       let job: Awaited<ReturnType<typeof fetchJob>> = null;
-      for (let attempt = 0; attempt < POLL_MAX; attempt += 1) {
+      let delay = POLL_START_MS;
+      let waited = 0;
+      for (;;) {
         try {
           job = await fetchJob(next);
         } catch {
           job = null;
         }
         if (job && TERMINAL.has(job.status)) break;
-        await new Promise((resolve) => setTimeout(resolve, POLL_MS));
+        if (waited >= POLL_BUDGET_MS) break;
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        waited += delay;
+        delay = Math.min(POLL_CAP_MS, Math.round(delay * POLL_FACTOR));
       }
       void queryClient.invalidateQueries();
       next = job?.classify_job_id;
     }
   } catch {
     // The request itself failed: the caller shows that; there is nothing to follow.
+  } finally {
+    for (const id of claimed) active.delete(id);
   }
 }
 
