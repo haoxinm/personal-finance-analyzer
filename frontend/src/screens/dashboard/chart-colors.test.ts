@@ -21,3 +21,12 @@ describe("colorMapForKeys", () => {
     expect(colorByIndex(0)).toBe("hsl(var(--chart-rose))");
   });
 });
+
+describe("colorMapForKeys avoidNeutral", () => {
+  it("never hands out the neutral slate used for Other", () => {
+    const keys = Array.from({ length: 14 }, (_, i) => `k${String(i).padStart(2, "0")}`);
+    const map = colorMapForKeys(keys, true);
+    expect([...map.values()]).not.toContain("hsl(var(--chart-slate))");
+    expect(new Set([...map.values()]).size).toBe(11);
+  });
+});

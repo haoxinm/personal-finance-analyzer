@@ -19,11 +19,15 @@ import {
 import { EmptyState } from "@/components/primitives/states";
 
 import { colorMapForKeys } from "../chart-colors";
-import { distinctCategories, pivotByCategory, type AnalyticsRow } from "../logic";
+import { defaultCategoryLabel, distinctCategories, pivotByCategory, type AnalyticsRow } from "../logic";
 
 export interface CategoryStackedBarProps {
   rows: readonly AnalyticsRow[];
   currency: string;
+  /** Shared category -> colour map, so a category keeps its colour across chart types. */
+  colors?: Map<string, string>;
+  /** Category key -> display name (taxonomy name); defaults to the raw key. */
+  labelFor?: (key: string) => string;
 }
 
 function formatPeriodTick(period: string): string {
@@ -46,10 +50,16 @@ function currencyFormatter(currency: string) {
  * screen before then (a screenshot, a scripted test, a person glancing over) sees a transient,
  * *wrong* total. Numbers this load-bearing should be right the instant the chart mounts.
  */
-export function CategoryStackedBar({ rows, currency }: CategoryStackedBarProps) {
+export function CategoryStackedBar({
+  rows,
+  currency,
+  colors: sharedColors,
+  labelFor = defaultCategoryLabel,
+}: CategoryStackedBarProps) {
   const points = React.useMemo(() => pivotByCategory(rows), [rows]);
   const categories = React.useMemo(() => distinctCategories(points), [points]);
-  const colors = React.useMemo(() => colorMapForKeys(categories), [categories]);
+  const ownColors = React.useMemo(() => colorMapForKeys(categories, true), [categories]);
+  const colors = sharedColors ?? ownColors;
   const format = React.useMemo(() => currencyFormatter(currency), [currency]);
 
   if (points.length === 0) {
@@ -64,7 +74,14 @@ export function CategoryStackedBar({ rows, currency }: CategoryStackedBarProps) 
   const data = points.map((point) => ({ period: point.period, ...point.categories }));
 
   return (
-    <div className="h-72 w-full" data-testid="category-stacked-bar">
+    <div
+      className="h-72 w-full"
+      data-testid="category-stacked-bar"
+      role="img"
+      aria-label={`Stacked bar chart of spending by category over time: ${points.length} ${
+        points.length === 1 ? "period" : "periods"
+      }, ${categories.length} ${categories.length === 1 ? "category" : "categories"}`}
+    >
       <ResponsiveContainer width="100%" height="100%">
         <BarChart data={data} margin={{ top: 8, right: 8, bottom: 0, left: 8 }}>
           <CartesianGrid {...CHART_GRID_PROPS} />
@@ -80,6 +97,7 @@ export function CategoryStackedBar({ rows, currency }: CategoryStackedBarProps) 
             <Bar
               key={category}
               dataKey={category}
+              name={labelFor(category)}
               stackId="spend"
               fill={colors.get(category)}
               isAnimationActive={false}

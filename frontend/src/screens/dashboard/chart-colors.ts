@@ -20,6 +20,8 @@ const PALETTE: readonly string[] = [
   "hsl(var(--chart-pink))",
 ];
 
+const NEUTRAL = "hsl(var(--chart-slate))";
+
 function hashKey(key: string): number {
   let hash = 0;
   for (let i = 0; i < key.length; i += 1) {
@@ -37,8 +39,13 @@ export function colorForKey(key: string): string {
  * not depend on data order and is stable for a given set of categories) and take consecutive
  * palette slots, so no two series collide until the palette is exhausted.
  */
-export function colorMapForKeys(keys: readonly string[]): Map<string, string> {
+export function colorMapForKeys(keys: readonly string[], avoidNeutral = false): Map<string, string> {
   const sorted = [...new Set(keys)].sort();
+  if (avoidNeutral) {
+    // Keep the grey slate free for the merged "Other" series/slice of the overview charts.
+    const palette = PALETTE.filter((c) => c !== NEUTRAL);
+    return new Map(sorted.map((k, i) => [k, palette[i % palette.length] ?? palette[0]!]));
+  }
   return new Map(sorted.map((k, i) => [k, colorByIndex(i)]));
 }
 

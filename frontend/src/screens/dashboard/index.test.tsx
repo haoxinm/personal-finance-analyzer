@@ -50,6 +50,7 @@ function wrapper({ children }: { children: React.ReactNode }) {
 type Route =
   | "/users"
   | "/accounts"
+  | "/taxonomy"
   | "/analytics/summary"
   | "/analytics/timeseries"
   | "/analytics/top-merchants";
@@ -194,5 +195,60 @@ describe("DashboardScreen", () => {
     const banner = await screen.findByTestId("currency-banner");
     expect(within(banner).getByText("EUR")).toBeInTheDocument();
     expect(within(banner).getByText(/Not included/)).toBeInTheDocument();
+  });
+
+  describe("chart types", () => {
+    const DATA = {
+      "/users": [{ id: 1, name: "Alex", is_default: true }],
+      "/accounts": [],
+      "/taxonomy": [{ key: "groceries", name: "Groceries", subcategories: [] }],
+      "/analytics/summary": [
+        { period: "2025-01", category: "groceries", currency: "USD", total_minor: 5000, txn_count: 3, avg_minor: 1666 },
+      ],
+      "/analytics/timeseries": [
+        { period: "2025-01", currency: "USD", total_minor: 5000, txn_count: 3, avg_minor: 1666 },
+      ],
+      "/analytics/top-merchants": [{ merchant: "Corner Store", total_minor: 2000, txn_count: 2 }],
+    };
+
+    it("defaults to stacked bar and line, and trend offers no Pie", async () => {
+      mockGet(DATA);
+      render(<DashboardScreen />, { wrapper });
+      await waitFor(() => expect(screen.getByTestId("category-stacked-bar")).toBeInTheDocument());
+      expect(screen.getByTestId("trend-line")).toBeInTheDocument();
+      const trend = screen.getByRole("radiogroup", { name: "Chart type for Trend" });
+      expect(within(trend).queryByRole("radio", { name: "Pie" })).not.toBeInTheDocument();
+      const category = screen.getByRole("radiogroup", { name: "Chart type for Spending by category" });
+      expect(within(category).getAllByRole("radio")).toHaveLength(3);
+    });
+
+    it("switches to a pie, with a caption, and remembers it", async () => {
+      mockGet(DATA);
+      render(<DashboardScreen />, { wrapper });
+      await userEvent.click(await screen.findByRole("radio", { name: "Pie" }));
+      expect(await screen.findByTestId("category-pie")).toBeInTheDocument();
+      expect(screen.queryByTestId("category-stacked-bar")).not.toBeInTheDocument();
+      expect(screen.getByText("Share of spending, all dates")).toBeInTheDocument();
+      expect(window.localStorage.getItem("pfa:overview:category-chart")).toBe("pie");
+      // taxonomy name, not the raw key
+      expect(within(screen.getByTestId("category-pie")).getByText("Groceries")).toBeInTheDocument();
+    });
+
+    it("honours stored choices", async () => {
+      window.localStorage.setItem("pfa:overview:category-chart", "line");
+      window.localStorage.setItem("pfa:overview:trend-chart", "bar");
+      mockGet(DATA);
+      render(<DashboardScreen />, { wrapper });
+      expect(await screen.findByTestId("category-lines")).toBeInTheDocument();
+      expect(screen.getByTestId("trend-bars")).toBeInTheDocument();
+      expect(screen.getByRole("radio", { name: "Line", checked: true })).toBeInTheDocument();
+    });
+
+    it("ignores an invalid stored value", async () => {
+      window.localStorage.setItem("pfa:overview:trend-chart", "pie");
+      mockGet(DATA);
+      render(<DashboardScreen />, { wrapper });
+      expect(await screen.findByTestId("trend-line")).toBeInTheDocument();
+    });
   });
 });

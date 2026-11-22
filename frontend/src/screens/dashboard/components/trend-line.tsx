@@ -46,7 +46,12 @@ export function TrendLine({ rows, currency }: TrendLineProps) {
   }
 
   return (
-    <div className="h-56 w-full" data-testid="trend-line">
+    <div
+      className="h-56 w-full"
+      data-testid="trend-line"
+      role="img"
+      aria-label={`Total spending trend: ${points.length} ${points.length === 1 ? "period" : "periods"}`}
+    >
       <ResponsiveContainer width="100%" height="100%">
         <LineChart data={points} margin={{ top: 8, right: 8, bottom: 0, left: 8 }}>
           <CartesianGrid {...CHART_GRID_PROPS} />

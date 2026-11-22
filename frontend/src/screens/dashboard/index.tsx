@@ -5,15 +5,22 @@ import type { DateRange } from "@/components/primitives/date-range-picker";
 import { Page, PageHeader } from "@/components/primitives/page";
 import { EmptyState, ErrorState, LoadingState } from "@/components/primitives/states";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { useTaxonomy } from "@/api/hooks";
+import { ChartTypeToggle } from "@/components/primitives/chart-type-toggle";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { usePersistentChoice } from "@/hooks/use-persistent-choice";
 import { useSelectedUser } from "@/hooks/use-selected-user";
 import { useSpendQueryParams } from "@/hooks/use-spend-query-params";
 
+import { colorMapForKeys } from "./chart-colors";
+import { CategoryLines } from "./components/category-lines";
+import { CategoryPie } from "./components/category-pie";
 import { CategoryStackedBar } from "./components/category-stacked-bar";
 import { CurrencyBanner } from "./components/currency-banner";
 import { FiltersBar } from "./components/filters-bar";
 import { MonthOverMonth } from "./components/month-over-month";
 import { TopMerchants } from "./components/top-merchants";
+import { TrendBars } from "./components/trend-bars";
 import { TrendLine } from "./components/trend-line";
 import { UserComparison } from "./components/user-comparison";
 import {
@@ -24,7 +31,18 @@ import {
   useTrend,
   useUserBreakdown,
 } from "./hooks";
-import { computeMonthOverMonthDelta, detectOtherCurrencies, toTrendPoints, totalsByUser } from "./logic";
+import {
+  computeMonthOverMonthDelta,
+  defaultCategoryLabel,
+  detectOtherCurrencies,
+  distinctCategories,
+  pivotByCategory,
+  toTrendPoints,
+  totalsByUser,
+} from "./logic";
+
+const CATEGORY_CHART_TYPES = ["bar", "line", "pie"] as const;
+const TREND_CHART_TYPES = ["line", "bar"] as const;
 
 /**
  * The Spending Overview screen (P3-D): period selector, category composition over time, an overall
@@ -76,6 +94,37 @@ export default function DashboardScreen() {
   const trendPoints = React.useMemo(() => toTrendPoints(trendQuery.data ?? []), [trendQuery.data]);
   const monthOverMonth = React.useMemo(() => computeMonthOverMonthDelta(trendPoints), [trendPoints]);
   const userTotals = React.useMemo(() => totalsByUser(userBreakdownQuery.data ?? []), [userBreakdownQuery.data]);
+
+  const [categoryChart, setCategoryChart] = usePersistentChoice<(typeof CATEGORY_CHART_TYPES)[number]>(
+    "pfa:overview:category-chart",
+    CATEGORY_CHART_TYPES,
+    "bar",
+  );
+  const [trendChart, setTrendChart] = usePersistentChoice<(typeof TREND_CHART_TYPES)[number]>(
+    "pfa:overview:trend-chart",
+    TREND_CHART_TYPES,
+    "line",
+  );
+
+  // One colour map and one label lookup for all three category charts, so a category keeps its
+  // colour and its taxonomy name when the chart type changes.
+  const taxonomyQuery = useTaxonomy();
+  const categoryColors = React.useMemo(
+    () => colorMapForKeys(distinctCategories(pivotByCategory(categoryQuery.data ?? [])), true),
+    [categoryQuery.data],
+  );
+  const labelFor = React.useMemo(() => {
+    const names = new Map<string, string>();
+    if (Array.isArray(taxonomyQuery.data)) {
+      for (const category of taxonomyQuery.data) names.set(category.key, category.name);
+    }
+    return (key: string) => names.get(key) ?? defaultCategoryLabel(key);
+  }, [taxonomyQuery.data]);
+
+  const pieCaption =
+    params.dateFrom || params.dateTo
+      ? `Share of spending, ${params.dateFrom ?? "start"} – ${params.dateTo ?? "today"}`
+      : "Share of spending, all dates";
 
   const anyError = categoryQuery.error ?? trendQuery.error ?? topMerchantsQuery.error;
   const anyLoading =
@@ -129,20 +178,60 @@ export default function DashboardScreen() {
       ) : (
         <div className="grid gap-4 lg:grid-cols-2">
           <Card className="lg:col-span-2">
-            <CardHeader>
-              <CardTitle>Spending by category</CardTitle>
+            <CardHeader className="flex-row flex-wrap items-center justify-between gap-2 space-y-0">
+              <div className="flex flex-col gap-1">
+                <CardTitle>Spending by category</CardTitle>
+                {categoryChart === "pie" ? <CardDescription>{pieCaption}</CardDescription> : null}
+              </div>
+              <ChartTypeToggle
+                chartLabel="Spending by category"
+                value={categoryChart}
+                options={CATEGORY_CHART_TYPES}
+                onChange={setCategoryChart}
+              />
             </CardHeader>
             <CardContent>
-              <CategoryStackedBar rows={categoryQuery.data ?? []} currency={currency} />
+              {categoryChart === "pie" ? (
+                <CategoryPie
+                  rows={categoryQuery.data ?? []}
+                  currency={currency}
+                  colors={categoryColors}
+                  labelFor={labelFor}
+                />
+              ) : categoryChart === "line" ? (
+                <CategoryLines
+                  rows={categoryQuery.data ?? []}
+                  currency={currency}
+                  colors={categoryColors}
+                  labelFor={labelFor}
+                />
+              ) : (
+                <CategoryStackedBar
+                  rows={categoryQuery.data ?? []}
+                  currency={currency}
+                  colors={categoryColors}
+                  labelFor={labelFor}
+                />
+              )}
             </CardContent>
           </Card>
 
           <Card>
-            <CardHeader>
+            <CardHeader className="flex-row flex-wrap items-center justify-between gap-2 space-y-0">
               <CardTitle>Trend</CardTitle>
+              <ChartTypeToggle
+                chartLabel="Trend"
+                value={trendChart}
+                options={TREND_CHART_TYPES}
+                onChange={setTrendChart}
+              />
             </CardHeader>
             <CardContent>
-              <TrendLine rows={trendQuery.data ?? []} currency={currency} />
+              {trendChart === "bar" ? (
+                <TrendBars rows={trendQuery.data ?? []} currency={currency} />
+              ) : (
+                <TrendLine rows={trendQuery.data ?? []} currency={currency} />
+              )}
             </CardContent>
           </Card>
 

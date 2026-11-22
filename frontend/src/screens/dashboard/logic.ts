@@ -146,3 +146,95 @@ export function detectOtherCurrencies(
   }
   return Array.from(others).sort();
 }
+
+/** Key of the merged "everything else" series/slice in the pie and line charts. */
+export const OTHER_KEY = "__other__";
+
+export interface CategoryTotal {
+  key: string;
+  totalMinor: number;
+}
+
+/** Each category's signed total summed across every period, largest first. A row with no
+ * category falls into `"uncategorized"`, as in `pivotByCategory`. */
+export function totalsByCategory(rows: readonly AnalyticsRow[]): CategoryTotal[] {
+  const totals = new Map<string, number>();
+  for (const row of rows) {
+    const key = row.category ?? "uncategorized";
+    totals.set(key, (totals.get(key) ?? 0) + row.total_minor);
+  }
+  return Array.from(totals.entries())
+    .map(([key, totalMinor]) => ({ key, totalMinor }))
+    .sort((a, b) => b.totalMinor - a.totalMinor || a.key.localeCompare(b.key));
+}
+
+export interface PieSlice {
+  key: string;
+  totalMinor: number;
+  /** Share of the positive total, 0-100. */
+  percent: number;
+}
+
+export interface PieSlices {
+  slices: PieSlice[];
+  /** Categories whose total is <= 0 (refunds exceed spending): not drawable as a share. */
+  excluded: string[];
+  /** Sum of the positive totals, i.e. what the slices add up to. */
+  totalMinor: number;
+}
+
+/**
+ * Turns category totals into pie slices: only positive totals, largest first; above `maxSlices`
+ * the largest `maxSlices` stay and the rest merge into one `OTHER_KEY` slice. Categories with
+ * total <= 0 are returned in `excluded` instead of being silently dropped.
+ */
+export function pieSlicesFromTotals(totals: readonly CategoryTotal[], maxSlices = 8): PieSlices {
+  const positive = totals.filter((t) => t.totalMinor > 0).sort((a, b) => b.totalMinor - a.totalMinor);
+  const excluded = totals.filter((t) => t.totalMinor <= 0).map((t) => t.key);
+  const totalMinor = positive.reduce((sum, t) => sum + t.totalMinor, 0);
+  let kept: CategoryTotal[] = positive;
+  if (positive.length > maxSlices) {
+    const rest = positive.slice(maxSlices).reduce((sum, t) => sum + t.totalMinor, 0);
+    kept = [...positive.slice(0, maxSlices), { key: OTHER_KEY, totalMinor: rest }];
+  }
+  const slices = kept.map((t) => ({
+    key: t.key,
+    totalMinor: t.totalMinor,
+    percent: totalMinor === 0 ? 0 : (t.totalMinor / totalMinor) * 100,
+  }));
+  return { slices, excluded, totalMinor };
+}
+
+export type CategoryLineRow = { period: string } & Record<string, number | string>;
+
+/**
+ * Wide data for a one-line-per-category chart: the `n` categories with the largest absolute
+ * total across the range, plus `OTHER_KEY` summing the rest when there are more. Missing
+ * periods count as 0. `keys` lists the series in legend order (top categories, then Other).
+ */
+export function topCategoriesWithOther(
+  points: readonly CategoryPeriodPoint[],
+  categories: readonly string[],
+  n = 8,
+): { keys: string[]; data: CategoryLineRow[] } {
+  const absTotal = (key: string) =>
+    Math.abs(points.reduce((sum, p) => sum + (p.categories[key] ?? 0), 0));
+  const ranked = [...categories].sort((a, b) => absTotal(b) - absTotal(a) || a.localeCompare(b));
+  const top = ranked.slice(0, n);
+  const rest = ranked.slice(n);
+  const keys = rest.length > 0 ? [...top, OTHER_KEY] : top;
+  const data = points.map((point) => {
+    const row: CategoryLineRow = { period: point.period };
+    for (const key of top) row[key] = point.categories[key] ?? 0;
+    if (rest.length > 0) row[OTHER_KEY] = rest.reduce((sum, key) => sum + (point.categories[key] ?? 0), 0);
+    return row;
+  });
+  return { keys, data };
+}
+
+/** Display name for a category key when no taxonomy name is known. */
+export function defaultCategoryLabel(key: string): string {
+  if (key === OTHER_KEY) return "Other";
+  if (key === "uncategorized") return "Uncategorized";
+  return key;
+}
