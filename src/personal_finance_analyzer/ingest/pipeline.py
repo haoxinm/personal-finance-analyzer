@@ -36,6 +36,8 @@ from __future__ import annotations
 
 import contextlib
 import json
+import uuid
+from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
@@ -61,6 +63,7 @@ from personal_finance_analyzer.core.pii import merge_entries
 from personal_finance_analyzer.core.types import (
     USER_CLASSIFIED,
     ExtractedDoc,
+    Kind,
     ParsedStatement,
     StatementParser,
 )
@@ -158,6 +161,9 @@ class ImportResult:
     previous_txn_count: int | None = None
     #: `confirm_import(remember=True)` stored this extractor as the issuer's remembered choice.
     remembered: bool = False
+    #: Hand-added (manual) rows a later import found on the statement: they were merged into the
+    #: parsed row and deleted.
+    absorbed_manual: int = 0
 
 
 # ------------------------------------------------------------------------------------------------
@@ -844,14 +850,25 @@ def _persist_parsed_statement(
     layout_spec_id: int | None,
     remember: bool,
     commit: bool = True,
+    absorb: bool = True,
+    manual_baseline: Counter[tuple[str, int]] | None = None,
 ) -> ImportResult:
     """Insert `parsed`'s rows and mark `statement` parsed. Commits (twice: the rows, then the
     transfer pairing) unless `commit=False`, which `reparse` uses so the rebuild and the restore of
-    hand edits are one transaction the caller commits or rolls back."""
+    hand edits are one transaction the caller commits or rolls back.
+
+    ``statement.flip_sign`` negates every parsed amount first (before kinds, hashes and the
+    reconciliation); the stated total and the balances are read separately and stay as printed.
+    Hand-added rows already on the account are merged into the parsed rows that now cover them
+    (`_absorb_manual_rows`) unless ``absorb=False`` (`reparse` does that itself, after restoring
+    hand edits); ``manual_baseline`` is the count taken before the rows were (re)built."""
     settings = load_settings()
+    if statement.flip_sign:
+        parsed = _flipped(parsed)
     account_type = parsed.account_hint.account_type or parser.account_type
     mask = parsed.account_hint.mask or ""
     currency = parsed.account_hint.currency or settings.ingest.default_currency
+    # (A new account takes the hint's currency; an existing one keeps the user's.)
 
     issuer = session.get(Issuer, issuer_id)
     if issuer is None:
@@ -903,7 +920,7 @@ def _persist_parsed_statement(
                 "merchant_key": normalized.merchant_key,
                 "issuer_category": raw.issuer_category,
                 "amount_minor": raw.amount_minor,
-                "currency": raw.currency,
+                "currency": account.currency,
                 "fx_amount_minor": raw.fx_amount_minor,
                 "fx_currency": raw.fx_currency,
                 "fx_rate": raw.fx_rate,
@@ -929,6 +946,8 @@ def _persist_parsed_statement(
         previous_detect_score=previous.detect_score if previous is not None else None,
     )
 
+    if manual_baseline is None:
+        manual_baseline = _manual_baseline(session, account.id)
     inserted_ids = _insert_transactions(session, rows)
 
     statement.status = STATUS_PARSED
@@ -938,8 +957,7 @@ def _persist_parsed_statement(
     statement.account_id = account.id
     statement.issuer_id = issuer_id
     statement.layout_spec_id = layout_spec_id
-    statement.period_start = parsed.period_start.isoformat() if parsed.period_start else None
-    statement.period_end = parsed.period_end.isoformat() if parsed.period_end else None
+    _apply_parsed_period(statement, parsed)
     statement.txn_count = len(inserted_ids)
     statement.parsed_row_count = len(parsed.transactions)
     statement.parsed_total_minor = sum(t.amount_minor for t in parsed.transactions)
@@ -959,6 +977,10 @@ def _persist_parsed_statement(
             issuer.default_parser_id = parser.id
             issuer.default_spec_id = None
         issuer.last_used_at = _utcnow_iso()
+
+    absorbed = 0
+    if absorb:
+        absorbed = _absorb_manual_rows(session, account.id, manual_baseline, inserted_ids)
 
     if commit:
         session.commit()
@@ -982,6 +1004,210 @@ def _persist_parsed_statement(
         warnings=shape_warnings,
         parsed_count=len(rows),
         remembered=remembered,
+        absorbed_manual=absorbed,
+    )
+
+
+def _flipped(parsed: ParsedStatement) -> ParsedStatement:
+    """`parsed` with every row's amount (and foreign amount) negated: the extractor read the signs
+    the wrong way round. The stated total and the balances stay as printed, so the reconciliation
+    delta stays a direct check of whether the flip was right."""
+    return replace(
+        parsed,
+        transactions=tuple(
+            replace(
+                t,
+                amount_minor=-t.amount_minor,
+                fx_amount_minor=None if t.fx_amount_minor is None else -t.fx_amount_minor,
+            )
+            for t in parsed.transactions
+        ),
+        section_totals=tuple((label, -total) for label, total in parsed.section_totals),
+    )
+
+
+def _apply_parsed_period(statement: Statement, parsed: ParsedStatement) -> None:
+    """Record the parsed period. A period the user corrected stays the live value (the new parse
+    only refreshes the `orig_*` pair), unless the parse now agrees with it."""
+    start = parsed.period_start.isoformat() if parsed.period_start else None
+    end = parsed.period_end.isoformat() if parsed.period_end else None
+    if statement.period_corrected and (start, end) != (
+        statement.period_start,
+        statement.period_end,
+    ):
+        statement.orig_period_start = start
+        statement.orig_period_end = end
+        return
+    statement.period_corrected = False
+    statement.orig_period_start = None
+    statement.orig_period_end = None
+    statement.period_start = start
+    statement.period_end = end
+
+
+# ------------------------------------------------------------------------------------------------
+# Hand-added (manual) rows
+# ------------------------------------------------------------------------------------------------
+
+MANUAL_HASH_PREFIX = "manual:"
+
+
+def add_manual_transaction(
+    session: Session,
+    statement_id: int,
+    *,
+    posted_date: date,
+    description: str,
+    amount_minor: int,
+    kind: Kind | None,
+    notes: str | None,
+) -> int:
+    """Insert a hand-added row on an imported statement and return its id. The account and person
+    come from the statement; the description is normalized and PII-redacted exactly like a parsed
+    one; the hash is ``manual:<uuid>`` (such a row never collides, a later import absorbs it
+    instead, see `_absorb_manual_rows`). Flushes, does not commit.
+
+    Raises:
+        PfaError: the statement was not found or is not imported (no account / not parsed).
+    """
+    statement = session.get(Statement, statement_id)
+    if statement is None:
+        raise PfaError(f"no statement with id={statement_id}")
+    if statement.status != STATUS_PARSED or statement.account_id is None:
+        raise PfaError(f"statement {statement_id} is not imported yet")
+    account = session.get(Account, statement.account_id)
+    if account is None:  # pragma: no cover - FK integrity
+        raise PfaError(f"account {statement.account_id} not found")
+    settings = load_settings()
+    pii_terms = _gather_pii_terms(session, settings, account.user_id)
+    normalized = normalize(description, pii_terms)
+    resolved_kind = kind or resolve_kind(
+        kind_hint=None,
+        description_clean=normalized.description_clean,
+        amount_minor=amount_minor,
+        account_type=account.account_type,
+        issuer_match_terms=_gather_issuer_match_terms(session),
+    )
+    txn = Transaction(
+        statement_id=statement.id,
+        account_id=account.id,
+        user_id=account.user_id,
+        posted_date=posted_date.isoformat(),
+        transaction_date=None,
+        description_raw=description,
+        description_clean=normalized.description_clean,
+        merchant_key=normalized.merchant_key,
+        amount_minor=amount_minor,
+        currency=account.currency,
+        kind=resolved_kind,
+        is_spend=is_spend(resolved_kind),
+        dedupe_hash=MANUAL_HASH_PREFIX + uuid.uuid4().hex,
+        notes=notes,
+        source="manual",
+    )
+    session.add(txn)
+    session.flush()
+    return txn.id
+
+
+def _manual_baseline(session: Session, account_id: int) -> Counter[tuple[str, int]]:
+    """How many parsed rows the account holds per live (posted date, amount), taken before an
+    import inserts or rebuilds rows: the reference `_absorb_manual_rows` counts new finds against.
+    Empty (and free) when the account has no active manual rows."""
+    if not _active_manual_rows(session, account_id):
+        return Counter()
+    return _parsed_counts(session, account_id)
+
+
+def _active_manual_rows(session: Session, account_id: int) -> list[Transaction]:
+    return list(
+        session.execute(
+            select(Transaction)
+            .where(
+                Transaction.account_id == account_id,
+                Transaction.source == "manual",
+                Transaction.excluded.is_(False),
+            )
+            .order_by(Transaction.id)
+        ).scalars()
+    )
+
+
+def _parsed_counts(session: Session, account_id: int) -> Counter[tuple[str, int]]:
+    counts: Counter[tuple[str, int]] = Counter()
+    for posted, amount in session.execute(
+        select(Transaction.posted_date, Transaction.amount_minor).where(
+            Transaction.account_id == account_id, Transaction.source == "parsed"
+        )
+    ):
+        counts[(posted, amount)] += 1
+    return counts
+
+
+def _absorb_manual_rows(
+    session: Session,
+    account_id: int,
+    baseline: Counter[tuple[str, int]],
+    new_ids: Sequence[int],
+) -> int:
+    """Merge hand-added rows into the parsed rows an import just found for them.
+
+    Per (posted date, amount) group of the account's active manual rows, ``found_new`` is the
+    number of parsed rows with that date and amount now, minus the ``baseline`` taken before the
+    import. That many manual rows (oldest first) are absorbed, each onto a distinct newly
+    inserted row without a hand edit: the manual row's category lock, kind, notes and exclusion
+    move over (the bank's description and amount win) and the manual row is deleted. Counting
+    finds rather than looking for "any matching row" keeps a re-import that merely re-finds an
+    existing coffee from swallowing the second coffee the user added by hand. Returns the number
+    absorbed. Flushes, does not commit."""
+    manual = _active_manual_rows(session, account_id)
+    if not manual or not new_ids:
+        return 0
+    after = _parsed_counts(session, account_id)
+    groups: dict[tuple[str, int], list[Transaction]] = {}
+    for row in manual:
+        groups.setdefault((row.posted_date, row.amount_minor), []).append(row)
+    fresh = list(
+        session.execute(
+            select(Transaction)
+            .where(Transaction.id.in_(list(new_ids)), Transaction.source == "parsed")
+            .order_by(Transaction.id)
+        ).scalars()
+    )
+    absorbed = 0
+    for key, rows in groups.items():
+        found_new = after.get(key, 0) - baseline.get(key, 0)
+        if found_new <= 0:
+            continue
+        candidates = [
+            t
+            for t in fresh
+            if (t.posted_date, t.amount_minor) == key
+            and t.classified_by != USER_CLASSIFIED
+            and not _has_corrections(t)
+            and not t.excluded
+            and (t.notes is None or t.notes.startswith(_MACHINE_NOTES_PREFIX))
+        ]
+        for manual_row, target in zip(rows[:found_new], candidates, strict=False):
+            _apply_user_edit(target, _manual_edit(manual_row))
+            session.delete(manual_row)
+            absorbed += 1
+    if absorbed:
+        session.flush()
+    return absorbed
+
+
+def _manual_edit(txn: Transaction) -> _UserEdit:
+    """What a manual row hands to the parsed row that absorbs it: its category lock, kind, notes
+    and exclusion. No field corrections: the bank's description and amount win."""
+    edit = _user_edit_of(txn)
+    return replace(
+        edit,
+        fix_posted_date=None,
+        fix_amount_minor=None,
+        fix_description_clean=None,
+        locked=txn.classified_by == USER_CLASSIFIED,
+        excluded=False,
     )
 
 
@@ -1209,6 +1435,7 @@ def _pair_transfers(
                     Transaction.posted_date >= window_start,
                     Transaction.posted_date <= window_end,
                     Transaction.notes.is_(None),
+                    Transaction.source == "parsed",
                 )
             )
             .scalars()
@@ -1237,6 +1464,7 @@ def reparse(
     pages: Sequence[int] | None = None,
     discard_edits: bool = False,
     allow_empty: bool = False,
+    flip_sign: bool | None = None,
 ) -> ImportResult:
     """Re-run a *previously confirmed* statement with a different extractor, rebuilding its rows
     (the API surface's ``POST /api/statements/{id}/reparse``).
@@ -1258,6 +1486,14 @@ def reparse(
     A re-import that would leave a statement which has rows with none is refused
     (`EmptyReparseError`, nothing changed) unless ``allow_empty`` says that is intended.
     `ImportResult.previous_txn_count` is the number of rows the statement had before.
+
+    Only rows read from the statement (`source='parsed'`) are rebuilt: hand-added rows are never
+    deleted (not even with ``discard_edits``). Rows the statement now yields that a hand-added row
+    stood in for absorb it (`ImportResult.absorbed_manual`).
+
+    ``flip_sign`` (None = keep the statement's setting) negates every parsed amount; it is stored
+    on the statement together with the rebuild, and the hand edits are carried onto the flipped
+    rows.
 
     Raises:
         PfaError: the statement was not found, has no account yet (never confirmed), or
@@ -1306,7 +1542,7 @@ def reparse(
         session.scalar(
             select(func.count())
             .select_from(Transaction)
-            .where(Transaction.statement_id == statement.id)
+            .where(Transaction.statement_id == statement.id, Transaction.source == "parsed")
         )
         or 0
     )
@@ -1321,13 +1557,22 @@ def reparse(
     # Rebuild: this statement's own rows are cleared first, so the standard dedupe-insert path
     # below only ever collides with *other* statements' rows on the same account (§3.5). A row the
     # user edited by hand is remembered first and restored onto its rebuilt twin afterwards.
-    kept_edits = _user_edits_of_statement(session, statement.id)
+    new_flip = statement.flip_sign if flip_sign is None else flip_sign
+    kept_edits = _user_edits_of_statement(
+        session, statement.id, negate=new_flip != statement.flip_sign
+    )
     discarded = 0
     if discard_edits:
         discarded = len(kept_edits)
         kept_edits = []
-    session.execute(delete(Transaction).where(Transaction.statement_id == statement.id))
+    baseline = _manual_baseline(session, account.id)
+    session.execute(
+        delete(Transaction).where(
+            Transaction.statement_id == statement.id, Transaction.source == "parsed"
+        )
+    )
     session.flush()
+    statement.flip_sign = new_flip
 
     result = _persist_parsed_statement(
         session,
@@ -1339,8 +1584,13 @@ def reparse(
         layout_spec_id=layout_spec_id,
         remember=False,  # reparse is an explicit override; it never rewrites the remembered spec
         commit=False,  # rebuild + edit restore are one transaction, committed by the caller
+        absorb=False,  # after the hand edits are back (below)
+        manual_baseline=baseline,
     )
     restored, unmatched = _restore_user_edits(session, statement.id, account.id, kept_edits)
+    absorbed = 0
+    if statement.account_id == account.id:
+        absorbed = _absorb_manual_rows(session, account.id, baseline, result.transaction_ids)
     if unmatched:
         logger.warning(
             "reparse of statement %s dropped %d hand edit(s) it could not match to a rebuilt row",
@@ -1353,6 +1603,7 @@ def reparse(
         unmatched_edits=unmatched,
         discarded_edits=discarded,
         previous_txn_count=previous_txn_count,
+        absorbed_manual=absorbed,
     )
 
 
@@ -1402,6 +1653,8 @@ class _UserEdit:
     #: How many of the statement's rows shared this row's (date, amount, raw description) before
     #: the rebuild: twins are told apart only by their position, which a rebuild can shift.
     twin_count: int = 1
+    #: The user excluded the row from totals.
+    excluded: bool = False
 
 
 def _user_edit_of(txn: Transaction) -> _UserEdit:
@@ -1426,6 +1679,7 @@ def _user_edit_of(txn: Transaction) -> _UserEdit:
         description_raw=txn.description_raw,
         description_clean=_imported(txn.orig_description_clean, txn.description_clean),
         merchant_key=txn.merchant_key,
+        excluded=txn.excluded,
     )
 
 
@@ -1454,10 +1708,12 @@ def _apply_user_edit(txn: Transaction, edit: _UserEdit) -> None:
         txn.classified_by = USER_CLASSIFIED
     if edit.notes is not None:
         txn.notes = edit.notes
+    if edit.excluded:
+        txn.excluded = True
     # Corrections: re-applied onto the freshly parsed row, which keeps the newly parsed value as
     # the "imported" one; a correction the new parse already satisfies is simply not needed.
     # `dedupe_hash` is never touched. `orig_X` is only ever set when it is None, so the true
-    # imported value is never overwritten. An amount fix moves the statement's parsed total.
+    # imported value is never overwritten.
     if edit.fix_posted_date is not None and edit.fix_posted_date != txn.posted_date:
         if txn.orig_posted_date is None:
             txn.orig_posted_date = txn.posted_date
@@ -1470,9 +1726,6 @@ def _apply_user_edit(txn: Transaction, edit: _UserEdit) -> None:
             txn.orig_description_clean = txn.description_clean
         txn.description_clean = edit.fix_description_clean
     if edit.fix_amount_minor is not None and edit.fix_amount_minor != txn.amount_minor:
-        statement = txn.statement
-        if statement.parsed_total_minor is not None:
-            statement.parsed_total_minor += edit.fix_amount_minor - txn.amount_minor
         if txn.orig_amount_minor is None:
             txn.orig_amount_minor = txn.amount_minor
         txn.amount_minor = edit.fix_amount_minor
@@ -1494,15 +1747,38 @@ def _apply_user_edit(txn: Transaction, edit: _UserEdit) -> None:
 _MACHINE_NOTES_PREFIX = '{"transfer_pair_id"'
 
 
-def _user_edits_of_statement(session: Session, statement_id: int) -> list[_UserEdit]:
-    """The statement's hand-edited rows: those marked `classified_by='user'`, rows that only
-    carry a note the user typed, and rows with a field correction. Each remembers how many twins (same date, amount and raw
-    description) it had, for `_restore_user_edits`' ambiguity check."""
+def _user_edits_of_statement(
+    session: Session, statement_id: int, *, negate: bool = False
+) -> list[_UserEdit]:
+    """The statement's hand-edited parsed rows: those marked `classified_by='user'`, rows that
+    only carry a note the user typed, rows with a field correction and excluded rows (hand-added
+    rows are not rebuilt, so they are not edits). Each remembers how many twins (same date,
+    amount and raw description) it had, for `_restore_user_edits`' ambiguity check.
+
+    ``negate``: the rows are about to be rebuilt with every amount flipped, so each edit's
+    identity amount is negated and its expected `dedupe_hash` recomputed (occurrence indices over
+    the old rows in id order, as `reassign` does). A typed amount correction is an absolute value
+    and stays as it is."""
     rows = list(
         session.execute(
-            select(Transaction).where(Transaction.statement_id == statement_id)
+            select(Transaction)
+            .where(Transaction.statement_id == statement_id, Transaction.source == "parsed")
+            .order_by(Transaction.id)
         ).scalars()
     )
+    flipped_hash: dict[int, str] = {}
+    if negate and rows:
+        keys = [
+            DedupeKey(
+                account_id=t.account_id,
+                posted_date=_imported(t.orig_posted_date, t.posted_date),
+                amount_minor=-_imported(t.orig_amount_minor, t.amount_minor),
+                description_raw=t.description_raw,
+            )
+            for t in rows
+        ]
+        for t, key, index in zip(rows, keys, compute_occurrence_indices(keys), strict=True):
+            flipped_hash[t.id] = compute_dedupe_hash(key, index)
 
     def twin_key(txn: Transaction) -> tuple[str, int, str]:
         return (
@@ -1518,9 +1794,11 @@ def _user_edits_of_statement(session: Session, statement_id: int) -> list[_UserE
     for txn in sorted(rows, key=lambda t: t.id):
         is_locked = txn.classified_by == USER_CLASSIFIED
         has_user_note = txn.notes is not None and not txn.notes.startswith(_MACHINE_NOTES_PREFIX)
-        if not is_locked and not has_user_note and not _has_corrections(txn):
+        if not is_locked and not has_user_note and not _has_corrections(txn) and not txn.excluded:
             continue
         edit = _user_edit_of(txn)
+        if negate:
+            edit = replace(edit, amount_minor=-edit.amount_minor, dedupe_hash=flipped_hash[txn.id])
         if not has_user_note:
             edit = replace(edit, notes=None)
         edits.append(replace(edit, twin_count=twins[twin_key(txn)]))
@@ -1552,7 +1830,9 @@ def _restore_user_edits(
         return 0, 0
     rebuilt = list(
         session.execute(
-            select(Transaction).where(Transaction.statement_id == statement_id)
+            select(Transaction).where(
+                Transaction.statement_id == statement_id, Transaction.source == "parsed"
+            )
         ).scalars()
     )
     new_twins: dict[tuple[str, int, str], int] = {}
@@ -1565,6 +1845,7 @@ def _restore_user_edits(
         for txn in session.execute(
             select(Transaction).where(
                 Transaction.account_id == account_id,
+                Transaction.source == "parsed",
                 Transaction.dedupe_hash.in_([e.dedupe_hash for e in edits]),
             )
         ).scalars()
@@ -1633,7 +1914,7 @@ def reassign(
 
     # Recompute occurrence_index fresh, in the same (id) order the rows were originally inserted
     # in, per §3.5 — the content has not changed, only the account they belong to.
-    transactions = list(
+    all_rows = list(
         session.execute(
             select(Transaction)
             .where(Transaction.statement_id == statement_id)
@@ -1642,6 +1923,13 @@ def reassign(
         .scalars()
         .all()
     )
+    # Hand-added rows move with the statement as they are (their hash has no account part and
+    # never collides); only the parsed rows are re-hashed and merged.
+    transactions = [t for t in all_rows if t.source == "parsed"]
+    for manual_row in all_rows:
+        if manual_row.source == "manual":
+            manual_row.account_id = account_id
+            manual_row.user_id = user_id
     keys = [
         DedupeKey(
             account_id=account_id,
@@ -1671,7 +1959,7 @@ def reassign(
             .first()
         )
         if collision is not None:
-            if txn.classified_by == USER_CLASSIFIED or _has_corrections(txn):
+            if txn.classified_by == USER_CLASSIFIED or _has_corrections(txn) or txn.excluded:
                 # The surviving twin is the same real transaction: it inherits the user's edit
                 # and field corrections. A survivor with its own hand edit keeps its category
                 # edit and notes, but still receives this row's field corrections for every
@@ -1689,11 +1977,7 @@ def reassign(
                         handed = replace(handed, fix_amount_minor=None)
                     if survivor.orig_description_clean is not None:
                         handed = replace(handed, fix_description_clean=None)
-                    _apply_user_edit(survivor, handed)  # moves the survivor statement's total
-            if txn.orig_amount_minor is not None and statement.parsed_total_minor is not None:
-                # The deleted row stays counted in this statement's parsed total at its imported
-                # amount; its correction now lives on the survivor (and its statement's total).
-                statement.parsed_total_minor -= txn.amount_minor - txn.orig_amount_minor
+                    _apply_user_edit(survivor, handed)
             session.delete(txn)
             duplicates_deleted += 1
             continue
@@ -1711,7 +1995,7 @@ def reassign(
             session.scalar(
                 select(func.count())
                 .select_from(Transaction)
-                .where(Transaction.statement_id == statement_id)
+                .where(Transaction.statement_id == statement_id, Transaction.source == "parsed")
             )
             or 0
         )
@@ -1719,9 +2003,12 @@ def reassign(
     return rows_moved, duplicates_deleted
 
 
-def resolve_account_for_move(session: Session, statement_id: int, *, user_id: int) -> Account:
+def resolve_account_for_move(
+    session: Session, statement_id: int, *, user_id: int, issuer_id: int | None = None
+) -> Account:
     """The account of ``user_id`` that matches the statement's current account (same issuer, type,
     mask and currency), created when that person has none yet: where "change person" moves it.
+    ``issuer_id`` swaps the bank ("change bank"; the new account is created under that issuer).
     Flushes (a new account needs its id), does not commit.
 
     Raises:
@@ -1733,15 +2020,18 @@ def resolve_account_for_move(session: Session, statement_id: int, *, user_id: in
     current = session.get(Account, statement.account_id) if statement.account_id else None
     if current is None:
         raise PfaError(f"statement {statement_id} has no account yet")
-    issuer = session.get(Issuer, current.issuer_id)
+    target_issuer_id = current.issuer_id if issuer_id is None else issuer_id
+    issuer = session.get(Issuer, target_issuer_id)
+    if issuer is None:
+        raise PfaError(f"no issuers row with id={target_issuer_id}")
     return _resolve_account(
         session,
         user_id=user_id,
-        issuer_id=current.issuer_id,
+        issuer_id=target_issuer_id,
         account_type=current.account_type,
         mask=current.mask,
         currency=current.currency,
-        issuer_name=issuer.name if issuer is not None else "Unknown",
+        issuer_name=issuer.name,
     )
 
 

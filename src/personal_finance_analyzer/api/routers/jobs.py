@@ -70,6 +70,7 @@ def _job_response(job: Job, session: Session | None = None) -> schemas.Job:
     parsed_count = payload.get("parsed_count")
     previous_txn_count = payload.get("previous_txn_count")
     remembered = payload.get("remembered")
+    absorbed_manual = payload.get("absorbed_manual")
 
     return schemas.Job(
         id=job.id,
@@ -95,6 +96,7 @@ def _job_response(job: Job, session: Session | None = None) -> schemas.Job:
         parsed_count=parsed_count if isinstance(parsed_count, int) else None,
         previous_txn_count=previous_txn_count if isinstance(previous_txn_count, int) else None,
         remembered=remembered if isinstance(remembered, bool) else None,
+        absorbed_manual=absorbed_manual if isinstance(absorbed_manual, int) else None,
     )
 
 

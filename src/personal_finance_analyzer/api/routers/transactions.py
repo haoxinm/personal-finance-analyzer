@@ -27,9 +27,9 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import date, timedelta
-from typing import Annotated
+from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.orm import Session
 
 from personal_finance_analyzer.api import schemas
@@ -101,6 +101,8 @@ def _transaction_response(
         notes=txn.notes,
         needs_review=txn.needs_review,
         corrections=_corrections_response(txn),
+        source="manual" if txn.source == "manual" else "parsed",
+        excluded=txn.excluded,
         candidates=_candidates_response(candidate_set)
         if candidate_set is not None and with_candidates
         else None,
@@ -132,6 +134,17 @@ def _filters_dependency(
         search: str | None = None,
         currency: str | None = currency_default,
         conflict: bool | None = None,
+        excluded: Annotated[
+            Literal["hide", "only", "include"],
+            Query(
+                description="Rows excluded from totals: hidden (default), only those, or "
+                "everything."
+            ),
+        ] = "hide",
+        source: Annotated[
+            Literal["parsed", "manual"] | None,
+            Query(description="Only rows read from a statement, or only those added by hand."),
+        ] = None,
     ) -> crud.TransactionFilters:
         return crud.TransactionFilters(
             user_ids=user_ids,
@@ -150,6 +163,8 @@ def _filters_dependency(
             search=search,
             currency=currency,
             conflict=conflict,
+            excluded=excluded,
+            source=source,
         )
 
     return dependency
@@ -208,6 +223,109 @@ def list_transaction_ids(
     cap), for "select all N matching" in the grid."""
     ids = crud.transaction_ids(session, filters, sort=sort)
     return schemas.TransactionIds(ids=ids, total=len(ids))
+
+
+@router.post("/transactions", response_model=schemas.Transaction, status_code=201)
+def create_transaction(
+    body: schemas.TransactionCreate, session: SessionDep, settings: SettingsDep
+) -> schemas.Transaction:
+    """Add a transaction by hand to an *imported* statement (its account and person apply).
+
+    With a category it is a one-time edit; without one the deterministic cascade (your rules,
+    built-in rules, the learned cache; never the LLM, nothing is learned from it) files it, and a
+    row nothing places lands in `others/uncategorized` flagged for review. A later import or
+    re-import that finds the row on the bank's statement absorbs it. Rows added by hand are never
+    deleted by a re-import."""
+    statement = crud.get_statement(session, body.statement_id)
+    if statement is None:
+        raise HTTPException(status_code=404, detail="statement not found")
+    if statement.status != "parsed" or statement.account_id is None:
+        raise HTTPException(
+            status_code=409,
+            detail="this statement is not imported yet; finish importing it first",
+        )
+    if not (_MIN_POSTED_DATE <= body.posted_date <= date.today() + timedelta(days=366)):
+        raise HTTPException(
+            status_code=400,
+            detail="posted_date must be between 1970-01-01 and a year from today",
+        )
+    if (body.category_key is None) != (body.subcategory_key is None):
+        raise HTTPException(
+            status_code=400,
+            detail="category_key and subcategory_key must be given together",
+        )
+    if body.category_key is not None and body.subcategory_key is not None:
+        category = crud.category_by_key(session, body.category_key)
+        if category is None:
+            raise HTTPException(status_code=400, detail=f"unknown category {body.category_key!r}")
+        if crud.subcategory_by_key(session, category.id, body.subcategory_key) is None:
+            raise HTTPException(
+                status_code=400, detail=f"unknown subcategory {body.subcategory_key!r}"
+            )
+
+    transaction_id = gateway.add_manual_transaction(
+        session,
+        statement.id,
+        posted_date=body.posted_date,
+        description=body.description,
+        amount_minor=body.amount_minor,
+        kind=body.kind.value if body.kind is not None else None,
+        notes=body.notes,
+    )
+    if body.category_key is not None and body.subcategory_key is not None:
+        gateway.apply_user_correction(
+            session,
+            transaction_id,
+            category_key=body.category_key,
+            subcategory_key=body.subcategory_key,
+            kind=body.kind.value if body.kind is not None else None,
+            create_rule=False,
+        )
+    else:
+        gateway.classify_deterministic(
+            session, [transaction_id], confidence_threshold=settings.llm.confidence_threshold
+        )
+    session.commit()
+    txn = crud.get_transaction(session, transaction_id)
+    assert txn is not None
+    session.refresh(txn)
+    return _transaction_response(session, txn)
+
+
+@router.delete("/transactions/{id}", status_code=204)
+def delete_transaction(
+    id: int,  # keep the name "id": the generated frontend path key derives from it
+    session: SessionDep,
+) -> Response:
+    """Delete a row that was added by hand. A row read from a statement cannot be deleted (a
+    re-import would bring it back): 409 `parsed_row`; exclude it instead."""
+    txn = crud.get_transaction(session, id)
+    if txn is None:
+        raise HTTPException(status_code=404, detail="transaction not found")
+    if not crud.delete_manual_transaction(session, txn):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "parsed_row",
+                "message": (
+                    "Rows read from the statement can't be deleted (a re-import would bring "
+                    "them back). Exclude it instead."
+                ),
+            },
+        )
+    session.commit()
+    return Response(status_code=204)
+
+
+@router.post("/transactions/bulk-exclude", response_model=schemas.BulkExcludeResponse)
+def bulk_exclude_transactions(
+    body: schemas.BulkExcludeRequest, session: SessionDep
+) -> schemas.BulkExcludeResponse:
+    """Exclude (or, with `excluded=false`, include again) every listed transaction. Returns the
+    ids that actually changed: send exactly those back with `excluded` negated to undo."""
+    changed = crud.set_excluded(session, body.transaction_ids, body.excluded)
+    session.commit()
+    return schemas.BulkExcludeResponse(updated=len(changed), changed_ids=changed)
 
 
 @router.get("/transactions/{id}/candidates", response_model=schemas.TransactionCandidates)
@@ -284,6 +402,9 @@ def patch_transaction(
     )
     if remaining_kind is not None or body.notes is not None:
         crud.update_transaction_fields(session, txn, kind=remaining_kind, notes=body.notes)
+
+    if body.excluded is not None:
+        crud.set_excluded(session, [transaction_id], body.excluded)
 
     if body.revert_fields or any(v is not None for v in given.values()):
         crud.apply_field_corrections(

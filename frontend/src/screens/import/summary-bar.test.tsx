@@ -37,6 +37,11 @@ function makeParsedItem(overrides: Partial<ImportItem> = {}): ImportItem {
       has_pdf: true,
       pdf_in_place: false,
       pdf_missing: false,
+      flip_sign: false,
+      period_corrected: false,
+      manual_count: 0,
+      excluded_count: 0,
+      sign_flip_suggested: false,
     },
     ...overrides,
   };

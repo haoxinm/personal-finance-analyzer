@@ -30,6 +30,8 @@ function makeTransaction(overrides: Partial<Transaction> = {}): Transaction {
     merchant_key: "acme",
     notes: null,
     needs_review: false,
+    source: "parsed",
+    excluded: false,
     ...overrides,
   };
 }

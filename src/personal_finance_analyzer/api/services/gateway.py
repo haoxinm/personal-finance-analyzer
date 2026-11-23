@@ -78,6 +78,7 @@ class ImportResult:
     parsed_count: int = 0
     previous_txn_count: int | None = None
     remembered: bool = False
+    absorbed_manual: int = 0
 
 
 @dataclass(frozen=True)
@@ -197,15 +198,19 @@ def reparse(
     pages: Sequence[int] | None = None,
     discard_edits: bool = False,
     allow_empty: bool = False,
+    flip_sign: bool | None = None,
 ) -> ImportResult:
     """Re-run extraction with a different extractor, rebuilding the statement's rows. A result
     with no transactions replaces a statement that has some only with ``allow_empty``.
+    ``flip_sign`` (None = keep the statement's setting) negates every parsed amount.
 
     Raises:
         ModuleNotFoundError: `ingest/pipeline.py` (P2-A) is not present in this build.
     """
     fn = _resolve("personal_finance_analyzer.ingest.pipeline", "reparse")
     extra: dict[str, Any] = {"allow_empty": True} if allow_empty else {}
+    if flip_sign is not None:
+        extra["flip_sign"] = flip_sign
     return cast(
         ImportResult,
         fn(
@@ -241,11 +246,39 @@ def extractor_candidates(session: Session, statement_id: int) -> list[ExtractorC
     return cast(list[ExtractorCandidate], fn(session, statement_id))
 
 
-def resolve_account_for_move(session: Session, statement_id: int, *, user_id: int) -> Any:
-    """The account of ``user_id`` matching the statement's account, created when missing (flushes,
-    does not commit). Returns the `Account` row."""
+def resolve_account_for_move(
+    session: Session, statement_id: int, *, user_id: int, issuer_id: int | None = None
+) -> Any:
+    """The account of ``user_id`` matching the statement's account (under ``issuer_id`` when the
+    bank changes), created when missing (flushes, does not commit). Returns the `Account` row."""
     fn = _resolve("personal_finance_analyzer.ingest.pipeline", "resolve_account_for_move")
-    return fn(session, statement_id, user_id=user_id)
+    return fn(session, statement_id, user_id=user_id, issuer_id=issuer_id)
+
+
+def add_manual_transaction(
+    session: Session,
+    statement_id: int,
+    *,
+    posted_date: Any,
+    description: str,
+    amount_minor: int,
+    kind: Kind | None,
+    notes: str | None,
+) -> int:
+    """Insert a hand-added row on an imported statement; returns its id (flushes, no commit)."""
+    fn = _resolve("personal_finance_analyzer.ingest.pipeline", "add_manual_transaction")
+    return cast(
+        int,
+        fn(
+            session,
+            statement_id,
+            posted_date=posted_date,
+            description=description,
+            amount_minor=amount_minor,
+            kind=kind,
+            notes=notes,
+        ),
+    )
 
 
 def reassign(
@@ -289,6 +322,17 @@ def classify_transactions(
             group_id=group_id,
             progress_cb=progress_cb,
         ),
+    )
+
+
+def classify_deterministic(
+    session: Session, transaction_ids: Sequence[int], *, confidence_threshold: float
+) -> list[int]:
+    """Run the deterministic cascade (no LLM, no cache writes) over the rows; does not commit."""
+    fn = _resolve("personal_finance_analyzer.classify.cascade", "classify_deterministic")
+    return cast(
+        list[int],
+        fn(session, transaction_ids, confidence_threshold=confidence_threshold),
     )
 
 

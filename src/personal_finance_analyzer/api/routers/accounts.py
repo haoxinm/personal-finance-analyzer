@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from fastapi import APIRouter, HTTPException
 
 from personal_finance_analyzer.api import schemas
@@ -37,13 +39,23 @@ def update_account(
     account = crud.get_account(session, account_id)
     if account is None:
         raise HTTPException(status_code=404, detail="account not found")
-    account = crud.update_account(
-        session,
-        account,
-        issuer_id=body.issuer_id,
-        account_type=body.account_type,
-        mask=body.mask,
-        currency=body.currency,
-    )
+    if body.currency is not None and not re.fullmatch(r"[A-Z]{3}", body.currency):
+        raise HTTPException(
+            status_code=400, detail="currency must be a three-letter code such as USD or EUR"
+        )
+    try:
+        account = crud.update_account(
+            session,
+            account,
+            issuer_id=body.issuer_id,
+            account_type=body.account_type,
+            mask=body.mask,
+            currency=body.currency,
+        )
+    except crud.DuplicateAccountError:
+        raise HTTPException(
+            status_code=409,
+            detail="another account of this person already has that bank, type and mask",
+        ) from None
     session.commit()
     return schemas.Account.model_validate(account)

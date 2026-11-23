@@ -113,6 +113,8 @@ class AccountUpdate(_Model):
     issuer_id: int | None = None
     account_type: AccountType | None = None
     mask: str | None = None
+    #: ISO-4217-style code (three capital letters). Also rewrites the currency of the account's
+    #: transactions, which is what analytics and the grid filter on.
     currency: str | None = None
 
 
@@ -168,6 +170,18 @@ class Statement(_Model):
     #: A PDF copy was recorded but is no longer in the documents folder (re-import is impossible
     #: until it is put back).
     pdf_missing: bool = False
+    #: Every parsed amount is negated (set by a re-import with `flip_sign`).
+    flip_sign: bool = False
+    #: The user corrected the period: `period_start`/`period_end` are the corrected values.
+    period_corrected: bool = False
+    #: The period as parsed (equals `period_*` when it was not corrected).
+    parsed_period_start: date | None = None
+    parsed_period_end: date | None = None
+    #: Rows added by hand / excluded from totals on this statement.
+    manual_count: int = 0
+    excluded_count: int = 0
+    #: The rows would reconcile if every amount were sign-flipped (re-import with `flip_sign`).
+    sign_flip_suggested: bool = False
 
 
 class StatementPatchResult(Statement):
@@ -240,6 +254,9 @@ class ReparseRequest(_Model):
     #: Allow a re-import that finds no transactions to replace a statement that has some. Without
     #: it such a job fails with `error_code="empty_result"` and nothing is changed.
     allow_empty: bool = False
+    #: Negate every parsed amount (the extractor read the signs the wrong way round). `None` keeps
+    #: the statement's current setting. Hand-added rows are never flipped.
+    flip_sign: bool | None = None
 
 
 class StatementPageInfo(_Model):
@@ -269,6 +286,14 @@ class LlmParsePreview(_Model):
 class StatementPatch(_Model):
     user_id: int | None = None
     account_id: int | None = None
+    #: Change the bank: the statement moves to the account of the same person, type and mask under
+    #: this issuer (created when missing). Not with `account_id`.
+    issuer_id: int | None = None
+    #: Correct the statement period (both, `start <= end`, at most 400 days, 1970..today+1y).
+    period_start: date | None = None
+    period_end: date | None = None
+    #: Put the parsed period back.
+    revert_period: bool | None = None
 
 
 class JobIdResponse(_Model):
@@ -318,6 +343,9 @@ class Job(_Model):
     previous_txn_count: int | None = None
     #: On a finished extract job with `remember`: the extractor was stored for the issuer.
     remembered: bool | None = None
+    #: On a finished import or re-import job: hand-added rows the statement now covers, merged
+    #: into the parsed rows and removed.
+    absorbed_manual: int | None = None
 
 
 # --- Transactions ----------------------------------------------------------------------------------
@@ -386,9 +414,50 @@ class Transaction(_Model):
     needs_review: bool
     #: Imported values of the date/amount/description the user corrected; None when none is.
     corrections: TransactionCorrections | None = None
+    #: `parsed` (read from the statement) or `manual` (added by hand).
+    source: Literal["parsed", "manual"] = "parsed"
+    #: Left out of every total (analytics, the grid by default, export by default).
+    excluded: bool = False
     #: Only present when the list was asked for it (`include_candidates` / `include_conflict`).
     candidates: list[TransactionCandidate] | None = None
     conflict: bool | None = None
+
+
+class TransactionCreate(_Model):
+    """`POST /api/transactions`: add a row by hand to an imported statement. The account and
+    person come from the statement. Without a category the deterministic cascade (never the LLM)
+    files it; with one it is a one-time edit."""
+
+    statement_id: int
+    posted_date: date
+    description: str
+    #: Signed minor units, positive = money out (I5), non-zero.
+    amount_minor: int
+    kind: Kind | None = None
+    category_key: str | None = None
+    subcategory_key: str | None = None
+    notes: str | None = None
+
+    @field_validator("description")
+    @classmethod
+    def _check_description(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("description must not be blank")
+        if len(value) > 200:
+            raise ValueError("description must be at most 200 characters")
+        if any(unicodedata.category(ch) in ("Cc", "Cf") or ch in "\u2028\u2029" for ch in value):
+            raise ValueError("description must not contain control or invisible characters")
+        return value
+
+    @field_validator("amount_minor")
+    @classmethod
+    def _check_amount(cls, value: int) -> int:
+        if value == 0:
+            raise ValueError("amount must not be zero")
+        if abs(value) > MAX_CORRECTED_AMOUNT_MINOR:
+            raise ValueError("amount is too large")
+        return value
 
 
 class TransactionList(_Model):
@@ -425,6 +494,8 @@ class TransactionPatch(_Model):
     #: merchant this way"), for future transactions. Needs a category and subcategory. Off by
     #: default: an edit is otherwise a one-time patch.
     create_rule: bool = False
+    #: Exclude the row from totals (`true`) or include it again (`false`).
+    excluded: bool | None = None
 
     @field_validator("description_clean")
     @classmethod
@@ -544,6 +615,20 @@ class BulkUpdateRequest(_Model):
 
 class BulkUpdateResponse(_Model):
     updated: int
+
+
+class BulkExcludeRequest(_Model):
+    transaction_ids: list[int]
+    #: `true` excludes the rows from totals, `false` includes them again.
+    excluded: bool
+
+
+class BulkExcludeResponse(_Model):
+    """`updated` rows changed; `changed_ids` are exactly those (send them back with `excluded`
+    negated to undo). Missing ids and rows already in that state are skipped."""
+
+    updated: int
+    changed_ids: list[int]
 
 
 class RevertToAutomaticResponse(_Model):

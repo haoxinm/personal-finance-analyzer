@@ -209,6 +209,8 @@ def build_select(query: SpendQuery) -> Select[Any]:
         stmt = stmt.outerjoin(Account, Transaction.account_id == Account.id)
 
     stmt = stmt.where(Transaction.currency == query.currency)
+    # A row the user excluded (a header parsed as a transaction, a bogus line) is in no total.
+    stmt = stmt.where(Transaction.excluded.is_(False))
 
     if query.user_ids is not None:
         stmt = stmt.where(Transaction.user_id.in_(query.user_ids))

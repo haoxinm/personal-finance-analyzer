@@ -39,6 +39,8 @@ _FIELDS = (
     "merchant_key",
     "notes",
     "needs_review",
+    "source",
+    "excluded",
 )
 
 
@@ -90,6 +92,8 @@ def export_transactions(
             merchant_key=t.merchant_key,
             notes=t.notes,
             needs_review=t.needs_review,
+            source="manual" if t.source == "manual" else "parsed",
+            excluded=t.excluded,
         )
         for t in transactions
     ]

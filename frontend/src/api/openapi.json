@@ -409,7 +409,7 @@
           "statements"
         ],
         "summary": "Patch Statement",
-        "description": "Move a statement to another person and/or account (\"change person\").\n\n* `user_id` alone: the statement and all its transactions move to that person's matching\n  account (same issuer, type, mask and currency), which is created when they have none.\n* `account_id` alone: they move to that account; its owner becomes the statement's person.\n* both: moved to that account; the account must belong to the given user (400 otherwise).\n  An `account_id` needs an imported statement (409 otherwise) and an existing account (404).\n\nDuplicates the target account already holds are merged (`duplicates_deleted`). Sending\nnothing, or what is already the case, is a 400.",
+        "description": "Move a statement to another person, bank or account, and/or correct its period.\n\n* `user_id` alone: the statement and all its transactions move to that person's matching\n  account (same issuer, type, mask and currency), which is created when they have none.\n* `account_id` alone: they move to that account; its owner becomes the statement's person.\n* both: moved to that account; the account must belong to the given user (400 otherwise).\n  An `account_id` needs an imported statement (409 otherwise) and an existing account (404).\n* `issuer_id` (\"change bank\"; alone or with `user_id`, never with `account_id`): moves to the\n  account of the same person, type and mask under that issuer (created when missing); 404 for\n  an unknown issuer, 409 for a statement that is not imported.\n* `period_start` + `period_end` correct the period (parsed statements only; the parsed value\n  is kept and `revert_period` puts it back). Row dates are not changed.\n\nDuplicates the target account already holds are merged (`duplicates_deleted`); hand-added\nrows move along. Sending nothing, or what is already the case, is a 400.",
         "operationId": "patch_statement_api_statements__statement_id__patch",
         "parameters": [
           {
@@ -1248,6 +1248,45 @@
               ],
               "title": "Conflict"
             }
+          },
+          {
+            "name": "excluded",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "hide",
+                "only",
+                "include"
+              ],
+              "type": "string",
+              "description": "Rows excluded from totals: hidden (default), only those, or everything.",
+              "default": "hide",
+              "title": "Excluded"
+            },
+            "description": "Rows excluded from totals: hidden (default), only those, or everything."
+          },
+          {
+            "name": "source",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "parsed",
+                    "manual"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only rows read from a statement, or only those added by hand.",
+              "title": "Source"
+            },
+            "description": "Only rows read from a statement, or only those added by hand."
           }
         ],
         "responses": {
@@ -1257,6 +1296,46 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/TransactionList"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "transactions"
+        ],
+        "summary": "Create Transaction",
+        "description": "Add a transaction by hand to an *imported* statement (its account and person apply).\n\nWith a category it is a one-time edit; without one the deterministic cascade (your rules,\nbuilt-in rules, the learned cache; never the LLM, nothing is learned from it) files it, and a\nrow nothing places lands in `others/uncategorized` flagged for review. A later import or\nre-import that finds the row on the bank's statement absorbs it. Rows added by hand are never\ndeleted by a re-import.",
+        "operationId": "create_transaction_api_transactions_post",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TransactionCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Transaction"
                 }
               }
             }
@@ -1566,6 +1645,45 @@
               ],
               "title": "Conflict"
             }
+          },
+          {
+            "name": "excluded",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "hide",
+                "only",
+                "include"
+              ],
+              "type": "string",
+              "description": "Rows excluded from totals: hidden (default), only those, or everything.",
+              "default": "hide",
+              "title": "Excluded"
+            },
+            "description": "Rows excluded from totals: hidden (default), only those, or everything."
+          },
+          {
+            "name": "source",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "parsed",
+                    "manual"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only rows read from a statement, or only those added by hand.",
+              "title": "Source"
+            },
+            "description": "Only rows read from a statement, or only those added by hand."
           }
         ],
         "responses": {
@@ -1575,6 +1693,134 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/TransactionIds"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/transactions/{id}": {
+      "delete": {
+        "tags": [
+          "transactions"
+        ],
+        "summary": "Delete Transaction",
+        "description": "Delete a row that was added by hand. A row read from a statement cannot be deleted (a\nre-import would bring it back): 409 `parsed_row`; exclude it instead.",
+        "operationId": "delete_transaction_api_transactions__id__delete",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "transactions"
+        ],
+        "summary": "Patch Transaction",
+        "operationId": "patch_transaction_api_transactions__id__patch",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TransactionPatch"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Transaction"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/transactions/bulk-exclude": {
+      "post": {
+        "tags": [
+          "transactions"
+        ],
+        "summary": "Bulk Exclude Transactions",
+        "description": "Exclude (or, with `excluded=false`, include again) every listed transaction. Returns the\nids that actually changed: send exactly those back with `excluded` negated to undo.",
+        "operationId": "bulk_exclude_transactions_api_transactions_bulk_exclude_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BulkExcludeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BulkExcludeResponse"
                 }
               }
             }
@@ -1618,58 +1864,6 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/TransactionCandidates"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/transactions/{id}": {
-      "patch": {
-        "tags": [
-          "transactions"
-        ],
-        "summary": "Patch Transaction",
-        "operationId": "patch_transaction_api_transactions__id__patch",
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "integer",
-              "title": "Id"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/TransactionPatch"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Transaction"
                 }
               }
             }
@@ -4259,6 +4453,45 @@
               ],
               "title": "Conflict"
             }
+          },
+          {
+            "name": "excluded",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "hide",
+                "only",
+                "include"
+              ],
+              "type": "string",
+              "description": "Rows excluded from totals: hidden (default), only those, or everything.",
+              "default": "hide",
+              "title": "Excluded"
+            },
+            "description": "Rows excluded from totals: hidden (default), only those, or everything."
+          },
+          {
+            "name": "source",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "parsed",
+                    "manual"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only rows read from a statement, or only those added by hand.",
+              "title": "Source"
+            },
+            "description": "Only rows read from a statement, or only those added by hand."
           }
         ],
         "responses": {
@@ -7889,6 +8122,49 @@
         ],
         "title": "BuiltinForecastPreset"
       },
+      "BulkExcludeRequest": {
+        "properties": {
+          "transaction_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Transaction Ids"
+          },
+          "excluded": {
+            "type": "boolean",
+            "title": "Excluded"
+          }
+        },
+        "type": "object",
+        "required": [
+          "transaction_ids",
+          "excluded"
+        ],
+        "title": "BulkExcludeRequest"
+      },
+      "BulkExcludeResponse": {
+        "properties": {
+          "updated": {
+            "type": "integer",
+            "title": "Updated"
+          },
+          "changed_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Changed Ids"
+          }
+        },
+        "type": "object",
+        "required": [
+          "updated",
+          "changed_ids"
+        ],
+        "title": "BulkExcludeResponse",
+        "description": "`updated` rows changed; `changed_ids` are exactly those (send them back with `excluded`\nnegated to undo). Missing ids and rows already in that state are skipped."
+      },
       "BulkRevertRequest": {
         "properties": {
           "transaction_ids": {
@@ -9712,6 +9988,17 @@
               }
             ],
             "title": "Remembered"
+          },
+          "absorbed_manual": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Absorbed Manual"
           }
         },
         "type": "object",
@@ -10711,6 +10998,17 @@
             "type": "boolean",
             "title": "Allow Empty",
             "default": false
+          },
+          "flip_sign": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Flip Sign"
           }
         },
         "type": "object",
@@ -11532,6 +11830,55 @@
             "type": "boolean",
             "title": "Pdf Missing",
             "default": false
+          },
+          "flip_sign": {
+            "type": "boolean",
+            "title": "Flip Sign",
+            "default": false
+          },
+          "period_corrected": {
+            "type": "boolean",
+            "title": "Period Corrected",
+            "default": false
+          },
+          "parsed_period_start": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parsed Period Start"
+          },
+          "parsed_period_end": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parsed Period End"
+          },
+          "manual_count": {
+            "type": "integer",
+            "title": "Manual Count",
+            "default": 0
+          },
+          "excluded_count": {
+            "type": "integer",
+            "title": "Excluded Count",
+            "default": 0
+          },
+          "sign_flip_suggested": {
+            "type": "boolean",
+            "title": "Sign Flip Suggested",
+            "default": false
           }
         },
         "type": "object",
@@ -11601,6 +11948,52 @@
               }
             ],
             "title": "Account Id"
+          },
+          "issuer_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Issuer Id"
+          },
+          "period_start": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Period Start"
+          },
+          "period_end": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Period End"
+          },
+          "revert_period": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revert Period"
           }
         },
         "type": "object",
@@ -11842,6 +12235,55 @@
           "pdf_missing": {
             "type": "boolean",
             "title": "Pdf Missing",
+            "default": false
+          },
+          "flip_sign": {
+            "type": "boolean",
+            "title": "Flip Sign",
+            "default": false
+          },
+          "period_corrected": {
+            "type": "boolean",
+            "title": "Period Corrected",
+            "default": false
+          },
+          "parsed_period_start": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parsed Period Start"
+          },
+          "parsed_period_end": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parsed Period End"
+          },
+          "manual_count": {
+            "type": "integer",
+            "title": "Manual Count",
+            "default": 0
+          },
+          "excluded_count": {
+            "type": "integer",
+            "title": "Excluded Count",
+            "default": 0
+          },
+          "sign_flip_suggested": {
+            "type": "boolean",
+            "title": "Sign Flip Suggested",
             "default": false
           },
           "rows_moved": {
@@ -14834,6 +15276,20 @@
               }
             ]
           },
+          "source": {
+            "type": "string",
+            "enum": [
+              "parsed",
+              "manual"
+            ],
+            "title": "Source",
+            "default": "parsed"
+          },
+          "excluded": {
+            "type": "boolean",
+            "title": "Excluded",
+            "default": false
+          },
           "candidates": {
             "anyOf": [
               {
@@ -15017,6 +15473,79 @@
         "title": "TransactionCorrections",
         "description": "The *imported* values of the fields the user corrected (None = not corrected)."
       },
+      "TransactionCreate": {
+        "properties": {
+          "statement_id": {
+            "type": "integer",
+            "title": "Statement Id"
+          },
+          "posted_date": {
+            "type": "string",
+            "format": "date",
+            "title": "Posted Date"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description"
+          },
+          "amount_minor": {
+            "type": "integer",
+            "title": "Amount Minor"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Kind"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "category_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Category Key"
+          },
+          "subcategory_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subcategory Key"
+          },
+          "notes": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notes"
+          }
+        },
+        "type": "object",
+        "required": [
+          "statement_id",
+          "posted_date",
+          "description",
+          "amount_minor"
+        ],
+        "title": "TransactionCreate",
+        "description": "`POST /api/transactions`: add a row by hand to an imported statement. The account and\nperson come from the statement. Without a category the deterministic cascade (never the LLM)\nfiles it; with one it is a one-time edit."
+      },
       "TransactionIds": {
         "properties": {
           "ids": {
@@ -15155,6 +15684,17 @@
             "type": "boolean",
             "title": "Create Rule",
             "default": false
+          },
+          "excluded": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Excluded"
           }
         },
         "type": "object",

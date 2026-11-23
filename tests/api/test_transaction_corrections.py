@@ -8,6 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
+from personal_finance_analyzer.api.services import crud
 from personal_finance_analyzer.db.models import Statement, Transaction
 from tests.api.test_transactions import _make_transaction
 
@@ -142,11 +143,12 @@ def test_the_statement_total_and_reconciliation_follow_the_amount(
 
     client.patch(f"/api/transactions/{txn_id}", json={"amount_minor": 1500})
     session.expire_all()
-    assert statement.parsed_total_minor == 1500
+    assert crud.statement_adjustments(session, [statement.id]) == {statement.id: 250}
     assert client.get(f"/api/statements/{statement.id}").json()["reconciliation_delta_minor"] == 250
     client.patch(f"/api/transactions/{txn_id}", json={"revert_fields": ["amount_minor"]})
     session.expire_all()
-    assert statement.parsed_total_minor == 1250
+    assert statement.parsed_total_minor == 1250  # as extracted: never mutated
+    assert crud.statement_adjustments(session, [statement.id]) == {statement.id: 0}
 
 
 def test_analytics_reflects_the_corrected_amount_and_date(

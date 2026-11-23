@@ -11,6 +11,7 @@ imports `ingest.pipeline` directly (see that module's docstring).
 from __future__ import annotations
 
 import dataclasses
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Annotated
 
@@ -32,7 +33,7 @@ from personal_finance_analyzer.api.services.uploads import (
     save_upload,
 )
 from personal_finance_analyzer.core.errors import PfaError
-from personal_finance_analyzer.db.models import Account, LayoutSpec, Statement, User
+from personal_finance_analyzer.db.models import Account, Issuer, LayoutSpec, Statement, User
 from personal_finance_analyzer.ingest.extract import extract
 from personal_finance_analyzer.ingest.pages import load_pages, parse_page_spec, validate_pages
 
@@ -40,7 +41,11 @@ router = APIRouter(tags=["statements"])
 
 
 def _attention(
-    statement: Statement, *, reconciliation_delta: int | None, pdf_missing: bool
+    statement: Statement,
+    *,
+    reconciliation_delta: int | None,
+    pdf_missing: bool,
+    manual_count: int = 0,
 ) -> list[schemas.StatementAttention]:
     """What a *parsed* statement needs a second look for (empty for any other status)."""
     if statement.status != "parsed":
@@ -51,7 +56,9 @@ def _attention(
     ):
         # (A statement imported before row counts were recorded and with no rows: whether it
         # found nothing or only duplicates is unknown, but either way it has no transactions.)
-        notes.append("no_transactions")
+        # Someone who typed the rows in by hand is not nagged about it.
+        if not manual_count:
+            notes.append("no_transactions")
     elif statement.parsed_row_count is not None and not statement.txn_count:
         notes.append("all_duplicates")
     if reconciliation_delta:
@@ -63,9 +70,25 @@ def _attention(
     return notes
 
 
-def _statement_response(session: Session, statement: Statement) -> schemas.Statement:
+def _statement_response(
+    session: Session,
+    statement: Statement,
+    stats: dict[int, crud.StatementRowStats] | None = None,
+) -> schemas.Statement:
+    """``stats``: `crud.statement_row_stats` for many statements at once (the list makes one
+    grouped query); computed for this statement alone when omitted."""
     account = session.get(Account, statement.account_id) if statement.account_id else None
-    delta = crud.reconciliation_delta_minor(session, statement)
+    if stats is None:
+        stats = crud.statement_row_stats(session, [statement.id])
+    row_stats = stats.get(statement.id, crud.StatementRowStats())
+    found = crud.reconciliation(session, statement, row_stats.adjustment_minor)
+    delta = found.delta_minor if found is not None else None
+    flip_suggested = (
+        found is not None
+        and found.delta_minor != 0
+        and found.expected_minor != 0
+        and found.total_minor == -found.expected_minor
+    )
     pdf_missing = crud.statement_pdf_missing(statement, search=False)
     return schemas.Statement(
         id=statement.id,
@@ -79,6 +102,17 @@ def _statement_response(session: Session, statement: Statement) -> schemas.State
         status=statement.status,
         period_start=statement.period_start,
         period_end=statement.period_end,
+        period_corrected=statement.period_corrected,
+        parsed_period_start=(
+            statement.orig_period_start if statement.period_corrected else statement.period_start
+        ),
+        parsed_period_end=(
+            statement.orig_period_end if statement.period_corrected else statement.period_end
+        ),
+        flip_sign=statement.flip_sign,
+        manual_count=row_stats.manual_count,
+        excluded_count=row_stats.excluded_count,
+        sign_flip_suggested=flip_suggested,
         txn_count=statement.txn_count,
         reconciliation_delta_minor=delta,
         detect_score=statement.detect_score,
@@ -89,7 +123,12 @@ def _statement_response(session: Session, statement: Statement) -> schemas.State
         has_pdf=statement.stored_path is not None,
         pdf_in_place=statement.pdf_in_place,
         parsed_row_count=statement.parsed_row_count,
-        attention=_attention(statement, reconciliation_delta=delta, pdf_missing=pdf_missing),
+        attention=_attention(
+            statement,
+            reconciliation_delta=delta,
+            pdf_missing=pdf_missing,
+            manual_count=row_stats.manual_count,
+        ),
         currency=account.currency if account is not None else None,
         pdf_missing=pdf_missing,
     )
@@ -136,7 +175,9 @@ async def upload_statement(
 
 @router.get("/statements", response_model=list[schemas.Statement])
 def list_statements(session: SessionDep, user_id: int | None = None) -> list[schemas.Statement]:
-    return [_statement_response(session, s) for s in crud.list_statements(session, user_id=user_id)]
+    statements = crud.list_statements(session, user_id=user_id)
+    stats = crud.statement_row_stats(session, [s.id for s in statements])
+    return [_statement_response(session, s, stats) for s in statements]
 
 
 @router.get("/statements/{statement_id}", response_model=schemas.Statement)
@@ -147,26 +188,108 @@ def get_statement(statement_id: int, session: SessionDep) -> schemas.Statement:
     return _statement_response(session, statement)
 
 
+#: Longest statement period a user may set (a quarterly statement is ~92 days; this leaves room
+#: for annual ones without accepting nonsense).
+_MAX_PERIOD_DAYS = 400
+_MIN_PERIOD_DATE = date(1970, 1, 1)
+
+
+def _check_period(body: schemas.StatementPatch) -> None:
+    """400 for a period the user may not set."""
+    if body.revert_period:
+        if body.period_start is not None or body.period_end is not None:
+            raise HTTPException(
+                status_code=400, detail="give either a period or revert_period, not both"
+            )
+        return
+    if body.period_start is None or body.period_end is None:
+        raise HTTPException(status_code=400, detail="give both period_start and period_end")
+    if body.period_start > body.period_end:
+        raise HTTPException(status_code=400, detail="the period must not end before it starts")
+    if (body.period_end - body.period_start).days > _MAX_PERIOD_DAYS:
+        raise HTTPException(
+            status_code=400, detail=f"a period can be at most {_MAX_PERIOD_DAYS} days long"
+        )
+    latest = date.today() + timedelta(days=366)
+    if body.period_start < _MIN_PERIOD_DATE or body.period_end > latest:
+        raise HTTPException(
+            status_code=400,
+            detail="the period must be between 1970-01-01 and a year from today",
+        )
+
+
+def _apply_period(statement: Statement, body: schemas.StatementPatch) -> None:
+    """Correct (or put back) the period. `period_*` always hold the effective value and
+    `orig_period_*` the parsed one, so every reader of `period_*` needs no change."""
+    if body.revert_period:
+        if not statement.period_corrected:
+            raise HTTPException(status_code=400, detail="nothing to change")
+        statement.period_start = statement.orig_period_start
+        statement.period_end = statement.orig_period_end
+        statement.period_corrected = False
+        statement.orig_period_start = None
+        statement.orig_period_end = None
+        return
+    assert body.period_start is not None and body.period_end is not None
+    start, end = body.period_start.isoformat(), body.period_end.isoformat()
+    if (start, end) == (statement.period_start, statement.period_end):
+        raise HTTPException(status_code=400, detail="nothing to change")
+    if not statement.period_corrected:
+        statement.orig_period_start = statement.period_start
+        statement.orig_period_end = statement.period_end
+    statement.period_start = start
+    statement.period_end = end
+    if (start, end) == (statement.orig_period_start, statement.orig_period_end):
+        # Typed back the parsed value: no correction any more.
+        statement.period_corrected = False
+        statement.orig_period_start = None
+        statement.orig_period_end = None
+    else:
+        statement.period_corrected = True
+
+
 @router.patch("/statements/{statement_id}", response_model=schemas.StatementPatchResult)
 def patch_statement(
     statement_id: int, body: schemas.StatementPatch, session: SessionDep
 ) -> schemas.StatementPatchResult:
-    """Move a statement to another person and/or account ("change person").
+    """Move a statement to another person, bank or account, and/or correct its period.
 
     * `user_id` alone: the statement and all its transactions move to that person's matching
       account (same issuer, type, mask and currency), which is created when they have none.
     * `account_id` alone: they move to that account; its owner becomes the statement's person.
     * both: moved to that account; the account must belong to the given user (400 otherwise).
       An `account_id` needs an imported statement (409 otherwise) and an existing account (404).
+    * `issuer_id` ("change bank"; alone or with `user_id`, never with `account_id`): moves to the
+      account of the same person, type and mask under that issuer (created when missing); 404 for
+      an unknown issuer, 409 for a statement that is not imported.
+    * `period_start` + `period_end` correct the period (parsed statements only; the parsed value
+      is kept and `revert_period` puts it back). Row dates are not changed.
 
-    Duplicates the target account already holds are merged (`duplicates_deleted`). Sending
-    nothing, or what is already the case, is a 400.
+    Duplicates the target account already holds are merged (`duplicates_deleted`); hand-added
+    rows move along. Sending nothing, or what is already the case, is a 400.
     """
     statement = crud.get_statement(session, statement_id)
     if statement is None:
         raise HTTPException(status_code=404, detail="statement not found")
-    if body.user_id is None and body.account_id is None:
+    changes_period = (
+        body.period_start is not None or body.period_end is not None or body.revert_period
+    )
+    if (
+        body.user_id is None
+        and body.account_id is None
+        and body.issuer_id is None
+        and not changes_period
+    ):
         raise HTTPException(status_code=400, detail="give a user_id or an account_id to move to")
+    if body.issuer_id is not None and body.account_id is not None:
+        raise HTTPException(status_code=400, detail="give an issuer_id or an account_id, not both")
+    if changes_period:
+        _check_period(body)
+        if statement.status != "parsed":
+            raise HTTPException(
+                status_code=409,
+                detail="this statement is not imported yet; finish importing it first",
+            )
 
     owner = crud.statement_user_id(session, statement)
     rows_moved = duplicates_deleted = 0
@@ -190,8 +313,29 @@ def patch_statement(
         rows_moved, duplicates_deleted = gateway.reassign(
             session, statement_id, user_id=user_id, account_id=body.account_id
         )
-    else:
-        assert body.user_id is not None
+    elif body.issuer_id is not None:
+        if session.get(Issuer, body.issuer_id) is None:
+            raise HTTPException(status_code=404, detail="issuer not found")
+        if body.user_id is not None and session.get(User, body.user_id) is None:
+            raise HTTPException(status_code=404, detail="user not found")
+        if statement.status != "parsed" or statement.account_id is None:
+            raise HTTPException(
+                status_code=409,
+                detail="this statement is not imported yet; finish importing it first",
+            )
+        current = session.get(Account, statement.account_id)
+        target_user = body.user_id if body.user_id is not None else owner
+        if current is not None and current.issuer_id == body.issuer_id and target_user == owner:
+            raise HTTPException(status_code=400, detail="nothing to change")
+        assert target_user is not None
+        target = gateway.resolve_account_for_move(
+            session, statement_id, user_id=target_user, issuer_id=body.issuer_id
+        )
+        rows_moved, duplicates_deleted = gateway.reassign(
+            session, statement_id, user_id=target_user, account_id=target.id
+        )
+        statement.issuer_id = body.issuer_id
+    elif body.user_id is not None:
         if session.get(User, body.user_id) is None:
             raise HTTPException(status_code=404, detail="user not found")
         if body.user_id == owner:
@@ -203,6 +347,8 @@ def patch_statement(
             rows_moved, duplicates_deleted = gateway.reassign(
                 session, statement_id, user_id=body.user_id, account_id=target.id
             )
+    if changes_period:
+        _apply_period(statement, body)
     session.commit()
     session.refresh(statement)
     return schemas.StatementPatchResult(
@@ -530,5 +676,6 @@ def reparse_statement(
         discard_edits=body.discard_edits,
         cfg=settings.llm,
         allow_empty=body.allow_empty,
+        flip_sign=body.flip_sign,
     )
     return schemas.JobIdResponse(job_id=job_id)

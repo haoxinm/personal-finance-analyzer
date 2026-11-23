@@ -484,7 +484,9 @@ $ pfa export --output transactions.csv
 Exports transactions to CSV (default) or `--format json`, to a file or `-` for stdout.
 **Never includes `accounts.mask`** (the last-4 account digits) — this is checked directly by
 `tests/api/test_export.py`, not only by the response schema. `--user-id` / `--all-users` narrow
-the export; with neither, everything is exported.
+the export; with neither, everything is exported, except rows you excluded from totals in the web
+UI. The CSV and JSON end with two columns, `source` (`parsed` or `manual`, a row added by hand) and
+`excluded`.
 
 ## `backup`
 

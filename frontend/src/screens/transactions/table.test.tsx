@@ -24,6 +24,8 @@ const TRANSACTIONS: Transaction[] = [
     merchant_key: "garden center",
     notes: null,
     needs_review: true,
+    source: "parsed",
+    excluded: false,
   },
 ];
 

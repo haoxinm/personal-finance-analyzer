@@ -16,7 +16,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any, cast
 
-from sqlalchemy import ColumnElement, Select, and_, func, not_, or_, select
+from sqlalchemy import ColumnElement, Select, and_, case, func, not_, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -154,8 +154,25 @@ def update_account(
         account.mask = mask
     if currency is not None:
         account.currency = currency
-    session.flush()
+    try:
+        session.flush()
+    except IntegrityError:
+        session.rollback()
+        raise DuplicateAccountError from None
+    if currency is not None:
+        # Analytics and the grid filter on the row's own currency: it must follow the account.
+        session.execute(
+            update(Transaction)
+            .where(Transaction.account_id == account.id)
+            .values(currency=currency)
+            .execution_options(synchronize_session=False)
+        )
+        session.expire_all()
     return account
+
+
+class DuplicateAccountError(Exception):
+    """Another account of the same person already has this issuer, type and mask."""
 
 
 def unknown_issuer_id(session: Session) -> int:
@@ -238,13 +255,81 @@ def statement_user_id(session: Session, statement: Statement) -> int | None:
     return statement.user_id
 
 
-def reconciliation_delta_minor(session: Session, statement: Statement) -> int | None:
-    """Signed minor units; 0 when the balance equation (§3.1, A25) reconciles exactly, `None`
-    when no balance was read (or no account type is known) to check against.
+@dataclass(frozen=True, slots=True)
+class StatementRowStats:
+    """What a statement's rows add on top of what the parser extracted."""
+
+    manual_count: int = 0
+    excluded_count: int = 0
+    #: Live adjustment of the parsed total: the current amounts of the rows that count (corrected
+    #: amounts, hand-added rows, minus excluded ones) against the amounts as imported.
+    adjustment_minor: int = 0
+
+
+def statement_row_stats(
+    session: Session, statement_ids: Sequence[int]
+) -> dict[int, StatementRowStats]:
+    """`StatementRowStats` per statement id, in one grouped query per chunk (no N+1 in lists).
+
+    ``adj(S) = sum(t.excluded ? 0 : t.amount_minor) - sum(parsed t: coalesce(orig_amount_minor,
+    amount_minor))``: with no corrections, manual rows or exclusions it is zero, so the stored
+    ``parsed_total_minor`` (the sum as extracted) is the figure the balance equation is checked
+    against, and every later edit moves the delta without any bookkeeping.
+    """
+    stats: dict[int, StatementRowStats] = {}
+    ids = list(dict.fromkeys(statement_ids))
+    live = case((Transaction.excluded.is_(True), 0), else_=Transaction.amount_minor)
+    imported = case(
+        (
+            Transaction.source == "parsed",
+            func.coalesce(Transaction.orig_amount_minor, Transaction.amount_minor),
+        ),
+        else_=0,
+    )
+    for start in range(0, len(ids), _IN_CHUNK):
+        chunk = ids[start : start + _IN_CHUNK]
+        rows = session.execute(
+            select(
+                Transaction.statement_id,
+                func.sum(case((Transaction.source == "manual", 1), else_=0)),
+                func.sum(case((Transaction.excluded.is_(True), 1), else_=0)),
+                func.sum(live) - func.sum(imported),
+            )
+            .where(Transaction.statement_id.in_(chunk))
+            .group_by(Transaction.statement_id)
+        ).all()
+        for statement_id, manual, excluded, adjustment in rows:
+            stats[statement_id] = StatementRowStats(
+                manual_count=int(manual or 0),
+                excluded_count=int(excluded or 0),
+                adjustment_minor=int(adjustment or 0),
+            )
+    return stats
+
+
+def statement_adjustments(session: Session, statement_ids: Sequence[int]) -> dict[int, int]:
+    """The live adjustment of each statement's parsed total (see `statement_row_stats`)."""
+    return {i: s.adjustment_minor for i, s in statement_row_stats(session, statement_ids).items()}
+
+
+@dataclass(frozen=True, slots=True)
+class Reconciliation:
+    #: ``adjusted total - expected``; 0 when the balance equation holds.
+    delta_minor: int
+    #: What the balances say the rows should sum to.
+    expected_minor: int
+    #: The parsed total with the live adjustment (what the statement's rows sum to now).
+    total_minor: int
+
+
+def reconciliation(
+    session: Session, statement: Statement, adjustment: int = 0
+) -> Reconciliation | None:
+    """The balance check (§3.1, A25) on the statement's rows as they are now (``adjustment`` from
+    `statement_row_stats`), or `None` when no balance was read (or no account type is known).
 
     Credit: ``closing - opening == sum(amount)``; checking/savings:
-    ``opening - closing == sum(amount)`` (§3.1). The delta returned is ``actual - expected`` for
-    whichever equation applies to the statement's account.
+    ``opening - closing == sum(amount)`` (§3.1).
     """
     if (
         statement.opening_balance_minor is None
@@ -258,7 +343,19 @@ def reconciliation_delta_minor(session: Session, statement: Statement) -> int | 
     opening = statement.opening_balance_minor
     closing = statement.closing_balance_minor
     expected = (closing - opening) if account.account_type == "credit" else (opening - closing)
-    return statement.parsed_total_minor - expected
+    total = statement.parsed_total_minor + adjustment
+    return Reconciliation(delta_minor=total - expected, expected_minor=expected, total_minor=total)
+
+
+def reconciliation_delta_minor(
+    session: Session, statement: Statement, adjustment: int | None = None
+) -> int | None:
+    """Signed minor units, ``actual - expected``; 0 when the balance equation reconciles exactly,
+    `None` when it cannot be checked. ``adjustment`` defaults to the statement's live one."""
+    if adjustment is None:
+        adjustment = statement_adjustments(session, [statement.id]).get(statement.id, 0)
+    found = reconciliation(session, statement, adjustment)
+    return found.delta_minor if found is not None else None
 
 
 def delete_statement(session: Session, statement: Statement) -> tuple[str | None, str]:
@@ -325,6 +422,11 @@ class TransactionFilters:
     #: keeps the rest. Evaluated in Python over the rows every other filter matched
     #: (`_matching_ids`), so it is the one filter that is not part of `_transaction_conditions`.
     conflict: bool | None = None
+    #: Rows the user excluded from totals: `hide` (the default, "my real transactions"), `only`
+    #: them, or `include` everything.
+    excluded: str = "hide"
+    #: `parsed` (read from a statement) or `manual` (added by hand); `None` = both.
+    source: str | None = None
 
 
 def uncategorized_clause() -> ColumnElement[bool]:
@@ -344,6 +446,7 @@ def unclassified_clause() -> ColumnElement[bool]:
     return and_(
         or_(uncategorized_clause(), Transaction.needs_review.is_(True)),
         Transaction.classified_by.is_distinct_from(USER_CLASSIFIED),
+        Transaction.excluded.is_(False),
     )
 
 
@@ -390,6 +493,12 @@ def _transaction_conditions(filters: TransactionFilters) -> list[ColumnElement[b
         conditions.append(clause if filters.uncategorized else not_(clause))
     if filters.search:
         conditions.append(Transaction.description_clean.contains(filters.search, autoescape=True))
+    if filters.excluded == "hide":
+        conditions.append(Transaction.excluded.is_(False))
+    elif filters.excluded == "only":
+        conditions.append(Transaction.excluded.is_(True))
+    if filters.source is not None:
+        conditions.append(Transaction.source == filters.source)
     return conditions
 
 
@@ -546,14 +655,13 @@ def apply_field_corrections(
       then ``X`` is overwritten. Setting a field back to its imported value clears the correction.
     * **Revert** (names in ``revert_fields``): ``X`` returns to ``orig_X`` and ``orig_X`` is cleared;
       a field that is not corrected is left alone.
-    * An amount change moves ``statement.parsed_total_minor`` (when set) by the difference, so the
-      reconciliation delta follows the corrected figures.
+    * An amount change needs no bookkeeping: the reconciliation adds the rows' live adjustment
+      (`statement_row_stats`), so the delta follows the corrected figures by itself.
 
     Never touches ``dedupe_hash``, ``description_raw``, ``merchant_key``, ``classified_by``,
     ``needs_review``, ``kind`` or ``is_spend``: a correction is not a category decision and must
     not change what an overlapping re-import is deduplicated against. Flushes, does not commit.
     """
-    old_amount = txn.amount_minor
     if posted_date is not None and posted_date != txn.posted_date:
         if txn.orig_posted_date is None:
             txn.orig_posted_date = txn.posted_date
@@ -581,12 +689,32 @@ def apply_field_corrections(
     if "amount_minor" in revert_fields and txn.orig_amount_minor is not None:
         txn.amount_minor = txn.orig_amount_minor
         txn.orig_amount_minor = None
-    if txn.amount_minor != old_amount:
-        statement = txn.statement
-        if statement.parsed_total_minor is not None:
-            statement.parsed_total_minor += txn.amount_minor - old_amount
     txn.updated_at = utcnow_iso()
     session.flush()
+
+
+def set_excluded(session: Session, transaction_ids: Sequence[int], excluded: bool) -> list[int]:
+    """Exclude (or include again) the listed rows; returns the ids that actually changed (missing
+    ids and rows already in that state are skipped). Does not commit."""
+    changed: list[int] = []
+    for txn in _by_ids(session, list(dict.fromkeys(transaction_ids))):
+        if txn.excluded is excluded:
+            continue
+        txn.excluded = excluded
+        txn.updated_at = utcnow_iso()
+        changed.append(txn.id)
+    session.flush()
+    return changed
+
+
+def delete_manual_transaction(session: Session, txn: Transaction) -> bool:
+    """Delete a hand-added row. Rows read from a statement are refused (returns False): a
+    re-import would bring them back, so they are excluded instead. Does not commit."""
+    if txn.source != "manual":
+        return False
+    session.delete(txn)
+    session.flush()
+    return True
 
 
 def merchant_display_names(session: Session, merchant_keys: Sequence[str]) -> dict[str, str]:

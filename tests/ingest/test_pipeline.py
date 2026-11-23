@@ -12,8 +12,9 @@ from pathlib import Path
 import pytest
 from sqlalchemy.orm import Session
 
+from personal_finance_analyzer.api.services import crud
 from personal_finance_analyzer.core.errors import UnsupportedLayoutError
-from personal_finance_analyzer.db.models import Account, Issuer, Transaction, User
+from personal_finance_analyzer.db.models import Account, Issuer, Statement, Transaction, User
 from personal_finance_analyzer.ingest import pipeline
 from tests.fixtures.gen.base import format_row, render_lines_pdf
 
@@ -980,8 +981,6 @@ def _correct(
     amount_minor: int | None = None,
     description_clean: str | None = None,
 ) -> None:
-    from personal_finance_analyzer.api.services import crud
-
     crud.apply_field_corrections(
         session,
         txn,
@@ -992,6 +991,14 @@ def _correct(
     session.commit()
 
 
+def _live_total(session: Session, statement: Statement) -> int:
+    """The statement's rows as they are now: the parsed total plus the live adjustment."""
+    assert statement.parsed_total_minor is not None
+    return statement.parsed_total_minor + crud.statement_adjustments(session, [statement.id]).get(
+        statement.id, 0
+    )
+
+
 def test_a_correction_survives_reparse_and_keeps_the_newly_parsed_value_as_imported(
     session: Session, tmp_path: Path
 ) -> None:
@@ -999,13 +1006,12 @@ def test_a_correction_survives_reparse_and_keeps_the_newly_parsed_value_as_impor
     coffee = _rows(session, statement_id)["COFFEE SHOP"]
     original_hash = coffee.dedupe_hash
     statement = coffee.statement
-    total_before = statement.parsed_total_minor
-    assert total_before is not None
+    total_before = _live_total(session, statement)
     _correct(
         session, coffee, posted_date="2026-01-06", amount_minor=1500, description_clean="Latte"
     )
     session.refresh(statement)
-    assert statement.parsed_total_minor == total_before + (1500 - 1234)
+    assert _live_total(session, statement) == total_before + (1500 - 1234)
     assert coffee.dedupe_hash == original_hash  # never recomputed
     assert coffee.classified_by is None  # a correction is not a category decision
 
@@ -1024,7 +1030,7 @@ def test_a_correction_survives_reparse_and_keeps_the_newly_parsed_value_as_impor
     assert rebuilt.classified_by is None
     assert rebuilt.dedupe_hash == original_hash
     session.refresh(statement)
-    assert statement.parsed_total_minor == total_before + (1500 - 1234)
+    assert _live_total(session, statement) == total_before + (1500 - 1234)
 
 
 def test_a_correction_the_new_parse_already_satisfies_is_dropped(

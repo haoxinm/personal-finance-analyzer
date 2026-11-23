@@ -58,6 +58,14 @@ def test_failed_reparse_leaves_a_parsed_statement_untouched(
     assert ids_after == ids_before
 
 
+def _live_total(session: Session, statement: Statement) -> int:
+    """The statement's rows as they are now: the parsed total plus the live adjustment."""
+    assert statement.parsed_total_minor is not None
+    return statement.parsed_total_minor + crud.statement_adjustments(session, [statement.id]).get(
+        statement.id, 0
+    )
+
+
 def _bob_twin(session: Session, source: Transaction, issuer_id: int) -> tuple[Account, Transaction]:
     """Bob's account already holds the very same *imported* transaction (a true duplicate)."""
     bob = _make_user(session, "bob")
@@ -133,12 +141,10 @@ def test_reassign_hash_and_duplicates_use_imported_not_corrected_values(
     target, twin = _bob_twin(session, coffee, issuer_id)
     statement = session.get(Statement, statement_id)
     assert statement is not None
-    moved_total_before = statement.parsed_total_minor
-    assert moved_total_before is not None
+    moved_total_before = _live_total(session, statement)
     twin_statement = session.get(Statement, twin.statement_id)
     assert twin_statement is not None
-    twin_total_before = twin_statement.parsed_total_minor
-    assert twin_total_before is not None
+    twin_total_before = _live_total(session, twin_statement)
 
     moved, deleted = pipeline.reassign(
         session, statement_id, user_id=target.user_id, account_id=target.id
@@ -157,8 +163,8 @@ def test_reassign_hash_and_duplicates_use_imported_not_corrected_values(
     twin_statement = session.get(Statement, twin.statement_id)
     statement = session.get(Statement, statement_id)
     assert twin_statement is not None and statement is not None
-    assert twin_statement.parsed_total_minor == twin_total_before + (1500 - 1234)
-    assert statement.parsed_total_minor == moved_total_before - (1500 - 1234)
+    assert _live_total(session, twin_statement) == twin_total_before + (1500 - 1234)
+    assert _live_total(session, statement) == moved_total_before - (1500 - 1234)
 
 
 def test_reassign_moved_corrected_row_keeps_its_hash_when_there_is_no_twin(
@@ -229,8 +235,9 @@ def test_a_user_edit_never_overwrites_the_true_imported_value(
     edit = pipeline._user_edit_of(coffee)
     pipeline._apply_user_edit(coffee, replace(edit, fix_amount_minor=1700))
     assert (coffee.amount_minor, coffee.orig_amount_minor) == (1700, 1234)
+    session.flush()
     statement = coffee.statement
-    assert statement.parsed_total_minor == 1234 + 1700 - 1234 + (4510 + 2999)
+    assert _live_total(session, statement) == 1234 + 1700 - 1234 + (4510 + 2999)
 
 
 def test_reparse_twin_correction_keeps_the_imported_value_as_original(

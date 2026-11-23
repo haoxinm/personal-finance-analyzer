@@ -114,16 +114,21 @@ export interface paths {
         head?: never;
         /**
          * Patch Statement
-         * @description Move a statement to another person and/or account ("change person").
+         * @description Move a statement to another person, bank or account, and/or correct its period.
          *
          *     * `user_id` alone: the statement and all its transactions move to that person's matching
          *       account (same issuer, type, mask and currency), which is created when they have none.
          *     * `account_id` alone: they move to that account; its owner becomes the statement's person.
          *     * both: moved to that account; the account must belong to the given user (400 otherwise).
          *       An `account_id` needs an imported statement (409 otherwise) and an existing account (404).
+         *     * `issuer_id` ("change bank"; alone or with `user_id`, never with `account_id`): moves to the
+         *       account of the same person, type and mask under that issuer (created when missing); 404 for
+         *       an unknown issuer, 409 for a statement that is not imported.
+         *     * `period_start` + `period_end` correct the period (parsed statements only; the parsed value
+         *       is kept and `revert_period` puts it back). Row dates are not changed.
          *
-         *     Duplicates the target account already holds are merged (`duplicates_deleted`). Sending
-         *     nothing, or what is already the case, is a 400.
+         *     Duplicates the target account already holds are merged (`duplicates_deleted`); hand-added
+         *     rows move along. Sending nothing, or what is already the case, is a 400.
          */
         patch: operations["patch_statement_api_statements__statement_id__patch"];
         trace?: never;
@@ -315,7 +320,17 @@ export interface paths {
          */
         get: operations["list_transactions_api_transactions_get"];
         put?: never;
-        post?: never;
+        /**
+         * Create Transaction
+         * @description Add a transaction by hand to an *imported* statement (its account and person apply).
+         *
+         *     With a category it is a one-time edit; without one the deterministic cascade (your rules,
+         *     built-in rules, the learned cache; never the LLM, nothing is learned from it) files it, and a
+         *     row nothing places lands in `others/uncategorized` flagged for review. A later import or
+         *     re-import that finds the row on the bank's statement absorbs it. Rows added by hand are never
+         *     deleted by a re-import.
+         */
+        post: operations["create_transaction_api_transactions_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -343,6 +358,49 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/transactions/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Delete Transaction
+         * @description Delete a row that was added by hand. A row read from a statement cannot be deleted (a
+         *     re-import would bring it back): 409 `parsed_row`; exclude it instead.
+         */
+        delete: operations["delete_transaction_api_transactions__id__delete"];
+        options?: never;
+        head?: never;
+        /** Patch Transaction */
+        patch: operations["patch_transaction_api_transactions__id__patch"];
+        trace?: never;
+    };
+    "/transactions/bulk-exclude": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Bulk Exclude Transactions
+         * @description Exclude (or, with `excluded=false`, include again) every listed transaction. Returns the
+         *     ids that actually changed: send exactly those back with `excluded` negated to undo.
+         */
+        post: operations["bulk_exclude_transactions_api_transactions_bulk_exclude_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/transactions/{id}/candidates": {
         parameters: {
             query?: never;
@@ -364,23 +422,6 @@ export interface paths {
         options?: never;
         head?: never;
         patch?: never;
-        trace?: never;
-    };
-    "/transactions/{id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        /** Patch Transaction */
-        patch: operations["patch_transaction_api_transactions__id__patch"];
         trace?: never;
     };
     "/transactions/{id}/revert-to-automatic": {
@@ -2082,6 +2123,24 @@ export interface components {
             description: string;
             params: components["schemas"]["ForecastParams"];
         };
+        /** BulkExcludeRequest */
+        BulkExcludeRequest: {
+            /** Transaction Ids */
+            transaction_ids: number[];
+            /** Excluded */
+            excluded: boolean;
+        };
+        /**
+         * BulkExcludeResponse
+         * @description `updated` rows changed; `changed_ids` are exactly those (send them back with `excluded`
+         *     negated to undo). Missing ids and rows already in that state are skipped.
+         */
+        BulkExcludeResponse: {
+            /** Updated */
+            updated: number;
+            /** Changed Ids */
+            changed_ids: number[];
+        };
         /** BulkRevertRequest */
         BulkRevertRequest: {
             /** Transaction Ids */
@@ -2631,6 +2690,8 @@ export interface components {
             previous_txn_count?: number | null;
             /** Remembered */
             remembered?: boolean | null;
+            /** Absorbed Manual */
+            absorbed_manual?: number | null;
         };
         /** JobIdResponse */
         JobIdResponse: {
@@ -3047,6 +3108,8 @@ export interface components {
              * @default false
              */
             allow_empty: boolean;
+            /** Flip Sign */
+            flip_sign?: boolean | null;
         };
         /**
          * RevertToAutomaticResponse
@@ -3353,6 +3416,35 @@ export interface components {
              * @default false
              */
             pdf_missing: boolean;
+            /**
+             * Flip Sign
+             * @default false
+             */
+            flip_sign: boolean;
+            /**
+             * Period Corrected
+             * @default false
+             */
+            period_corrected: boolean;
+            /** Parsed Period Start */
+            parsed_period_start?: string | null;
+            /** Parsed Period End */
+            parsed_period_end?: string | null;
+            /**
+             * Manual Count
+             * @default 0
+             */
+            manual_count: number;
+            /**
+             * Excluded Count
+             * @default 0
+             */
+            excluded_count: number;
+            /**
+             * Sign Flip Suggested
+             * @default false
+             */
+            sign_flip_suggested: boolean;
         };
         /**
          * StatementPageInfo
@@ -3375,6 +3467,14 @@ export interface components {
             user_id?: number | null;
             /** Account Id */
             account_id?: number | null;
+            /** Issuer Id */
+            issuer_id?: number | null;
+            /** Period Start */
+            period_start?: string | null;
+            /** Period End */
+            period_end?: string | null;
+            /** Revert Period */
+            revert_period?: boolean | null;
         };
         /**
          * StatementPatchResult
@@ -3447,6 +3547,35 @@ export interface components {
              * @default false
              */
             pdf_missing: boolean;
+            /**
+             * Flip Sign
+             * @default false
+             */
+            flip_sign: boolean;
+            /**
+             * Period Corrected
+             * @default false
+             */
+            period_corrected: boolean;
+            /** Parsed Period Start */
+            parsed_period_start?: string | null;
+            /** Parsed Period End */
+            parsed_period_end?: string | null;
+            /**
+             * Manual Count
+             * @default 0
+             */
+            manual_count: number;
+            /**
+             * Excluded Count
+             * @default 0
+             */
+            excluded_count: number;
+            /**
+             * Sign Flip Suggested
+             * @default false
+             */
+            sign_flip_suggested: boolean;
             /**
              * Rows Moved
              * @default 0
@@ -4526,6 +4655,17 @@ export interface components {
             /** Needs Review */
             needs_review: boolean;
             corrections?: components["schemas"]["TransactionCorrections"] | null;
+            /**
+             * Source
+             * @default parsed
+             * @enum {string}
+             */
+            source: "parsed" | "manual";
+            /**
+             * Excluded
+             * @default false
+             */
+            excluded: boolean;
             /** Candidates */
             candidates?: components["schemas"]["TransactionCandidate"][] | null;
             /** Conflict */
@@ -4584,6 +4724,32 @@ export interface components {
             description_clean?: string | null;
         };
         /**
+         * TransactionCreate
+         * @description `POST /api/transactions`: add a row by hand to an imported statement. The account and
+         *     person come from the statement. Without a category the deterministic cascade (never the LLM)
+         *     files it; with one it is a one-time edit.
+         */
+        TransactionCreate: {
+            /** Statement Id */
+            statement_id: number;
+            /**
+             * Posted Date
+             * Format: date
+             */
+            posted_date: string;
+            /** Description */
+            description: string;
+            /** Amount Minor */
+            amount_minor: number;
+            kind?: components["schemas"]["Kind"] | null;
+            /** Category Key */
+            category_key?: string | null;
+            /** Subcategory Key */
+            subcategory_key?: string | null;
+            /** Notes */
+            notes?: string | null;
+        };
+        /**
          * TransactionIds
          * @description `GET /api/transactions/ids`: every id matching the filters (not one page of them).
          */
@@ -4626,6 +4792,8 @@ export interface components {
              * @default false
              */
             create_rule: boolean;
+            /** Excluded */
+            excluded?: boolean | null;
         };
         /**
          * TransactionSnapshot
@@ -5483,6 +5651,10 @@ export interface operations {
                 search?: string | null;
                 currency?: string | null;
                 conflict?: boolean | null;
+                /** @description Rows excluded from totals: hidden (default), only those, or everything. */
+                excluded?: "hide" | "only" | "include";
+                /** @description Only rows read from a statement, or only those added by hand. */
+                source?: ("parsed" | "manual") | null;
             };
             header?: never;
             path?: never;
@@ -5497,6 +5669,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["TransactionList"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_transaction_api_transactions_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TransactionCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Transaction"];
                 };
             };
             /** @description Validation Error */
@@ -5530,6 +5735,10 @@ export interface operations {
                 search?: string | null;
                 currency?: string | null;
                 conflict?: boolean | null;
+                /** @description Rows excluded from totals: hidden (default), only those, or everything. */
+                excluded?: "hide" | "only" | "include";
+                /** @description Only rows read from a statement, or only those added by hand. */
+                source?: ("parsed" | "manual") | null;
             };
             header?: never;
             path?: never;
@@ -5557,7 +5766,7 @@ export interface operations {
             };
         };
     };
-    get_transaction_candidates_api_transactions__id__candidates_get: {
+    delete_transaction_api_transactions__id__delete: {
         parameters: {
             query?: never;
             header?: never;
@@ -5569,13 +5778,11 @@ export interface operations {
         requestBody?: never;
         responses: {
             /** @description Successful Response */
-            200: {
+            204: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content: {
-                    "application/json": components["schemas"]["TransactionCandidates"];
-                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {
@@ -5610,6 +5817,70 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Transaction"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    bulk_exclude_transactions_api_transactions_bulk_exclude_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BulkExcludeRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BulkExcludeResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_transaction_candidates_api_transactions__id__candidates_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TransactionCandidates"];
                 };
             };
             /** @description Validation Error */
@@ -6958,6 +7229,10 @@ export interface operations {
                 search?: string | null;
                 currency?: string | null;
                 conflict?: boolean | null;
+                /** @description Rows excluded from totals: hidden (default), only those, or everything. */
+                excluded?: "hide" | "only" | "include";
+                /** @description Only rows read from a statement, or only those added by hand. */
+                source?: ("parsed" | "manual") | null;
             };
             header?: never;
             path?: never;
