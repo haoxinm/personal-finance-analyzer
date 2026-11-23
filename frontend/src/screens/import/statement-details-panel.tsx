@@ -2,7 +2,6 @@ import * as React from "react";
 import { Link } from "react-router-dom";
 
 import type { components } from "@/api/client";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 
@@ -123,9 +122,6 @@ function PeriodSection({ statement }: { statement: Statement }) {
       </div>
       {statement.period_corrected ? (
         <p className="text-xs text-muted-foreground">
-          <Badge variant="outline" className="mr-1">
-            Corrected
-          </Badge>
           Detected from the statement: {formatPeriod(statement.parsed_period_start ?? null, statement.parsed_period_end ?? null)}.
         </p>
       ) : null}
@@ -233,6 +229,40 @@ function CurrencySection({
   );
 }
 
+function MoveConfirm({
+  target,
+  busy,
+  onConfirm,
+  onCancel,
+}: {
+  target: string;
+  busy: boolean;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div
+      role="alertdialog"
+      aria-label={`Confirm move to ${target}`}
+      className="flex flex-col gap-2 rounded-md border border-amber-300 bg-amber-50 p-2 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200"
+    >
+      <p>
+        Move this statement and its transactions to <span className="font-medium">{target}</span>? Transactions that
+        duplicate ones already there will be merged, and moving back will not restore them.
+      </p>
+      <div className="flex gap-2">
+        <Button size="sm" onClick={onConfirm} disabled={busy} aria-busy={busy}>
+          {busy ? <Spinner /> : null}
+          Yes, move it
+        </Button>
+        <Button size="sm" variant="outline" onClick={onCancel} disabled={busy}>
+          Cancel
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 function BankSection({
   statement,
   accounts,
@@ -249,11 +279,13 @@ function BankSection({
   const accountPatch = usePatchStatementDetails();
   const otherIssuers = issuers.filter((i) => i.id !== statement.issuer_id);
   const targets = accounts.filter((a) => a.user_id === statement.user_id && a.id !== statement.account_id);
-  const [issuerId, setIssuerId] = React.useState<number | "">(otherIssuers[0]?.id ?? "");
+  // No bank is pre-picked: moving a statement merges rows, so the user must choose on purpose.
+  const [issuerId, setIssuerId] = React.useState<number | "">("");
+  const [confirming, setConfirming] = React.useState<"bank" | "account" | null>(null);
   const [accountId, setAccountId] = React.useState<number | "">(targets[0]?.id ?? "");
   // Keep the selections valid when the lists change underneath (a move changes both).
   React.useEffect(() => {
-    if (issuerId === "" || !otherIssuers.some((i) => i.id === issuerId)) setIssuerId(otherIssuers[0]?.id ?? "");
+    if (issuerId !== "" && !otherIssuers.some((i) => i.id === issuerId)) setIssuerId("");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [otherIssuers.map((i) => i.id).join(",")]);
   React.useEffect(() => {
@@ -283,9 +315,13 @@ function BankSection({
           <select
             className={fieldClass}
             value={issuerId}
-            onChange={(e) => setIssuerId(Number(e.target.value))}
+            onChange={(e) => {
+              setIssuerId(e.target.value === "" ? "" : Number(e.target.value));
+              setConfirming(null);
+            }}
             disabled={bankPatch.isPending || otherIssuers.length === 0}
           >
+            <option value="">Choose a bank</option>
             {otherIssuers.map((i) => (
               <option key={i.id} value={i.id}>
                 {i.name}
@@ -295,20 +331,31 @@ function BankSection({
         </label>
         <Button
           size="sm"
-          disabled={bankPatch.isPending || issuerId === ""}
-          aria-busy={bankPatch.isPending}
-          onClick={() =>
-            issuerId !== "" &&
-            bankPatch.mutate(
-              { statementId: statement.id, body: { issuer_id: issuerId } },
-              { onSuccess: (r) => report(r, `Now under ${issuers.find((i) => i.id === issuerId)?.name ?? "the new bank"}`) },
-            )
-          }
+          disabled={bankPatch.isPending || issuerId === "" || confirming === "bank"}
+          onClick={() => setConfirming("bank")}
         >
-          {bankPatch.isPending ? <Spinner /> : null}
           Change bank
         </Button>
       </div>
+      {confirming === "bank" && issuerId !== "" ? (
+        <MoveConfirm
+          target={`${issuers.find((i) => i.id === issuerId)?.name ?? "the new bank"}`}
+          busy={bankPatch.isPending}
+          onCancel={() => setConfirming(null)}
+          onConfirm={() =>
+            bankPatch.mutate(
+              { statementId: statement.id, body: { issuer_id: issuerId } },
+              {
+                onSuccess: (r) => {
+                  setConfirming(null);
+                  report(r, `Now under ${issuers.find((i) => i.id === issuerId)?.name ?? "the new bank"}`);
+                },
+                onError: () => setConfirming(null),
+              },
+            )
+          }
+        />
+      ) : null}
       {bankPatch.isError ? <SectionError error={bankPatch.error} /> : null}
       <p className="text-xs text-muted-foreground">
         To have the next file from this bank recognised, add its names under{" "}
@@ -326,7 +373,10 @@ function BankSection({
               <select
                 className={fieldClass}
                 value={accountId}
-                onChange={(e) => setAccountId(Number(e.target.value))}
+                onChange={(e) => {
+                  setAccountId(Number(e.target.value));
+                  setConfirming(null);
+                }}
                 disabled={accountPatch.isPending}
               >
                 {targets.map((a) => (
@@ -339,23 +389,31 @@ function BankSection({
             <Button
               size="sm"
               variant="outline"
-              disabled={accountPatch.isPending || accountId === ""}
-              aria-busy={accountPatch.isPending}
-              onClick={() =>
-                accountId !== "" &&
-                accountPatch.mutate(
-                  { statementId: statement.id, body: { account_id: accountId } },
-                  {
-                    onSuccess: (r) =>
-                      report(r, `Now on ${accountLabel(accounts.find((a) => a.id === accountId) as Account)}`),
-                  },
-                )
-              }
+              disabled={accountPatch.isPending || accountId === "" || confirming === "account"}
+              onClick={() => setConfirming("account")}
             >
-              {accountPatch.isPending ? <Spinner /> : null}
               Move statement
             </Button>
           </div>
+          {confirming === "account" && accountId !== "" ? (
+            <MoveConfirm
+              target={accountLabel(accounts.find((a) => a.id === accountId) as Account)}
+              busy={accountPatch.isPending}
+              onCancel={() => setConfirming(null)}
+              onConfirm={() =>
+                accountPatch.mutate(
+                  { statementId: statement.id, body: { account_id: accountId } },
+                  {
+                    onSuccess: (r) => {
+                      setConfirming(null);
+                      report(r, `Now on ${accountLabel(accounts.find((a) => a.id === accountId) as Account)}`);
+                    },
+                    onError: () => setConfirming(null),
+                  },
+                )
+              }
+            />
+          ) : null}
           {accountPatch.isError ? <SectionError error={accountPatch.error} /> : null}
         </>
       ) : null}
@@ -378,8 +436,14 @@ export function StatementDetailsPanel({
   }, []);
   const name = statement.original_name || `statement ${statement.id}`;
   const issuerName = new Map(issuers.map((i) => [i.id, i.name]));
-  const accountLabel = (a: Account) =>
-    [a.issuer_id != null ? issuerName.get(a.issuer_id) : undefined, a.account_type, `(${a.currency})`].filter(Boolean).join(" ");
+  // The accounts list carries no mask or name, so two accounts that read the same get a `#id`.
+  const baseLabel = (a: Account) =>
+    [a.issuer_id != null ? issuerName.get(a.issuer_id) : undefined, a.account_type].filter(Boolean).join(" ");
+  const accountLabel = (a: Account) => {
+    const base = baseLabel(a);
+    const clash = accounts.some((other) => other.id !== a.id && baseLabel(other) === base);
+    return [base, clash ? `#${a.id}` : "", `(${a.currency})`].filter(Boolean).join(" ");
+  };
   const account = accounts.find((a) => a.id === statement.account_id);
 
   return (
@@ -389,7 +453,7 @@ export function StatementDetailsPanel({
       aria-label={`Edit details of ${name}`}
       tabIndex={-1}
       data-testid="statement-details-panel"
-      className="flex max-h-[70vh] flex-col gap-3 overflow-y-auto rounded-md border border-border bg-muted/30 p-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      className="flex flex-col gap-3 rounded-md border border-border bg-muted/30 p-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
       onKeyDown={(e) => {
         if (e.key === "Escape") {
           e.stopPropagation();

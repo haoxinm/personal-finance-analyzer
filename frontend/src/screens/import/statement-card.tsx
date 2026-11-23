@@ -72,7 +72,7 @@ function parsedOutcomeText(item: ImportItem): string {
   const inserted = item.insertedCount ?? count;
   const parts = [`${inserted} new transaction${inserted === 1 ? "" : "s"}`];
   if (item.skippedDuplicates) parts.push(`${item.skippedDuplicates} already present`);
-  if (item.absorbedManual) parts.push(`${item.absorbedManual} hand-added matched`);
+  if (item.absorbedManual) parts.push(`${item.absorbedManual} hand-added replaced by the bank's copy (totals check may change)`);
   if (item.needsReviewCount !== undefined) parts.push(`${item.needsReviewCount} need review`);
   return parts.join(" · ");
 }

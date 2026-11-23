@@ -128,12 +128,17 @@ export function useTopMerchants(filters: DashboardFilters, limit = 8, enabled = 
 }
 
 export interface ImportAttention {
-  /** Parsed statements carrying an attention flag (reconciliation mismatch, no rows, ...). */
+  /** Parsed statements carrying an attention flag (reconciliation mismatch, no rows, layout drift) or stuck (error, unsupported layout, ...). */
   statements: number;
   /** Files in the watched folder that failed or are not in a folder the app imports from. */
   folderProblems: number;
   total: number;
+  /** Identifies exactly what is flagged, so a dismissal only holds until something new appears. */
+  signature: string;
 }
+
+const ACTIONABLE_CODES = new Set(["no_transactions", "reconciliation_mismatch", "layout_drift"]);
+const STUCK_STATUSES = new Set(["error", "unsupported_layout", "awaiting_extractor", "no_text_layer"]);
 
 /**
  * What on the Import page needs a look, for the Overview's hint: statements the server flags
@@ -155,11 +160,23 @@ export function useImportAttention(userId?: number, enabled = true) {
     refetchInterval: 60_000,
   });
   const attention: ImportAttention = React.useMemo(() => {
-    const flagged = (statements.data ?? []).filter(
-      (statement) => statement.status === "parsed" && (statement.attention ?? []).length > 0,
-    ).length;
+    const pairs: string[] = [];
+    for (const statement of statements.data ?? []) {
+      if (STUCK_STATUSES.has(statement.status)) pairs.push(`${statement.id}:${statement.status}`);
+      else if (statement.status === "parsed") {
+        for (const code of statement.attention ?? []) {
+          if (ACTIONABLE_CODES.has(code)) pairs.push(`${statement.id}:${code}`);
+        }
+      }
+    }
+    const flagged = new Set(pairs.map((pair) => pair.split(":")[0])).size;
     const folder = problems.data ?? 0;
-    return { statements: flagged, folderProblems: folder, total: flagged + folder };
+    return {
+      statements: flagged,
+      folderProblems: folder,
+      total: flagged + folder,
+      signature: `${[...pairs].sort().join(",")}|${folder}`,
+    };
   }, [statements.data, problems.data]);
   return { ...attention, isLoading: statements.isLoading || problems.isLoading };
 }

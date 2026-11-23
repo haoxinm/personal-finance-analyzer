@@ -996,14 +996,14 @@ describe("statement edit features", () => {
   it("formats counts with hand-added and excluded rows", () => {
     expect(transactionCountText(statement({ txn_count: 1 }) as never)).toBe("1 transaction");
     expect(transactionCountText(statement({ txn_count: 10, manual_count: 2, excluded_count: 1 }) as never)).toBe(
-      "10 transactions (2 added by you, 1 excluded)",
+      "10 read from the statement + 2 added by you · 1 excluded",
     );
-    expect(transactionCountText(statement({ txn_count: 10, excluded_count: 3 }) as never)).toBe("10 transactions (3 excluded)");
+    expect(transactionCountText(statement({ txn_count: 10, excluded_count: 3 }) as never)).toBe("10 transactions · 3 excluded");
   });
 
   it("reports absorbed hand-added rows after a re-import", () => {
     expect(absorbedManualText(0)).toBeNull();
-    expect(absorbedManualText(2)).toMatch(/^2 hand-added transactions matched rows now read/);
+    expect(absorbedManualText(2)).toMatch(/^2 hand-added transactions matched rows now read[\s\S]*totals check/);
     expect(describeReimport({ inserted: 5, absorbed_manual: 1 } as never).notes[0]).toMatch(/1 hand-added transaction matched a row/);
   });
 
@@ -1017,7 +1017,7 @@ describe("statement edit features", () => {
       statements: [statement({ txn_count: 10, manual_count: 2, excluded_count: 1, period_corrected: true })],
     });
     const view = await renderPanel(fn);
-    expect(await screen.findByTestId("transaction-count")).toHaveTextContent("10 transactions (2 added by you, 1 excluded)");
+    expect(await screen.findByTestId("transaction-count")).toHaveTextContent("10 read from the statement + 2 added by you · 1 excluded");
     expect(screen.getByText("Corrected")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Add a missing transaction to chase-march.pdf" })).toHaveAttribute(
       "href",

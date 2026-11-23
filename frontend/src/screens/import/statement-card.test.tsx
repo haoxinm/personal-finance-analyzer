@@ -272,6 +272,6 @@ describe("StatementCard", () => {
         absorbedManual: 2,
       }),
     );
-    expect(screen.getByText(/5 new transactions · 2 hand-added matched/)).toBeInTheDocument();
+    expect(screen.getByText(/5 new transactions · 2 hand-added replaced by the bank.s copy/)).toBeInTheDocument();
   });
 });

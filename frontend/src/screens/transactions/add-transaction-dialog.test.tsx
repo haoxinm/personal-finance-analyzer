@@ -42,11 +42,25 @@ function json(body: unknown, status = 200) {
 
 type Handler = (request: Request) => Response | Promise<Response>;
 
-async function mount(opts: { initialStatementId?: number; post?: Handler; statements?: unknown[] } = {}) {
+async function mount(
+  opts: {
+    initialStatementId?: number;
+    post?: Handler;
+    statements?: unknown[];
+    userId?: number;
+    onSwitchPerson?: (id: number) => void;
+    getViewAction?: () => { label: string; onClick: () => void } | null;
+  } = {},
+) {
   const onClose = vi.fn();
   const fetchMock = vi.fn<(request: Request) => Response | Promise<Response>>((request) => {
     const url = new URL(request.url);
-    if (url.pathname === "/api/statements") return json(opts.statements ?? STATEMENTS);
+    if (url.pathname === "/api/statements") {
+      const all = (opts.statements ?? STATEMENTS) as { user_id?: number }[];
+      const owner = url.searchParams.get("user_id");
+      return json(owner ? all.filter((st) => String(st.user_id) === owner) : all);
+    }
+    if (url.pathname === "/api/users") return json([{ id: 1, name: "Alex" }, { id: 2, name: "Sam" }]);
     if (url.pathname === "/api/accounts") return json([{ id: 5, user_id: 1, issuer_id: 1, account_type: "credit" }]);
     if (url.pathname === "/api/issuers") return json([{ id: 1, name: "Chase" }]);
     if (request.method === "POST" && url.pathname === "/api/transactions") {
@@ -55,17 +69,22 @@ async function mount(opts: { initialStatementId?: number; post?: Handler; statem
     throw new Error(`unexpected fetch: ${request.method} ${request.url}`);
   });
   vi.stubGlobal("fetch", fetchMock);
-  const [{ AddTransactionDialog }, { ToastContextProvider }] = await Promise.all([
+  const [{ AddTransactionDialog }, { ToastContextProvider }, { Toaster }] = await Promise.all([
     import("./add-transaction-dialog"),
     import("@/components/ui/toast-provider"),
+    import("@/components/ui/toaster"),
   ]);
   render(
     <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
       <MemoryRouter>
         <ToastContextProvider>
+          <Toaster />
           <AddTransactionDialog
             initialStatementId={opts.initialStatementId}
             categories={CATEGORIES}
+            userId={opts.userId}
+            onSwitchPerson={opts.onSwitchPerson}
+            getViewAction={opts.getViewAction}
             onClose={onClose}
           />
         </ToastContextProvider>
@@ -118,10 +137,14 @@ describe("AddTransactionDialog", () => {
     const { fetchMock } = await mount({ initialStatementId: 1 });
     await waitFor(() => expect(screen.getByLabelText("Statement")).toHaveValue("1"));
 
+    expect(screen.getByLabelText("Date")).toHaveValue("2026-01-31"); // the statement's last day
+    await user.clear(screen.getByLabelText("Date"));
     await user.click(screen.getByRole("button", { name: "Add transaction" }));
     expect(screen.getByText("Enter a valid date.")).toBeInTheDocument();
     expect(screen.getByText("Enter a description.")).toBeInTheDocument();
     expect(screen.getByText(/Enter an amount above 0/)).toBeInTheDocument();
+
+    await user.clear(screen.getByLabelText("Date"));
 
     await user.type(screen.getByLabelText("Date"), "2026-01-10");
     await user.type(screen.getByLabelText("Description"), "Coffee");
@@ -137,6 +160,7 @@ describe("AddTransactionDialog", () => {
     const user = userEvent.setup();
     const { fetchMock } = await mount({ initialStatementId: 1 });
     await waitFor(() => expect(screen.getByLabelText("Statement")).toHaveValue("1"));
+    await user.clear(screen.getByLabelText("Date"));
     await user.type(screen.getByLabelText("Date"), "1960-01-01");
     await user.type(screen.getByLabelText("Description"), "Old");
     await user.type(screen.getByLabelText(/Amount/), "5");
@@ -149,6 +173,7 @@ describe("AddTransactionDialog", () => {
     const user = userEvent.setup();
     await mount({ initialStatementId: 1 });
     await waitFor(() => expect(screen.getByLabelText("Statement")).toHaveValue("1"));
+    await user.clear(screen.getByLabelText("Date"));
     await user.type(screen.getByLabelText("Date"), "2026-01-15");
     expect(screen.queryByTestId("period-warning")).not.toBeInTheDocument();
     await user.clear(screen.getByLabelText("Date"));
@@ -160,6 +185,7 @@ describe("AddTransactionDialog", () => {
     const user = userEvent.setup();
     const { fetchMock, onClose } = await mount({ initialStatementId: 1 });
     await waitFor(() => expect(screen.getByLabelText("Statement")).toHaveValue("1"));
+    await user.clear(screen.getByLabelText("Date"));
     await user.type(screen.getByLabelText("Date"), "2026-01-10");
     await user.type(screen.getByLabelText("Description"), "  Refund at Big Mart  ");
     await user.click(screen.getByRole("radio", { name: "Money in" }));
@@ -188,6 +214,7 @@ describe("AddTransactionDialog", () => {
     const user = userEvent.setup();
     const { fetchMock, onClose } = await mount({ initialStatementId: 1 });
     await waitFor(() => expect(screen.getByLabelText("Statement")).toHaveValue("1"));
+    await user.clear(screen.getByLabelText("Date"));
     await user.type(screen.getByLabelText("Date"), "2026-01-10");
     await user.type(screen.getByLabelText("Description"), "Coffee");
     await user.type(screen.getByLabelText(/Amount/), "4.50");
@@ -215,6 +242,7 @@ describe("AddTransactionDialog", () => {
       },
     });
     await waitFor(() => expect(screen.getByLabelText("Statement")).toHaveValue("1"));
+    await user.clear(screen.getByLabelText("Date"));
     await user.type(screen.getByLabelText("Date"), "2026-01-10");
     await user.type(screen.getByLabelText("Description"), "Coffee");
     await user.type(screen.getByLabelText(/Amount/), "4.50");
@@ -225,5 +253,47 @@ describe("AddTransactionDialog", () => {
     expect(await screen.findByText("this statement is not imported yet; finish importing it first")).toBeInTheDocument();
     expect(onClose).not.toHaveBeenCalled();
     expect(screen.getByRole("button", { name: "Add transaction" })).toBeEnabled();
+  });
+
+  it("says the row is waiting in Review when it needs review, even with a category set", async () => {
+    const user = userEvent.setup();
+    await mount({
+      initialStatementId: 1,
+      post: () => json({ id: 99, needs_review: true, category_key: "others", subcategory_key: "uncategorized" }, 201),
+    });
+    await waitFor(() => expect(screen.getByLabelText("Statement")).toHaveValue("1"));
+    await user.type(screen.getByLabelText("Description"), "Coffee");
+    await user.type(screen.getByLabelText(/Amount/), "4.50");
+    await user.click(screen.getByRole("button", { name: "Add transaction" }));
+    expect(await screen.findByText(/waiting in Review/)).toBeInTheDocument();
+  });
+
+  it("offers a View it action when the filters hide the new row", async () => {
+    const user = userEvent.setup();
+    const onClick = vi.fn();
+    await mount({
+      initialStatementId: 1,
+      getViewAction: () => ({ label: "View it", onClick }),
+    });
+    await waitFor(() => expect(screen.getByLabelText("Statement")).toHaveValue("1"));
+    await user.type(screen.getByLabelText("Description"), "Coffee");
+    await user.type(screen.getByLabelText(/Amount/), "4.50");
+    await user.click(screen.getByRole("button", { name: "Add transaction" }));
+    await user.click(await screen.findByRole("button", { name: "View it" }));
+    expect(onClick).toHaveBeenCalledTimes(1);
+  });
+
+  it("explains a preset statement that belongs to another person and offers to switch", async () => {
+    const user = userEvent.setup();
+    const onSwitchPerson = vi.fn();
+    await mount({
+      initialStatementId: 7,
+      userId: 1,
+      onSwitchPerson,
+      statements: [statement({ id: 1 }), statement({ id: 7, user_id: 2, original_name: "sam.pdf" })],
+    });
+    expect(await screen.findByTestId("foreign-statement")).toHaveTextContent("sam.pdf belongs to Sam");
+    await user.click(screen.getByRole("button", { name: "Switch to Sam" }));
+    expect(onSwitchPerson).toHaveBeenCalledWith(2);
   });
 });

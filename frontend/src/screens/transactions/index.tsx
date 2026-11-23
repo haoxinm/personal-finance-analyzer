@@ -81,6 +81,53 @@ export default function TransactionsScreen() {
     setGridParams({ add: false });
   }, [addRequested, setGridParams]);
 
+  // A row added by hand can land outside what the filters show; offer to jump to it.
+  function getViewAction(created: Transaction) {
+    const hidden =
+      (gridParams.statementId !== undefined && gridParams.statementId !== created.statement_id) ||
+      (gridParams.needsReview === true && created.needs_review !== true) ||
+      (gridParams.uncategorized === true &&
+        created.category_key !== null &&
+        created.category_key !== "others") ||
+      gridParams.excluded === "only" ||
+      (filters.dateFrom !== undefined && created.posted_date < filters.dateFrom) ||
+      (filters.dateTo !== undefined && created.posted_date > filters.dateTo) ||
+      (filters.accountIds !== undefined &&
+        filters.accountIds.length > 0 &&
+        !filters.accountIds.includes(created.account_id)) ||
+      (filters.categoryKeys !== undefined &&
+        filters.categoryKeys.length > 0 &&
+        !filters.categoryKeys.includes(created.category_key ?? "")) ||
+      (filters.kinds !== undefined && filters.kinds.length > 0 && !filters.kinds.includes(created.kind)) ||
+      (filters.search !== undefined &&
+        filters.search !== "" &&
+        !created.description_clean.toLowerCase().includes(filters.search.toLowerCase()));
+    if (!hidden) return null;
+    return {
+      label: "View it",
+      onClick: () => {
+        setFilters({
+          search: undefined,
+          kinds: undefined,
+          categoryKeys: undefined,
+          dateFrom: undefined,
+          dateTo: undefined,
+          amountMinMinor: undefined,
+          amountMaxMinor: undefined,
+          accountIds: undefined,
+        });
+        setGridParams({
+          needsReview: undefined,
+          uncategorized: undefined,
+          conflict: undefined,
+          excluded: undefined,
+          source: undefined,
+          statementId: created.statement_id,
+        });
+      },
+    };
+  }
+
   const [selectedIds, setSelectedIds] = React.useState<Set<number>>(new Set());
   // The selection is "everything the filters match" (from `handleSelectAllMatching`), not rows
   // the user ticked: bulk apply then asks for confirmation. Any manual change ends it.
@@ -532,6 +579,8 @@ export default function TransactionsScreen() {
           userId={sel.selectedUserId ?? undefined}
           categories={categories}
           onClose={() => setAdding(false)}
+          onSwitchPerson={(id) => sel.setSelectedUserId(id)}
+          getViewAction={getViewAction}
         />
       ) : null}
     </Page>

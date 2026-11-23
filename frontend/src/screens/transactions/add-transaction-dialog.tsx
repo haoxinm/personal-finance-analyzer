@@ -1,7 +1,7 @@
 import * as React from "react";
 import { Link } from "react-router-dom";
 
-import { useStatements } from "@/api/hooks";
+import { useStatements, useUsers } from "@/api/hooks";
 import { SegmentedControl } from "@/components/primitives/segmented-control";
 import { Button } from "@/components/ui/button";
 import {
@@ -49,6 +49,19 @@ export interface AddTransactionDialogProps {
   userId?: number;
   categories: Category[];
   onClose: () => void;
+  /** Switches the screen to another person's view (for a preset statement that is theirs). */
+  onSwitchPerson?: (userId: number) => void;
+  /** After a save: an action for the toast when the current filters hide the new row. */
+  getViewAction?: (created: Transaction) => { label: string; onClick: () => void } | null;
+}
+
+/** True when a saved row still needs a human look: flagged, or parked in no / the catch-all category. */
+function waitsInReview(row: Transaction): boolean {
+  return (
+    row.needs_review === true ||
+    row.category_key === null ||
+    (row.category_key === "others" && (row.subcategory_key === "uncategorized" || row.subcategory_key === null))
+  );
 }
 
 /**
@@ -62,11 +75,16 @@ export function AddTransactionDialog({
   userId,
   categories,
   onClose,
+  onSwitchPerson,
+  getViewAction,
 }: AddTransactionDialogProps) {
   const ids = React.useId();
   const { toast } = useToast();
   const create = useCreateTransaction();
   const statementsQuery = useStatements(userId);
+  // Everyone's statements, only to tell "not found" from "belongs to another person" for a preset.
+  const everyone = useStatements(undefined);
+  const users = useUsers();
   const accounts = useAccountOptions();
 
   const statements = React.useMemo(
@@ -85,7 +103,25 @@ export function AddTransactionDialog({
         : "");
   const statement = statements.find((s) => String(s.id) === statementId);
 
-  const [postedDate, setPostedDate] = React.useState("");
+  const foreignPreset =
+    initialStatementId !== undefined &&
+    userId !== undefined &&
+    !statements.some((s) => s.id === initialStatementId) &&
+    statementsQuery.isSuccess
+      ? (everyone.data ?? []).find(
+          (s) => s.id === initialStatementId && s.status === "parsed" && s.user_id != null && s.user_id !== userId,
+        )
+      : undefined;
+  const foreignOwner = foreignPreset
+    ? (users.data ?? []).find((u) => u.id === foreignPreset.user_id)?.name
+    : undefined;
+
+  // The date starts on the statement's last day (never in the future), until the user types one.
+  const [dateChoice, setDateChoice] = React.useState<string | null>(null);
+  const today = isoDateFromToday(0);
+  const defaultDate = statement?.period_end ? (statement.period_end > today ? today : statement.period_end) : "";
+  const postedDate = dateChoice ?? defaultDate;
+  const setPostedDate = setDateChoice;
   const [description, setDescription] = React.useState("");
   const [direction, setDirection] = React.useState<Direction>("out");
   const [amountText, setAmountText] = React.useState("");
@@ -154,12 +190,17 @@ export function AddTransactionDialog({
         ...(categoryKey !== "" ? { category_key: categoryKey, subcategory_key: subcategoryKey } : {}),
         ...(notes.trim() !== "" ? { notes: notes.trim() } : {}),
       });
+      const viewAction = getViewAction?.(created) ?? null;
+      const inReview = waitsInReview(created);
       toast({
         title: "Transaction added",
-        description:
-          created.needs_review && created.category_key === null
-            ? "No rule recognised it, so it is waiting in Review."
-            : undefined,
+        description: [
+          inReview ? "No rule recognised it, so it is waiting in Review." : null,
+          viewAction ? "The current filters hide it." : null,
+        ]
+          .filter(Boolean)
+          .join(" ") || undefined,
+        ...(viewAction ? { action: viewAction } : {}),
       });
       onClose();
     } catch (error) {
@@ -205,6 +246,30 @@ export function AddTransactionDialog({
             </Link>{" "}
             first.
           </p>
+        ) : null}
+
+        {foreignPreset ? (
+          <div
+            role="status"
+            data-testid="foreign-statement"
+            className="flex flex-col gap-2 rounded-md border border-amber-300 bg-amber-50 px-2 py-1.5 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200"
+          >
+            <span>
+              {foreignPreset.original_name || `Statement #${foreignPreset.id}`} belongs to{" "}
+              {foreignOwner ?? "another person"}, so it is not in this view.
+            </span>
+            {onSwitchPerson && foreignPreset.user_id != null ? (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="self-start"
+                onClick={() => onSwitchPerson(foreignPreset.user_id as number)}
+              >
+                Switch to {foreignOwner ?? "that person"}
+              </Button>
+            ) : null}
+          </div>
         ) : null}
 
         <div className="flex flex-col gap-1">

@@ -570,7 +570,15 @@ export function ImportedStatementsPanel({
         const account = accountById.get(id);
         if (!account) return null;
         const issuer = account.issuer_id != null ? issuerName.get(account.issuer_id) : undefined;
-        return [issuer, account.account_type].filter(Boolean).join(" ");
+        const base = [issuer, account.account_type].filter(Boolean).join(" ");
+        // No mask or name comes with the accounts list: tell look-alike accounts apart by id.
+        const clash = (accounts.data ?? []).some(
+          (other) =>
+            other.id !== account.id &&
+            other.account_type === account.account_type &&
+            (other.issuer_id != null ? issuerName.get(other.issuer_id) : undefined) === issuer,
+        );
+        return clash ? `${base} #${account.id}` : base;
       },
       ownerName: (id) => (userId === null && id != null ? (userName.get(id) ?? null) : null),
       specs: specs.data ?? [],

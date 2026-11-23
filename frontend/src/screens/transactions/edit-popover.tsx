@@ -473,15 +473,20 @@ export function EditPopover({
                 type="button"
                 variant="outline"
                 size="sm"
-                disabled={saving || deleting}
+                disabled={saving || deleting || dirty}
                 onClick={onToggleExcluded}
               >
                 {excluded ? "Include again" : "Exclude from totals"}
               </Button>
             </div>
+            {dirty ? (
+              <p className="text-xs text-amber-700 dark:text-amber-300" data-testid="inclusion-dirty-hint">
+                Save or discard your changes first, then {excluded ? "include" : "exclude"} this row.
+              </p>
+            ) : null}
             <p className="text-xs text-muted-foreground">
               {excluded
-                ? "This row stays on file but is left out of every total, chart and forecast,."
+                ? "This row stays on file but is left out of every total, chart and forecast."
                 : "Excluding keeps the row on file but leaves it out of every total, chart and forecast, for example a duplicate or a line that is not yours. You can include it again at any time."}
             </p>
           </div>

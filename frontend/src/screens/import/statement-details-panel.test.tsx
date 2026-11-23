@@ -141,7 +141,7 @@ describe("StatementDetailsPanel", () => {
       parsed_period_start: "2026-03-01",
     });
     const period = screen.getByRole("region", { name: "Period" });
-    expect(within(period).getByText("Corrected")).toBeInTheDocument();
+    expect(within(period).queryByText("Corrected")).not.toBeInTheDocument();
     expect(within(period).getByText(/Detected from the statement/)).toBeInTheDocument();
     await userEvent.click(within(period).getByRole("button", { name: "Restore detected period" }));
     await waitFor(() => expect(patches(calls)).toHaveLength(1));
@@ -157,7 +157,7 @@ describe("StatementDetailsPanel", () => {
   it("changes the account's currency directly for a single statement", async () => {
     const { calls } = await renderPanel();
     const section = screen.getByRole("region", { name: "Currency" });
-    expect(section).toHaveTextContent("Currency of account Chase credit (1 statement)");
+    expect(section).toHaveTextContent("Currency of account Chase credit #5 (1 statement)");
     const input = within(section).getByRole("textbox");
     await userEvent.clear(input);
     await userEvent.type(input, "eur");
@@ -202,8 +202,15 @@ describe("StatementDetailsPanel", () => {
     const bank = screen.getByRole("region", { name: "Bank" });
     // The current bank is not offered.
     expect(within(bank).queryByRole("option", { name: "Chase" })).not.toBeInTheDocument();
+    // Nothing is pre-picked: the button waits for a choice.
+    expect(within(bank).getByRole("button", { name: "Change bank" })).toBeDisabled();
     await userEvent.selectOptions(within(bank).getByLabelText("Bank"), "Citi");
     await userEvent.click(within(bank).getByRole("button", { name: "Change bank" }));
+    const confirm = within(bank).getByRole("alertdialog", { name: /Confirm move to Citi/ });
+    expect(confirm).toHaveTextContent(/merged/);
+    expect(confirm).toHaveTextContent(/will not restore/);
+    expect(patches(calls)).toHaveLength(0);
+    await userEvent.click(within(confirm).getByRole("button", { name: "Yes, move it" }));
     await waitFor(() => expect(patches(calls)).toHaveLength(1));
     expect(patches(calls)[0]!.body).toEqual({ issuer_id: 4 });
     expect(await screen.findByText("Moved 10 rows, merged 2 duplicates")).toBeInTheDocument();
@@ -216,6 +223,7 @@ describe("StatementDetailsPanel", () => {
     const select = within(bank).getByLabelText("Move to an existing account");
     expect(within(select).getAllByRole("option").map((o) => o.textContent)).toEqual(["Citi checking (USD)"]);
     await userEvent.click(within(bank).getByRole("button", { name: "Move statement" }));
+    await userEvent.click(within(bank).getByRole("button", { name: "Yes, move it" }));
     await waitFor(() => expect(patches(calls)).toHaveLength(1));
     expect(patches(calls)[0]!.body).toEqual({ account_id: 6 });
   });
@@ -223,7 +231,9 @@ describe("StatementDetailsPanel", () => {
   it("shows a 409 (statement not parsed / same bank) in the bank section", async () => {
     await renderPanel({}, { patchStatement: { status: 409, body: { detail: "only imported statements can be changed" } } });
     const bank = screen.getByRole("region", { name: "Bank" });
+    await userEvent.selectOptions(within(bank).getByLabelText("Bank"), "Citi");
     await userEvent.click(within(bank).getByRole("button", { name: "Change bank" }));
+    await userEvent.click(within(bank).getByRole("button", { name: "Yes, move it" }));
     expect(await within(bank).findByRole("alert")).toHaveTextContent("only imported statements can be changed");
   });
 

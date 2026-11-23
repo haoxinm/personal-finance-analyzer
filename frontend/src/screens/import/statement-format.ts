@@ -50,11 +50,12 @@ export const SIGN_FLIP_NOTE =
 
 /** "3 transactions (2 added by you, 1 excluded)": the parsed count, then what the user changed. */
 export function transactionCountText(statement: Statement): string {
-  const base = plural(statement.txn_count ?? 0, "transaction");
-  const extras: string[] = [];
-  if ((statement.manual_count ?? 0) > 0) extras.push(`${statement.manual_count} added by you`);
-  if ((statement.excluded_count ?? 0) > 0) extras.push(`${statement.excluded_count} excluded`);
-  return extras.length > 0 ? `${base} (${extras.join(", ")})` : base;
+  // `txn_count` counts the rows read from the statement only; hand-added rows are separate.
+  const read = statement.txn_count ?? 0;
+  const manual = statement.manual_count ?? 0;
+  const excluded = statement.excluded_count ?? 0;
+  const base = manual > 0 ? `${read.toLocaleString()} read from the statement + ${manual.toLocaleString()} added by you` : plural(read, "transaction");
+  return excluded > 0 ? `${base} · ${excluded.toLocaleString()} excluded` : base;
 }
 
 /** The note after a re-import or import that matched hand-added rows to freshly read ones. */
@@ -62,7 +63,7 @@ export function absorbedManualText(n: number | null | undefined): string | null 
   if (!n || n <= 0) return null;
   return `${plural(n, "hand-added transaction")} matched ${n === 1 ? "a row" : "rows"} now read from the statement and ${
     n === 1 ? "was" : "were"
-  } replaced by ${n === 1 ? "it" : "them"}.`;
+  } replaced by ${n === 1 ? "it" : "them"}. The bank's copy is kept instead of yours, so the totals check of the statement it came from may change.`;
 }
 
 export interface AttentionNote {

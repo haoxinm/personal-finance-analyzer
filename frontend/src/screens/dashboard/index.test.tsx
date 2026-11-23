@@ -256,6 +256,7 @@ describe("DashboardScreen", () => {
 
   describe("import attention hint", () => {
     const base = { "/users": [{ id: 1, name: "Alex", is_default: true }] };
+    beforeEach(() => window.localStorage.clear());
 
     it("shows no hint when nothing needs attention", async () => {
       mockGet({ ...base, "/statements": [{ id: 1, status: "parsed", attention: [] }], "/watch/files": { items: [], total: 0 } });
@@ -270,7 +271,7 @@ describe("DashboardScreen", () => {
         "/statements": [
           { id: 1, status: "parsed", attention: ["reconciliation_mismatch"] },
           { id: 2, status: "parsed", attention: [] },
-          { id: 3, status: "error", attention: ["pdf_missing"] },
+          { id: 3, status: "parsed", attention: ["all_duplicates", "pdf_missing"] },
         ],
         "/watch/files": { items: [], total: 2 },
       });

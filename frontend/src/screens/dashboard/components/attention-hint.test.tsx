@@ -45,3 +45,32 @@ describe("AttentionHint", () => {
     expect(screen.getByTestId("attention-hint")).toHaveTextContent("totals may be off");
   });
 });
+
+describe("AttentionHint Hide", () => {
+  it("hides until the signature changes", async () => {
+    window.localStorage.clear();
+    const { default: userEvent } = await import("@testing-library/user-event");
+    const view = render(
+      <MemoryRouter>
+        <AttentionHint attention={{ statements: 1, folderProblems: 0, signature: "1:no_transactions|0" }} />
+      </MemoryRouter>,
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Hide" }));
+    expect(screen.queryByTestId("attention-hint")).not.toBeInTheDocument();
+    view.unmount();
+    const same = render(
+      <MemoryRouter>
+        <AttentionHint attention={{ statements: 1, folderProblems: 0, signature: "1:no_transactions|0" }} />
+      </MemoryRouter>,
+    );
+    expect(screen.queryByTestId("attention-hint")).not.toBeInTheDocument();
+    same.unmount();
+    render(
+      <MemoryRouter>
+        <AttentionHint attention={{ statements: 2, folderProblems: 0, signature: "1:no_transactions,2:error|0" }} />
+      </MemoryRouter>,
+    );
+    expect(screen.getByTestId("attention-hint")).toBeInTheDocument();
+    window.localStorage.clear();
+  });
+});

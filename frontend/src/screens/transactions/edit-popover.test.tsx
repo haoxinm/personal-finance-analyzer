@@ -523,6 +523,15 @@ describe("EditPopover exclusion and deletion", () => {
     expect(onToggleExcluded).toHaveBeenCalledTimes(2);
   });
 
+  it("disables Exclude with a hint while there are unsaved edits", async () => {
+    const onToggleExcluded = vi.fn();
+    setupWith(makeTransaction(), { onToggleExcluded });
+    expect(screen.getByRole("button", { name: "Exclude from totals" })).toBeEnabled();
+    await userEvent.type(screen.getByLabelText("Notes"), "x");
+    expect(screen.getByRole("button", { name: "Exclude from totals" })).toBeDisabled();
+    expect(screen.getByTestId("inclusion-dirty-hint")).toHaveTextContent(/Save or discard/);
+  });
+
   it("never offers Delete for a row read from the statement", () => {
     setupWith(makeTransaction(), { onDelete: vi.fn(), onToggleExcluded: vi.fn() });
     expect(screen.queryByRole("button", { name: "Delete…" })).not.toBeInTheDocument();

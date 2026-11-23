@@ -1,11 +1,11 @@
 /** A small person mark next to a row the user added by hand (not read from a statement). */
 export function ManualMark() {
   return (
-    <span title="Added by you" className="ml-1 text-muted-foreground">
+    <span role="img" title="Added by you" aria-label="Added by you" className="ml-1 text-foreground/70">
       <svg
         aria-hidden="true"
         viewBox="0 0 16 16"
-        className="inline-block h-3 w-3 align-baseline"
+        className="inline-block h-4 w-4 align-text-bottom"
         fill="none"
         stroke="currentColor"
         strokeWidth="1.5"
