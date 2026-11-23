@@ -261,4 +261,17 @@ describe("StatementCard", () => {
     screen.getByRole("button", { name: "Use it" }).click();
     expect(onUse).toHaveBeenCalled();
   });
+
+  it("mentions hand-added rows an import matched", () => {
+    renderCard(
+      makeItem({
+        status: "parsed",
+        statementId: 1,
+        statement: { id: 1, status: "parsed", txn_count: 5, reconciliation_delta_minor: 0 } as never,
+        insertedCount: 5,
+        absorbedManual: 2,
+      }),
+    );
+    expect(screen.getByText(/5 new transactions · 2 hand-added matched/)).toBeInTheDocument();
+  });
 });

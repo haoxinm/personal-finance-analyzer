@@ -33,6 +33,9 @@ export interface ReimportPanelProps {
   specs: readonly LayoutSpec[];
   llmConfigured: boolean;
   onClose: () => void;
+  /** Open with "flip the sign" toggled away from the statement's current setting (the sign-flip
+   * suggestion's action). */
+  suggestFlip?: boolean;
 }
 
 /** The select value of a scored candidate. */
@@ -70,13 +73,14 @@ function defaultCandidate(candidates: readonly ExtractorCandidate[], noRows: boo
  * from; following the job and refreshing the screen is `followInBackground`'s work, so closing the
  * panel at any moment loses nothing.
  */
-export function ReimportPanel({ statement, specs, llmConfigured, onClose }: ReimportPanelProps) {
+export function ReimportPanel({ statement, specs, llmConfigured, onClose, suggestFlip = false }: ReimportPanelProps) {
   const queryClient = useQueryClient();
   const toast = useSafeToast();
   const reparse = useReparseStatement();
   const candidatesQuery = useExtractorCandidates(statement.id);
   const [choice, setChoice] = React.useState<string | null>(null);
   const [discard, setDiscard] = React.useState(false);
+  const [flip, setFlip] = React.useState(suggestFlip ? !statement.flip_sign : statement.flip_sign);
   const initialPages = React.useMemo<number[] | null>(() => {
     if (statement.selected_pages) return statement.selected_pages;
     return statement.page_count ? Array.from({ length: statement.page_count }, (_, i) => i + 1) : null;
@@ -189,6 +193,7 @@ export function ReimportPanel({ statement, specs, llmConfigured, onClose }: Reim
     } else if (selectedKey === "llm") body.parser_id = "llm";
     else if (selectedKey.startsWith("spec:")) body.layout_spec_id = Number(selectedKey.slice(5));
     if (pagesChanged && parsedPages) body.pages = parsedPages;
+    if (flip !== statement.flip_sign) body.flip_sign = flip;
     setSubmitError(null);
     setFailure(null);
     setResult(null);
@@ -229,7 +234,8 @@ export function ReimportPanel({ statement, specs, llmConfigured, onClose }: Reim
       </h4>
       <p className="text-xs text-muted-foreground">
         Rebuilds this statement&rsquo;s transactions from the saved PDF. Your category edits, notes and corrections
-        to dates, amounts and descriptions are kept unless you choose to discard them.
+        to dates, amounts and descriptions are kept unless you choose to discard them. Transactions you added by
+        hand are always kept.
       </p>
 
       {showForm ? (
@@ -299,6 +305,23 @@ export function ReimportPanel({ statement, specs, llmConfigured, onClose }: Reim
               {statement.page_count ? ` (between 1 and ${statement.page_count})` : ""}.
             </p>
           ) : null}
+
+          <label className="flex items-start gap-2">
+            <input
+              type="checkbox"
+              className="mt-0.5 h-4 w-4 accent-primary"
+              checked={flip}
+              onChange={(e) => setFlip(e.target.checked)}
+              disabled={running}
+            />
+            <span>
+              Flip the sign of every amount
+              <span className="block text-xs text-muted-foreground">
+                Use this when charges show as money in (or the other way round) and the totals don&rsquo;t reconcile.
+                Hand-added transactions are not flipped.
+              </span>
+            </span>
+          </label>
 
           {keptCount > 0 ? (
             <label className="flex items-start gap-2">

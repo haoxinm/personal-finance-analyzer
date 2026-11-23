@@ -1,5 +1,6 @@
 import { useQueryClient } from "@tanstack/react-query";
 import * as React from "react";
+import { useLocation } from "react-router-dom";
 
 import { useUsers } from "@/api/hooks";
 import { FileDropZone } from "@/components/primitives/file-drop-zone";
@@ -294,6 +295,25 @@ function ImportScreen() {
     zone?.scrollIntoView?.({ block: "center", behavior: "smooth" });
     zone?.querySelector<HTMLElement>('[role="button"]')?.focus();
   }, []);
+  // A link from elsewhere (`/spending/import#imported-statements`, `#folder-imports`): once that
+  // card exists, scroll to it and focus its title. The cards render after their data loads, so look
+  // for a little while; a hash that names nothing here is ignored.
+  const { hash } = useLocation();
+  React.useEffect(() => {
+    const id = hash.replace(/^#/, "");
+    if (id !== "imported-statements" && id !== "folder-imports") return;
+    let tries = 0;
+    const timer = window.setInterval(() => {
+      tries += 1;
+      const card = document.getElementById(id);
+      if (card) {
+        window.clearInterval(timer);
+        card.scrollIntoView?.({ block: "start", behavior: "smooth" });
+        document.getElementById(`${id}-title`)?.focus();
+      } else if (tries >= 40) window.clearInterval(timer);
+    }, 100);
+    return () => window.clearInterval(timer);
+  }, [hash]);
   const nonceRef = React.useRef(0);
   const reimportExisting = React.useCallback((statementId: number) => {
     nonceRef.current += 1;

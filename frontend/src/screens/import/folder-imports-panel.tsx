@@ -312,9 +312,9 @@ export function FolderImportsPanel({ onReimportStatement }: { onReimportStatemen
   }, [focusAfter, problemItems]);
 
   return (
-    <Card data-testid="folder-imports-panel" role="region" aria-labelledby="folder-imports-title">
+    <Card id="folder-imports" data-testid="folder-imports-panel" role="region" aria-labelledby="folder-imports-title">
       <CardHeader>
-        <CardTitle id="folder-imports-title">Folder imports</CardTitle>
+        <CardTitle id="folder-imports-title" tabIndex={-1} className="outline-none focus-visible:ring-2 focus-visible:ring-ring">Folder imports</CardTitle>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
         {status.isPending ? (

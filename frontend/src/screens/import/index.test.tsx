@@ -67,14 +67,14 @@ const STATEMENT_PARSED = {
  * dynamically importing the screen, rather than importing it (and its transitive `apiClient`)
  * once at this file's top, which would freeze in whichever `fetch` happened to be global first.
  */
-async function renderScreen(fetchMock: typeof fetch) {
+async function renderScreen(fetchMock: typeof fetch, entry = "/") {
   vi.resetModules();
   vi.stubGlobal("fetch", fetchMock);
   const { default: ImportScreen } = await import("./index");
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+      <MemoryRouter initialEntries={[entry]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <ImportScreen />
       </MemoryRouter>
     </QueryClientProvider>,
@@ -113,6 +113,32 @@ describe("ImportScreen", () => {
     expect(await screen.findByText("No statements imported yet.")).toBeInTheDocument();
     const folder = await screen.findByTestId("folder-imports-panel");
     expect(imported.compareDocumentPosition(folder) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it.each([
+    ["#imported-statements", "imported-statements-title"],
+    ["#folder-imports", "folder-imports-title"],
+  ])("focuses the card title named by the %s hash once the card is there", async (hash, titleId) => {
+    const fetchMock = vi.fn<typeof fetch>((input) => {
+      const { url } = describeRequest(input);
+      if (url.includes("/api/users")) return Promise.resolve(jsonResponse([USER]));
+      if (url.includes("/api/settings")) return Promise.resolve(jsonResponse({ llm: { mode: "none" } }));
+      return Promise.resolve(jsonResponse([]));
+    });
+    await renderScreen(fetchMock, `/spending/import${hash}`);
+    await waitFor(() => expect(document.getElementById(titleId)).toHaveFocus());
+  });
+
+  it("leaves focus alone without a hash", async () => {
+    const fetchMock = vi.fn<typeof fetch>((input) => {
+      const { url } = describeRequest(input);
+      if (url.includes("/api/users")) return Promise.resolve(jsonResponse([USER]));
+      if (url.includes("/api/settings")) return Promise.resolve(jsonResponse({ llm: { mode: "none" } }));
+      return Promise.resolve(jsonResponse([]));
+    });
+    await renderScreen(fetchMock);
+    await screen.findByRole("region", { name: "Imported statements" });
+    expect(document.getElementById("imported-statements-title")).not.toHaveFocus();
   });
 
   it("defaults the user selector to the default user and lets the user drop a file through to a confident, pre-selected proposal", async () => {

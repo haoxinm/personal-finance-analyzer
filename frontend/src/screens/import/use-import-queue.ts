@@ -163,7 +163,7 @@ export type Action =
   | { type: "job_event"; clientId: string; event: JobEvent }
   | { type: "statement_refreshed"; clientId: string; statement: Statement; llmConfigured?: boolean }
   | { type: "needs_review_counted"; clientId: string; count: number | undefined }
-  | { type: "import_counted"; clientId: string; inserted: number; skippedDuplicates: number };
+  | { type: "import_counted"; clientId: string; inserted: number; skippedDuplicates: number; absorbedManual?: number };
 
 function reducer(items: ImportItem[], action: Action): ImportItem[] {
   const patch = (clientId: string, fn: (item: ImportItem) => ImportItem): ImportItem[] =>
@@ -264,6 +264,7 @@ function reducer(items: ImportItem[], action: Action): ImportItem[] {
         ...item,
         insertedCount: action.inserted,
         skippedDuplicates: action.skippedDuplicates,
+        absorbedManual: action.absorbedManual,
       }));
 
     default:
@@ -368,6 +369,7 @@ export async function refreshAfterJob(
         clientId,
         inserted: importJob.inserted,
         skippedDuplicates: importJob.skipped_duplicates ?? 0,
+        absorbedManual: importJob.absorbed_manual ?? 0,
       });
     }
     onParsed?.(importJob);

@@ -59,6 +59,8 @@ export interface ImportItem {
    * was already present (an overlapping statement). Undefined until the job's counts are read. */
   insertedCount?: number;
   skippedDuplicates?: number;
+  /** Hand-added rows an import replaced by matching freshly read ones. */
+  absorbedManual?: number;
 
   errorMessage?: string;
 

@@ -149,3 +149,43 @@ export function useDeleteStatement() {
     },
   });
 }
+
+export type StatementPatch = components["schemas"]["StatementPatch"];
+
+/** `PATCH /statements/{id}` with period / bank / account changes. Resolves with the result
+ * (`rows_moved`, `duplicates_deleted`); 400/404/409 reject with the server's sentence. */
+export function usePatchStatementDetails() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ statementId, body }: { statementId: number; body: StatementPatch }) => {
+      const { data, error } = await apiClient.PATCH("/statements/{statement_id}", {
+        params: { path: { statement_id: statementId } },
+        body,
+      });
+      throwIfError(error);
+      if (!data) throw new Error("the change returned no result");
+      return data;
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries();
+    },
+  });
+}
+
+/** `PATCH /accounts/{id}` with a currency: relabels the account and every transaction on it. */
+export function usePatchAccountCurrency() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ accountId, currency }: { accountId: number; currency: string }) => {
+      const { data, error } = await apiClient.PATCH("/accounts/{account_id}", {
+        params: { path: { account_id: accountId } },
+        body: { currency },
+      });
+      throwIfError(error);
+      return data;
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries();
+    },
+  });
+}

@@ -4,7 +4,14 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { attentionNotes, describeReimport, formatPeriod, sortStatements } from "./statement-format";
+import {
+  absorbedManualText,
+  attentionNotes,
+  describeReimport,
+  formatPeriod,
+  sortStatements,
+  transactionCountText,
+} from "./statement-format";
 
 class MockEventSource {
   static instances: MockEventSource[] = [];
@@ -973,5 +980,111 @@ describe("open requests, person and delete warnings", () => {
     await userEvent.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Cancel" }));
     await userEvent.click(screen.getByRole("button", { name: "Delete january.pdf" }));
     expect(within(screen.getByRole("alertdialog")).queryByTestId("delete-overlap-note")).not.toBeInTheDocument();
+  });
+});
+
+describe("statement edit features", () => {
+  beforeEach(() => {
+    MockEventSource.instances = [];
+    vi.stubGlobal("EventSource", MockEventSource);
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("formats counts with hand-added and excluded rows", () => {
+    expect(transactionCountText(statement({ txn_count: 1 }) as never)).toBe("1 transaction");
+    expect(transactionCountText(statement({ txn_count: 10, manual_count: 2, excluded_count: 1 }) as never)).toBe(
+      "10 transactions (2 added by you, 1 excluded)",
+    );
+    expect(transactionCountText(statement({ txn_count: 10, excluded_count: 3 }) as never)).toBe("10 transactions (3 excluded)");
+  });
+
+  it("reports absorbed hand-added rows after a re-import", () => {
+    expect(absorbedManualText(0)).toBeNull();
+    expect(absorbedManualText(2)).toMatch(/^2 hand-added transactions matched rows now read/);
+    expect(describeReimport({ inserted: 5, absorbed_manual: 1 } as never).notes[0]).toMatch(/1 hand-added transaction matched a row/);
+  });
+
+  it("adds the sign-flip note only when the server suggests it", () => {
+    expect(attentionNotes(statement() as never).map((n) => n.code)).not.toContain("sign_flip");
+    expect(attentionNotes(statement({ sign_flip_suggested: true }) as never).map((n) => n.code)).toContain("sign_flip");
+  });
+
+  it("shows counts, the Corrected badge, the add link and the card anchor", async () => {
+    const { fn } = makeFetch({
+      statements: [statement({ txn_count: 10, manual_count: 2, excluded_count: 1, period_corrected: true })],
+    });
+    const view = await renderPanel(fn);
+    expect(await screen.findByTestId("transaction-count")).toHaveTextContent("10 transactions (2 added by you, 1 excluded)");
+    expect(screen.getByText("Corrected")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Add a missing transaction to chase-march.pdf" })).toHaveAttribute(
+      "href",
+      "/spending/transactions?statement_id=1&add=1",
+    );
+    expect(view.container.querySelector("#imported-statements")).not.toBeNull();
+  });
+
+  it("mentions hand-added rows in the delete confirmation", async () => {
+    const { fn } = makeFetch({ statements: [statement({ manual_count: 2 })] });
+    await renderPanel(fn);
+    await userEvent.click(await screen.findByRole("button", { name: "Delete chase-march.pdf" }));
+    expect(within(screen.getByRole("alertdialog")).getByTestId("delete-manual-note")).toHaveTextContent(
+      "also deletes the 2 transactions you added by hand",
+    );
+  });
+
+  it("opens Edit details… as a panel and closes it again", async () => {
+    const { fn } = makeFetch({ statements: [statement()] });
+    await renderPanel(fn);
+    await userEvent.click(await screen.findByRole("button", { name: "Edit details of chase-march.pdf" }));
+    expect(screen.getByTestId("statement-details-panel")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Done" }));
+    expect(screen.queryByTestId("statement-details-panel")).not.toBeInTheDocument();
+  });
+
+  it("the sign-flip suggestion opens the re-import panel with the flip box ticked and sends flip_sign", async () => {
+    const { fn, calls } = makeFetch({ statements: [statement({ sign_flip_suggested: true, flip_sign: false })] });
+    await renderPanel(fn);
+    await userEvent.click(await screen.findByRole("button", { name: "Re-import chase-march.pdf with signs flipped" }));
+    const panel = screen.getByRole("region", { name: /Re-import chase-march.pdf/ });
+    const box = within(panel).getByRole("checkbox", { name: /Flip the sign of every amount/ });
+    expect(box).toBeChecked();
+    await userEvent.click(within(panel).getByRole("button", { name: "Start re-import" }));
+    await waitFor(() => expect(calls.some((c) => c.url.includes("/reparse"))).toBe(true));
+    expect(calls.find((c) => c.url.includes("/reparse"))!.body).toEqual({
+      discard_edits: false,
+      remember: false,
+      allow_empty: false,
+      flip_sign: true,
+    });
+  });
+
+  it("the flip box starts from the statement's setting and sends nothing when unchanged", async () => {
+    const { fn, calls } = makeFetch({ statements: [statement({ flip_sign: true })] });
+    await renderPanel(fn);
+    await userEvent.click(await screen.findByRole("button", { name: "Re-import chase-march.pdf" }));
+    const panel = screen.getByRole("region", { name: /Re-import chase-march.pdf/ });
+    expect(within(panel).getByRole("checkbox", { name: /Flip the sign of every amount/ })).toBeChecked();
+    expect(panel).toHaveTextContent("Transactions you added by hand are always kept");
+    await userEvent.click(within(panel).getByRole("button", { name: "Start re-import" }));
+    await waitFor(() => expect(calls.some((c) => c.url.includes("/reparse"))).toBe(true));
+    expect(calls.find((c) => c.url.includes("/reparse"))!.body).not.toHaveProperty("flip_sign");
+  });
+
+  it("reports absorbed hand-added rows in the re-import result", async () => {
+    const { fn } = makeFetch({
+      statements: [statement()],
+      job: { id: "job-1", kind: "import", status: "done", progress: 1, inserted: 12, absorbed_manual: 2 },
+    });
+    await renderPanel(fn);
+    await userEvent.click(await screen.findByRole("button", { name: "Re-import chase-march.pdf" }));
+    await userEvent.click(within(screen.getByRole("region", { name: /Re-import chase-march.pdf/ })).getByRole("button", { name: "Start re-import" }));
+    await waitFor(() => expect(MockEventSource.instances).toHaveLength(1));
+    act(() => {
+      MockEventSource.instances[0]!.onmessage?.({ data: JSON.stringify({ status: "done", progress: 1 }) });
+    });
+    expect(await screen.findByTestId("reimport-result")).toHaveTextContent("2 hand-added transactions matched rows now read");
   });
 });

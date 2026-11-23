@@ -44,8 +44,29 @@ export function parseShapeWarnings(raw: string | null | undefined): string[] {
   }
 }
 
+/** Shown when the totals would reconcile with every amount's sign reversed. */
+export const SIGN_FLIP_NOTE =
+  "Amounts look sign-flipped: the statement's total would match with every sign reversed. Re-import with signs flipped to fix it.";
+
+/** "3 transactions (2 added by you, 1 excluded)": the parsed count, then what the user changed. */
+export function transactionCountText(statement: Statement): string {
+  const base = plural(statement.txn_count ?? 0, "transaction");
+  const extras: string[] = [];
+  if ((statement.manual_count ?? 0) > 0) extras.push(`${statement.manual_count} added by you`);
+  if ((statement.excluded_count ?? 0) > 0) extras.push(`${statement.excluded_count} excluded`);
+  return extras.length > 0 ? `${base} (${extras.join(", ")})` : base;
+}
+
+/** The note after a re-import or import that matched hand-added rows to freshly read ones. */
+export function absorbedManualText(n: number | null | undefined): string | null {
+  if (!n || n <= 0) return null;
+  return `${plural(n, "hand-added transaction")} matched ${n === 1 ? "a row" : "rows"} now read from the statement and ${
+    n === 1 ? "was" : "were"
+  } replaced by ${n === 1 ? "it" : "them"}.`;
+}
+
 export interface AttentionNote {
-  code: "no_transactions" | "all_duplicates" | "layout_drift" | "pdf_missing";
+  code: "no_transactions" | "all_duplicates" | "layout_drift" | "pdf_missing" | "sign_flip";
   tone: "warn" | "info";
   text: string;
 }
@@ -83,6 +104,7 @@ export function attentionNotes(statement: Statement): AttentionNote[] {
     }
   }
   if (flags.has("pdf_missing")) notes.push({ code: "pdf_missing", tone: "warn", text: PDF_MISSING_REASON });
+  if (statement.sign_flip_suggested) notes.push({ code: "sign_flip", tone: "warn", text: SIGN_FLIP_NOTE });
   return notes;
 }
 
@@ -107,6 +129,8 @@ export function describeReimport(job: Job): { headline: string; notes: string[] 
   if ((job.skipped_duplicates ?? 0) > 0) {
     notes.push(`${plural(job.skipped_duplicates ?? 0, "transaction")} already on file from another statement.`);
   }
+  const absorbed = absorbedManualText(job.absorbed_manual);
+  if (absorbed) notes.push(absorbed);
   for (const warning of job.warnings ?? []) {
     if (warning.startsWith(NO_ROWS_WARNING_PREFIX)) continue;
     notes.push(warning);

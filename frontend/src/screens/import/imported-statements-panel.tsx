@@ -16,6 +16,7 @@ import { useAccounts } from "@/screens/dashboard/hooks";
 import { fetchStatement, useImportSettings, useIssuers, useLayoutSpecs } from "./api";
 import { useDeleteStatement, usePatchStatementOwner } from "./imported-statements-api";
 import { ReimportPanel } from "./reimport-panel";
+import { StatementDetailsPanel } from "./statement-details-panel";
 import {
   PDF_MISSING_REASON,
   attentionNotes,
@@ -25,6 +26,7 @@ import {
   plural,
   sortStatements,
   statementTransactionsUrl,
+  transactionCountText,
 } from "./statement-format";
 import { errorMessage, useSafeToast } from "./use-safe-toast";
 
@@ -57,6 +59,11 @@ interface RowContext {
   /** Other imported statements on the same account whose period overlaps this one's. */
   overlapping: (statement: Statement) => Statement[];
   defaultCurrency: string | undefined;
+  /** All accounts and issuers, for "Edit details…". */
+  accounts: readonly components["schemas"]["Account"][];
+  issuers: readonly components["schemas"]["Issuer"][];
+  /** How many listed statements sit on this account. */
+  accountStatementCount: (accountId: number | null) => number;
   /** Called after a statement is deleted, once its row is on its way out. */
   onDeleted: () => void;
 }
@@ -110,6 +117,11 @@ function DeleteConfirm({
         Delete this statement and its {count.toLocaleString()} transaction{count === 1 ? "" : "s"}? Your category
         edits and notes on them are lost. This can&rsquo;t be undone.
       </p>
+      {(statement.manual_count ?? 0) > 0 ? (
+        <p className="text-xs text-amber-700 dark:text-amber-400" data-testid="delete-manual-note">
+          This also deletes the {plural(statement.manual_count ?? 0, "transaction")} you added by hand.
+        </p>
+      ) : null}
       {overlapping.length > 0 && count > 0 ? (
         <p className="text-xs text-amber-700 dark:text-amber-400" data-testid="delete-overlap-note">
           Transactions this statement shares with {overlapping.map((o) => o.original_name || `statement ${o.id}`).join(", ")}{" "}
@@ -254,7 +266,7 @@ function ChangePersonPanel({
   );
 }
 
-type RowMode = "idle" | "reimport" | "delete" | "person";
+type RowMode = "idle" | "reimport" | "delete" | "person" | "details";
 
 function StatementRow({ statement, ctx, note }: { statement: Statement; ctx: RowContext; note?: string }) {
   const [mode, setMode] = React.useState<RowMode>("idle");
@@ -263,7 +275,9 @@ function StatementRow({ statement, ctx, note }: { statement: Statement; ctx: Row
   const reimportBtn = React.useRef<HTMLButtonElement>(null);
   const deleteBtn = React.useRef<HTMLButtonElement>(null);
   const personBtn = React.useRef<HTMLButtonElement>(null);
-  const returnTo = React.useRef<"reimport" | "delete" | "person" | null>(null);
+  const detailsBtn = React.useRef<HTMLButtonElement>(null);
+  const [suggestFlip, setSuggestFlip] = React.useState(false);
+  const returnTo = React.useRef<"reimport" | "delete" | "person" | "details" | null>(null);
   const name = statement.original_name || `Statement ${statement.id}`;
   const account = ctx.accountLabel(statement.account_id);
   const owner = ctx.ownerName(statement.user_id);
@@ -278,8 +292,9 @@ function StatementRow({ statement, ctx, note }: { statement: Statement; ctx: Row
   const canChangePerson = parsed && ctx.people.length > 1;
   const showCurrency = Boolean(statement.currency) && ctx.defaultCurrency !== undefined && statement.currency !== ctx.defaultCurrency;
 
-  const open = (next: "reimport" | "delete" | "person") => {
+  const open = (next: "reimport" | "delete" | "person" | "details", flip = false) => {
     returnTo.current = next;
+    setSuggestFlip(flip);
     setMode(next);
   };
   const close = () => setMode("idle");
@@ -287,7 +302,7 @@ function StatementRow({ statement, ctx, note }: { statement: Statement; ctx: Row
   // Back to the buttons: put focus on the one that opened the panel.
   React.useEffect(() => {
     if (mode !== "idle" || returnTo.current === null) return;
-    const target = { reimport: reimportBtn, delete: deleteBtn, person: personBtn }[returnTo.current];
+    const target = { reimport: reimportBtn, delete: deleteBtn, person: personBtn, details: detailsBtn }[returnTo.current];
     target.current?.focus();
     returnTo.current = null;
   }, [mode]);
@@ -333,9 +348,12 @@ function StatementRow({ statement, ctx, note }: { statement: Statement; ctx: Row
         {owner ? <span>{owner}</span> : null}
         {account ? <span>{account}</span> : null}
         <span>{formatPeriod(statement.period_start, statement.period_end)}</span>
-        <span>
-          {(statement.txn_count ?? 0).toLocaleString()} transaction{statement.txn_count === 1 ? "" : "s"}
-        </span>
+        {statement.period_corrected ? (
+          <Badge variant="outline" title="You changed the period the statement was read with">
+            Corrected
+          </Badge>
+        ) : null}
+        <span data-testid="transaction-count">{transactionCountText(statement)}</span>
       </div>
       {note ? (
         <p className="text-xs text-muted-foreground" data-testid="pinned-note">
@@ -355,6 +373,19 @@ function StatementRow({ statement, ctx, note }: { statement: Statement; ctx: Row
           data-testid={`attention-${note.code}`}
         >
           {note.text}
+          {note.code === "sign_flip" && !reimportBlocked && mode === "idle" ? (
+            <>
+              {" "}
+              <button
+                type="button"
+                className="underline underline-offset-4"
+                onClick={() => open("reimport", true)}
+                aria-label={`Re-import ${name} with signs flipped`}
+              >
+                Re-import with signs flipped…
+              </button>
+            </>
+          ) : null}
         </p>
       ))}
       {!parsed && statement.error_detail ? (
@@ -391,6 +422,24 @@ function StatementRow({ statement, ctx, note }: { statement: Statement; ctx: Row
               Re-import…
             </Button>
           ) : null}
+          {parsed ? (
+            <Button asChild size="sm" variant="outline">
+              <Link to={`/spending/transactions?statement_id=${statement.id}&add=1`} aria-label={`Add a missing transaction to ${name}`}>
+                Add a missing transaction
+              </Link>
+            </Button>
+          ) : null}
+          {parsed ? (
+            <Button
+              ref={detailsBtn}
+              size="sm"
+              variant="outline"
+              onClick={() => open("details")}
+              aria-label={`Edit details of ${name}`}
+            >
+              Edit details…
+            </Button>
+          ) : null}
           {canChangePerson ? (
             <Button
               ref={personBtn}
@@ -417,6 +466,16 @@ function StatementRow({ statement, ctx, note }: { statement: Statement; ctx: Row
           statement={statement}
           specs={ctx.specs}
           llmConfigured={ctx.llmConfigured}
+          onClose={close}
+          suggestFlip={suggestFlip}
+        />
+      ) : null}
+      {mode === "details" ? (
+        <StatementDetailsPanel
+          statement={statement}
+          accounts={ctx.accounts}
+          issuers={ctx.issuers}
+          accountStatementCount={ctx.accountStatementCount(statement.account_id)}
           onClose={close}
         />
       ) : null}
@@ -535,6 +594,10 @@ export function ImportedStatementsPanel({
                 other.account_id === statement.account_id &&
                 periodsOverlap(statement, other),
             ),
+      accounts: accounts.data ?? [],
+      issuers: issuers.data ?? [],
+      accountStatementCount: (accountId) =>
+        accountId == null ? 0 : rows.filter((r) => r.account_id === accountId).length,
       defaultCurrency: settings.data?.ingest?.default_currency,
       onDeleted: () => document.getElementById("imported-statements-title")?.focus(),
     };
@@ -548,11 +611,11 @@ export function ImportedStatementsPanel({
   const visible = showAll ? rows : rows.slice(0, INITIAL_ROWS);
 
   return (
-    <Card data-testid="imported-statements-panel" role="region" aria-labelledby="imported-statements-title">
+    <Card id="imported-statements" data-testid="imported-statements-panel" role="region" aria-labelledby="imported-statements-title">
       <CardHeader>
         <CardTitle id="imported-statements-title" tabIndex={-1} className="outline-none focus-visible:ring-2 focus-visible:ring-ring">Imported statements</CardTitle>
         <CardDescription>
-          Re-import a statement from its PDF to fix how it was read, move it to another person, or delete it.
+          Re-import a statement from its PDF to fix how it was read, edit its period, currency or bank, add a missing transaction, move it to another person, or delete it.
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
