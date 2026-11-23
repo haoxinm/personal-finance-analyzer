@@ -484,6 +484,57 @@ def test_card_payment_from_checking_is_linked_and_excluded_from_spend(
     assert json.loads(payment_txn.notes) == {"transfer_pair_id": transfer_txn.id}
 
 
+def test_excluded_rows_are_not_paired_as_transfers(session: Session, tmp_path: Path) -> None:
+    user = _make_user(session)
+    credit_issuer = _make_issuer(session, "Visa Bank")
+    checking_issuer = _make_issuer(session, "Checking Bank")
+    credit_pdf = tmp_path / "credit.pdf"
+    _build_card_pdf(
+        credit_pdf,
+        [
+            ("01/10/2026", "GROCERY MART", "50.00"),
+            ("01/20/2026", "PAYMENT THANK YOU", "200.00 CR"),
+            ("01/22/2026", "RESTAURANT", "30.00"),
+        ],
+        closing="-120.00",
+    )
+    _propose_and_confirm(
+        session, credit_pdf, user_id=user.id, issuer_id=credit_issuer.id, original_name="c.pdf"
+    )
+    payment_txn = session.query(Transaction).filter_by(description_raw="PAYMENT THANK YOU").one()
+    payment_txn.excluded = True
+    session.commit()
+
+    checking_pdf = tmp_path / "checking.pdf"
+    _build_bank_pdf(
+        checking_pdf,
+        [
+            ("01/02/2026", "PAYCHECK DEPOSIT", "", "300.00", "1,300.00"),
+            ("01/03/2026", "ATM WITHDRAWAL", "40.00", "", "1,260.00"),
+            ("01/21/2026", "CRD PMT VISA", "200.00", "", "1,060.00"),
+            ("01/25/2026", "ONLINE SHOPPING", "60.00", "", "1,000.00"),
+        ],
+        opening="1,000.00",
+        closing="1,000.00",
+    )
+    proposal = pipeline.propose_import(
+        session, checking_pdf, user_id=user.id, original_name="checking.pdf"
+    )
+    pipeline.confirm_import(
+        session,
+        proposal.statement_id,
+        issuer_id=checking_issuer.id,
+        parser_id="generic_table",
+        layout_spec_id=None,
+        remember=False,
+    )
+    transfer_txn = session.query(Transaction).filter_by(description_raw="CRD PMT VISA").one()
+    assert transfer_txn.kind == "transfer"
+    assert transfer_txn.notes is None
+    session.refresh(payment_txn)
+    assert payment_txn.notes is None
+
+
 # --------------------------------------------------------------------------------------------
 # Unsupported layout
 # --------------------------------------------------------------------------------------------

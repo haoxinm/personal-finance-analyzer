@@ -71,6 +71,9 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    """Drops the added columns. Hand-added (manual) rows are kept: without ``source`` they
+    become ordinary rows (their ``manual:`` hash prefix remains), and a re-import will no longer
+    absorb them."""
     op.execute(
         sa.text(
             f"UPDATE statements SET parsed_total_minor = parsed_total_minor + {_DELTA_SQL} "

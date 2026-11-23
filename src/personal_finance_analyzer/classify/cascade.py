@@ -1463,7 +1463,13 @@ def _write_outcome(
         )
     ).scalar_one()
 
-    if outcome.kind_override is not None and outcome.kind_override != txn.kind:
+    # A hand-added row's kind is the user's own choice (or was resolved when it was added): a
+    # rule's kind override never rewrites it, same as a one-time edit stays final.
+    if (
+        outcome.kind_override is not None
+        and outcome.kind_override != txn.kind
+        and txn.source != "manual"
+    ):
         txn.kind = outcome.kind_override
         txn.is_spend = kind_is_spend(cast(Kind, outcome.kind_override))
 

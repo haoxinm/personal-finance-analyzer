@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -293,3 +294,165 @@ def test_manual_rows_are_in_export_and_analytics(
 
     only = client.get("/api/transactions", params={"source": "manual"}).json()
     assert only["total"] == 1
+
+
+def test_a_sign_flip_reparse_does_not_absorb_an_unrelated_hand_row(
+    client: TestClient, session: Session, tmp_path: Path
+) -> None:
+    """After the flip every rebuilt row has a new (date, amount); the hand-added lunch with the
+    same date and (flipped) amount as the coffee is not the coffee."""
+    negative = [(d, name, f"-{amount}") for d, name, amount in BASE_ROWS]
+    statement_id, *_ = import_card(session, tmp_path, "a", rows=negative, closing="-87.43")
+    add_manual(client, statement_id, date="2026-01-05", description="lunch", amount_minor=1234)
+
+    job = reparse_via_api(client, statement_id, flip_sign=True)
+    assert job["absorbed_manual"] == 0
+    assert [(t.description_clean, t.amount_minor) for t in _manual_rows(session)] == [
+        ("lunch", 1234)
+    ]
+    job = reparse_via_api(client, statement_id, flip_sign=False)
+    assert job["absorbed_manual"] == 0
+    assert len(_manual_rows(session)) == 1
+
+
+def test_a_reparse_that_changes_the_dates_does_not_absorb_an_unrelated_hand_row(
+    client: TestClient, session: Session, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dataclasses import replace
+
+    from personal_finance_analyzer.ingest import pipeline
+
+    statement_id, *_ = import_card(
+        session,
+        tmp_path,
+        "a",
+        rows=[(d.replace("2026", "2025"), n, a) for d, n, a in BASE_ROWS],
+        period="Statement Period: 01/01/2025 to 01/31/2025",
+    )
+    add_manual(client, statement_id, date="2026-01-05", description="lunch", amount_minor=1234)
+
+    real_resolve = pipeline._resolve_parser
+
+    class _YearShifted:
+        def __init__(self, inner: object) -> None:
+            self._inner = inner
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(self._inner, name)
+
+        def parse(self, doc: object) -> object:
+            parsed = self._inner.parse(doc)  # type: ignore[attr-defined]
+            return replace(
+                parsed,
+                transactions=tuple(
+                    replace(t, posted_date=t.posted_date.replace(year=2026))
+                    for t in parsed.transactions
+                ),
+            )
+
+    monkeypatch.setattr(
+        pipeline, "_resolve_parser", lambda *a, **k: _YearShifted(real_resolve(*a, **k))
+    )
+    job = reparse_via_api(client, statement_id)
+    assert job["absorbed_manual"] == 0
+    assert len(_manual_rows(session)) == 1
+    assert rows_of(session, statement_id)["COFFEE SHOP"].posted_date == "2026-01-05"
+
+
+def test_a_manual_rows_kind_is_not_overridden_by_a_rule_kind_override(
+    client: TestClient, session: Session, tmp_path: Path
+) -> None:
+    from personal_finance_analyzer.api.services import crud
+
+    statement_id, *_ = import_card(session, tmp_path, "a")
+    category = crud.category_by_key(session, "fuel")
+    assert category is not None
+    sub = crud.subcategory_by_key(session, category.id, "gasoline")
+    assert sub is not None
+    session.add(
+        Rule(
+            source="user",
+            enabled=True,
+            priority=1,
+            match_type="contains",
+            pattern="zzqx",
+            category_id=category.id,
+            subcategory_id=sub.id,
+            kind_override="refund",
+            user_id=None,
+        )
+    )
+    session.commit()
+    body = add_manual(client, statement_id, kind="purchase")
+    assert body["kind"] == "purchase"
+    assert _manual_rows(session)[0].kind == "purchase"
+
+
+def test_reassign_sets_the_target_currency_on_moved_and_manual_rows(
+    client: TestClient, session: Session, tmp_path: Path
+) -> None:
+    statement_id, user, issuer, _ = import_card(session, tmp_path, "a")
+    add_manual(client, statement_id)
+    target = Account(
+        user_id=user.id,
+        issuer_id=issuer.id,
+        account_type="credit",
+        display_name="Euro card",
+        mask="9999",
+        currency="EUR",
+    )
+    session.add(target)
+    session.commit()
+    response = client.patch(f"/api/statements/{statement_id}", json={"account_id": target.id})
+    assert response.status_code == 200, response.text
+    session.expire_all()
+    rows = session.scalars(select(Transaction).where(Transaction.statement_id == statement_id))
+    assert {t.currency for t in rows} == {"EUR"}
+
+
+def test_a_period_change_with_the_current_owner_applies_the_period(
+    client: TestClient, session: Session, tmp_path: Path
+) -> None:
+    statement_id, user, *_ = import_card(session, tmp_path, "a")
+    response = client.patch(
+        f"/api/statements/{statement_id}",
+        json={"user_id": user.id, "period_start": "2026-01-02", "period_end": "2026-02-01"},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["period_corrected"] is True
+    assert (
+        client.patch(f"/api/statements/{statement_id}", json={"user_id": user.id}).status_code
+        == 400
+    )
+
+
+def test_a_reparse_that_resolves_another_account_moves_the_manual_rows(
+    client: TestClient, session: Session, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dataclasses import replace
+
+    from personal_finance_analyzer.ingest import pipeline
+
+    statement_id, *_ = import_card(session, tmp_path, "a")
+    add_manual(client, statement_id)
+    real_resolve = pipeline._resolve_parser
+
+    class _OtherMask:
+        def __init__(self, inner: object) -> None:
+            self._inner = inner
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(self._inner, name)
+
+        def parse(self, doc: object) -> object:
+            parsed = self._inner.parse(doc)  # type: ignore[attr-defined]
+            return replace(parsed, account_hint=replace(parsed.account_hint, mask="7777"))
+
+    monkeypatch.setattr(
+        pipeline, "_resolve_parser", lambda *a, **k: _OtherMask(real_resolve(*a, **k))
+    )
+    reparse_via_api(client, statement_id)
+    new_account_id = statement_of(session, statement_id).account_id
+    manual = _manual_rows(session)[0]
+    assert manual.account_id == new_account_id
+    assert {t.account_id for t in rows_of(session, statement_id).values()} == {new_account_id}

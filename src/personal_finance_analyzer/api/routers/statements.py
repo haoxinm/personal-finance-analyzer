@@ -305,14 +305,16 @@ def patch_statement(
         if body.user_id is not None and body.user_id != account.user_id:
             raise HTTPException(status_code=400, detail="that account belongs to someone else")
         user_id = account.user_id
-        if body.account_id == statement.account_id and user_id == owner:
+        no_move = body.account_id == statement.account_id and user_id == owner
+        if no_move and not changes_period:
             raise HTTPException(status_code=400, detail="nothing to change")
         # `reassign` (§3.5) recomputes `dedupe_hash` for every one of this statement's rows and
         # updates `statement.account_id` itself; a plain CRUD field write would race it and could
         # set an account_id its own dedupe recompute never ran against.
-        rows_moved, duplicates_deleted = gateway.reassign(
-            session, statement_id, user_id=user_id, account_id=body.account_id
-        )
+        if not no_move:
+            rows_moved, duplicates_deleted = gateway.reassign(
+                session, statement_id, user_id=user_id, account_id=body.account_id
+            )
     elif body.issuer_id is not None:
         if session.get(Issuer, body.issuer_id) is None:
             raise HTTPException(status_code=404, detail="issuer not found")
@@ -325,22 +327,27 @@ def patch_statement(
             )
         current = session.get(Account, statement.account_id)
         target_user = body.user_id if body.user_id is not None else owner
-        if current is not None and current.issuer_id == body.issuer_id and target_user == owner:
+        no_move = (
+            current is not None and current.issuer_id == body.issuer_id and target_user == owner
+        )
+        if no_move and not changes_period:
             raise HTTPException(status_code=400, detail="nothing to change")
-        assert target_user is not None
-        target = gateway.resolve_account_for_move(
-            session, statement_id, user_id=target_user, issuer_id=body.issuer_id
-        )
-        rows_moved, duplicates_deleted = gateway.reassign(
-            session, statement_id, user_id=target_user, account_id=target.id
-        )
-        statement.issuer_id = body.issuer_id
+        if not no_move:
+            assert target_user is not None
+            target = gateway.resolve_account_for_move(
+                session, statement_id, user_id=target_user, issuer_id=body.issuer_id
+            )
+            rows_moved, duplicates_deleted = gateway.reassign(
+                session, statement_id, user_id=target_user, account_id=target.id
+            )
+            statement.issuer_id = body.issuer_id
     elif body.user_id is not None:
         if session.get(User, body.user_id) is None:
             raise HTTPException(status_code=404, detail="user not found")
         if body.user_id == owner:
-            raise HTTPException(status_code=400, detail="the statement already belongs to them")
-        if statement.account_id is None:
+            if not changes_period:
+                raise HTTPException(status_code=400, detail="the statement already belongs to them")
+        elif statement.account_id is None:
             statement.user_id = body.user_id  # not imported yet: it is imported for them
         else:
             target = gateway.resolve_account_for_move(session, statement_id, user_id=body.user_id)

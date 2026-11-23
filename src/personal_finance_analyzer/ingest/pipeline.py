@@ -1149,6 +1149,8 @@ def _absorb_manual_rows(
     account_id: int,
     baseline: Counter[tuple[str, int]],
     new_ids: Sequence[int],
+    *,
+    budget: int | None = None,
 ) -> int:
     """Merge hand-added rows into the parsed rows an import just found for them.
 
@@ -1159,7 +1161,9 @@ def _absorb_manual_rows(
     move over (the bank's description and amount win) and the manual row is deleted. Counting
     finds rather than looking for "any matching row" keeps a re-import that merely re-finds an
     existing coffee from swallowing the second coffee the user added by hand. Returns the number
-    absorbed. Flushes, does not commit."""
+    absorbed. ``budget`` caps the total absorbed (a reparse passes how many more rows the
+    statement now has than before: a rebuild that merely moved rows, e.g. a corrected year, finds
+    nothing new). Flushes, does not commit."""
     manual = _active_manual_rows(session, account_id)
     if not manual or not new_ids:
         return 0
@@ -1177,6 +1181,8 @@ def _absorb_manual_rows(
     absorbed = 0
     for key, rows in groups.items():
         found_new = after.get(key, 0) - baseline.get(key, 0)
+        if budget is not None:
+            found_new = min(found_new, budget - absorbed)
         if found_new <= 0:
             continue
         candidates = [
@@ -1402,7 +1408,9 @@ def _pair_transfers(
     transfers = (
         session.execute(
             select(Transaction).where(
-                Transaction.id.in_(inserted_ids), Transaction.kind == "transfer"
+                Transaction.id.in_(inserted_ids),
+                Transaction.kind == "transfer",
+                Transaction.excluded.is_(False),
             )
         )
         .scalars()
@@ -1436,6 +1444,7 @@ def _pair_transfers(
                     Transaction.posted_date <= window_end,
                     Transaction.notes.is_(None),
                     Transaction.source == "parsed",
+                    Transaction.excluded.is_(False),
                 )
             )
             .scalars()
@@ -1566,6 +1575,16 @@ def reparse(
         discarded = len(kept_edits)
         kept_edits = []
     baseline = _manual_baseline(session, account.id)
+    if baseline:
+        # Like with like: this statement's own previous rows are about to be rebuilt, possibly
+        # under another sign; express them as the new parse will (so they cancel against it).
+        for posted, amount in session.execute(
+            select(Transaction.posted_date, Transaction.amount_minor).where(
+                Transaction.statement_id == statement.id, Transaction.source == "parsed"
+            )
+        ):
+            baseline[(posted, amount)] -= 1
+            baseline[(posted, -amount if new_flip != statement.flip_sign else amount)] += 1
     session.execute(
         delete(Transaction).where(
             Transaction.statement_id == statement.id, Transaction.source == "parsed"
@@ -1589,8 +1608,35 @@ def reparse(
     )
     restored, unmatched = _restore_user_edits(session, statement.id, account.id, kept_edits)
     absorbed = 0
-    if statement.account_id == account.id:
-        absorbed = _absorb_manual_rows(session, account.id, baseline, result.transaction_ids)
+    if statement.account_id != account.id and statement.account_id is not None:
+        # The new parse resolved another account: the hand-added rows follow the statement.
+        new_account = session.get(Account, statement.account_id)
+        if new_account is not None:
+            for manual_row in session.execute(
+                select(Transaction).where(
+                    Transaction.statement_id == statement.id, Transaction.source == "manual"
+                )
+            ).scalars():
+                manual_row.account_id = new_account.id
+                manual_row.user_id = new_account.user_id
+                manual_row.currency = new_account.currency
+            session.flush()
+    elif statement.account_id == account.id:
+        new_count = (
+            session.scalar(
+                select(func.count())
+                .select_from(Transaction)
+                .where(Transaction.statement_id == statement.id, Transaction.source == "parsed")
+            )
+            or 0
+        )
+        absorbed = _absorb_manual_rows(
+            session,
+            account.id,
+            baseline,
+            result.transaction_ids,
+            budget=max(0, new_count - previous_txn_count),
+        )
     if unmatched:
         logger.warning(
             "reparse of statement %s dropped %d hand edit(s) it could not match to a rebuilt row",
@@ -1926,10 +1972,13 @@ def reassign(
     # Hand-added rows move with the statement as they are (their hash has no account part and
     # never collides); only the parsed rows are re-hashed and merged.
     transactions = [t for t in all_rows if t.source == "parsed"]
+    target_account = session.get(Account, account_id)
     for manual_row in all_rows:
         if manual_row.source == "manual":
             manual_row.account_id = account_id
             manual_row.user_id = user_id
+            if target_account is not None:
+                manual_row.currency = target_account.currency
     keys = [
         DedupeKey(
             account_id=account_id,
@@ -1983,6 +2032,8 @@ def reassign(
             continue
         txn.account_id = account_id
         txn.user_id = user_id
+        if target_account is not None:
+            txn.currency = target_account.currency
         txn.dedupe_hash = new_hash
         rows_moved += 1
 
