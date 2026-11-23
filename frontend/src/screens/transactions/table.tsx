@@ -5,7 +5,7 @@ import { cn } from "@/utils";
 
 import { createColumns, type ColumnsContext } from "./columns";
 import { nextSort } from "./use-grid-params";
-import type { Transaction } from "./types";
+import { isExcluded, type Transaction } from "./types";
 import { useVirtualRows } from "./use-virtual-rows";
 
 const ROW_HEIGHT = 44;
@@ -175,6 +175,7 @@ export function TransactionsTable({
               className={cn(
                 "flex cursor-pointer items-center border-b border-border/60 text-sm hover:bg-muted/40",
                 context.selectedIds.has(row.original.id) && "bg-primary/5",
+                isExcluded(row.original) && "text-muted-foreground opacity-70",
               )}
               style={{ height: ROW_HEIGHT }}
               onClick={() => onRowClick?.(row.original)}

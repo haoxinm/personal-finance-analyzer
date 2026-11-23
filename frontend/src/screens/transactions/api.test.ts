@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { toTransactionsQuery } from "./api";
+import { ApiError } from "@/api/client";
+
+import { isParsedRowError, toTransactionsQuery } from "./api";
 
 describe("toTransactionsQuery", () => {
   it("maps the SpendQueryParams subset onto GET /transactions's own query names", () => {
@@ -65,6 +67,27 @@ describe("toTransactionsQuery grid filters", () => {
       conflict: true,
     });
     expect(toTransactionsQuery({}, { sort: "-posted_date" }).conflict).toBeUndefined();
+  });
+});
+
+describe("excluded and source filters", () => {
+  it("passes excluded and source through, and leaves them out by default", () => {
+    expect(
+      toTransactionsQuery({}, { excluded: "only", source: "manual", sort: "-posted_date" }),
+    ).toMatchObject({ excluded: "only", source: "manual" });
+    const plain = toTransactionsQuery({}, { sort: "-posted_date" });
+    expect(plain.excluded).toBeUndefined();
+    expect(plain.source).toBeUndefined();
+    expect(toTransactionsQuery({})).not.toHaveProperty("excluded");
+  });
+});
+
+describe("isParsedRowError", () => {
+  it("recognises the 409 parsed_row detail and nothing else", () => {
+    expect(isParsedRowError(new ApiError("x", { code: "parsed_row", message: "x" }))).toBe(true);
+    expect(isParsedRowError(new ApiError("x", "plain string"))).toBe(false);
+    expect(isParsedRowError(new ApiError("x", { code: "other" }))).toBe(false);
+    expect(isParsedRowError(new Error("x"))).toBe(false);
   });
 });
 

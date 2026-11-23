@@ -2,10 +2,12 @@ import type { ColumnDef } from "@tanstack/react-table";
 
 import { CategoryBadge } from "@/components/primitives/category-badge";
 import { Money } from "@/components/primitives/money";
+import { cn } from "@/utils";
 
 import { CorrectedMark } from "./corrected-mark";
 import { ConflictMarker } from "./conflict-marker";
-import type { Category, Transaction } from "./types";
+import { ManualMark } from "./manual-mark";
+import { isExcluded, isManual, type Category, type Transaction } from "./types";
 
 declare module "@tanstack/react-table" {
   // Merging into `ColumnMeta` requires matching its own type parameter names exactly (TS2428),
@@ -98,9 +100,20 @@ export function createColumns(context: ColumnsContext): ColumnDef<Transaction>[]
             context.onEdit(row.original);
           }}
         >
-          <span className="block truncate" title={row.original.description_clean}>
-            {row.original.description_clean}
-            {row.original.corrections?.description_clean != null ? <CorrectedMark /> : null}
+          <span className="flex min-w-0 items-center">
+            <span
+              className={cn("block truncate", isExcluded(row.original) && "line-through")}
+              title={row.original.description_clean}
+            >
+              {row.original.description_clean}
+              {row.original.corrections?.description_clean != null ? <CorrectedMark /> : null}
+              {isManual(row.original) ? <ManualMark /> : null}
+            </span>
+            {isExcluded(row.original) ? (
+              <span className="ml-2 shrink-0 rounded border border-border px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                Excluded
+              </span>
+            ) : null}
           </span>
         </button>
       ),
@@ -168,7 +181,7 @@ export function createColumns(context: ColumnsContext): ColumnDef<Transaction>[]
       id: "amount",
       header: "Amount",
       cell: ({ row }) => (
-        <span className="whitespace-nowrap">
+        <span className={cn("whitespace-nowrap", isExcluded(row.original) && "line-through")}>
           <Money minorUnits={row.original.amount_minor} currency={row.original.currency} />
           {row.original.corrections?.amount_minor != null ? <CorrectedMark /> : null}
         </span>

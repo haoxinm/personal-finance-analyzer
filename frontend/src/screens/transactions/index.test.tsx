@@ -793,4 +793,201 @@ describe("TransactionsScreen", () => {
       await waitFor(() => expect(screen.queryByText("2 selected")).not.toBeInTheDocument());
     });
   });
+
+  describe("exclude, add and delete", () => {
+    const MANUAL = { ...TRANSACTIONS[0], source: "manual", excluded: false };
+    const errorResponse = (body: unknown, status: number) =>
+      new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+
+    function routes(extra: (request: Request) => Response | undefined = () => undefined, items: unknown[] = TRANSACTIONS) {
+      return (request: Request) => {
+        const url = new URL(request.url);
+        const custom = extra(request);
+        if (custom) return custom;
+        if (url.pathname === "/api/taxonomy") return jsonResponse(CATEGORIES);
+        if (request.method === "GET" && url.pathname === "/api/transactions") {
+          return jsonResponse({ items, total: items.length });
+        }
+        if (url.pathname === "/api/statements") return jsonResponse([]);
+        if (url.pathname === "/api/accounts" || url.pathname === "/api/issuers") return jsonResponse([]);
+        throw new Error(`unexpected fetch: ${request.method} ${request.url}`);
+      };
+    }
+
+    it("excludes the selection and Undo sends back exactly changed_ids, negated", async () => {
+      const user = userEvent.setup();
+      const fetchMock = await mountWithFetch(
+        routes((request) => {
+          const url = new URL(request.url);
+          if (request.method === "POST" && url.pathname === "/api/transactions/bulk-exclude") {
+            // Only row 2 actually changed (row 1 already was excluded), on the exclude and on the undo.
+            return jsonResponse({ updated: 1, changed_ids: [2] });
+          }
+          return undefined;
+        }),
+      );
+      await screen.findByText("Corner Store");
+      await user.click(screen.getByRole("checkbox", { name: "Select transaction 1" }));
+      await user.click(screen.getByRole("checkbox", { name: "Select transaction 2" }));
+      await user.click(screen.getByRole("button", { name: "Exclude" }));
+
+      await waitFor(() => expect(callsTo(fetchMock, "POST", "/api/transactions/bulk-exclude")).toHaveLength(1));
+      expect(await callsTo(fetchMock, "POST", "/api/transactions/bulk-exclude")[0]!.clone().json()).toEqual({
+        transaction_ids: [1, 2],
+        excluded: true,
+      });
+      expect(await screen.findByText("Excluded 1 transaction")).toBeInTheDocument();
+      expect(screen.getByText(/1 was already excluded or no longer exists/)).toBeInTheDocument();
+
+      await user.click(screen.getByRole("button", { name: "Undo" }));
+      await waitFor(() => expect(callsTo(fetchMock, "POST", "/api/transactions/bulk-exclude")).toHaveLength(2));
+      expect(await callsTo(fetchMock, "POST", "/api/transactions/bulk-exclude")[1]!.clone().json()).toEqual({
+        transaction_ids: [2],
+        excluded: false,
+      });
+      expect(await screen.findByText("Undone")).toBeInTheDocument();
+    });
+
+    it("says so when nothing changed, and offers no Undo", async () => {
+      const user = userEvent.setup();
+      await mountWithFetch(
+        routes((request) =>
+          request.method === "POST" && request.url.includes("/bulk-exclude")
+            ? jsonResponse({ updated: 0, changed_ids: [] })
+            : undefined,
+        ),
+      );
+      await screen.findByText("Corner Store");
+      await user.click(screen.getByRole("checkbox", { name: "Select transaction 1" }));
+      await user.click(screen.getByRole("button", { name: "Include again" }));
+      expect(await screen.findByText("Nothing to include")).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Undo" })).not.toBeInTheDocument();
+    });
+
+    it("reports a failed bulk exclude and keeps the selection", async () => {
+      const user = userEvent.setup();
+      await mountWithFetch(
+        routes((request) =>
+          request.method === "POST" && request.url.includes("/bulk-exclude")
+            ? errorResponse({ detail: "boom" }, 500)
+            : undefined,
+        ),
+      );
+      await screen.findByText("Corner Store");
+      await user.click(screen.getByRole("checkbox", { name: "Select transaction 1" }));
+      await user.click(screen.getByRole("button", { name: "Exclude" }));
+      expect(await screen.findByText("Could not exclude")).toBeInTheDocument();
+      expect(screen.getByText("1 selected")).toBeInTheDocument();
+    });
+
+    it("asks the server for excluded rows only when the filter says so", async () => {
+      const fetchMock = await mountWithFetch(routes(), "/spending/transactions?excluded=only&source=manual");
+      await screen.findByText("Corner Store");
+      const url = new URL(callsTo(fetchMock, "GET", "/api/transactions")[0]!.url);
+      expect(url.searchParams.get("excluded")).toBe("only");
+      expect(url.searchParams.get("source")).toBe("manual");
+    });
+
+    it("opens the Add dialog preset to the statement for ?statement_id=1&add=1", async () => {
+      const fetchMock = await mountWithFetch(
+        routes((request) =>
+          new URL(request.url).pathname === "/api/statements"
+            ? jsonResponse([
+                {
+                  id: 1,
+                  user_id: 1,
+                  account_id: null,
+                  status: "parsed",
+                  period_start: "2026-01-01",
+                  period_end: "2026-01-31",
+                  original_name: "jan.pdf",
+                  created_at: "2026-02-01T00:00:00Z",
+                },
+                { id: 4, user_id: 1, account_id: null, status: "parsed", original_name: "other.pdf", created_at: "2026-02-01T00:00:00Z" },
+              ])
+            : undefined,
+        ),
+        "/spending/transactions?statement_id=1&add=1",
+      );
+      const dialog = await screen.findByRole("dialog", { name: "Add transaction" });
+      await waitFor(() => expect(within(dialog).getByLabelText("Statement")).toHaveValue("1"));
+      // The grid is still filtered to the statement, and `add` is a one-shot: closing leaves it closed.
+      await waitFor(() => {
+        const last = callsTo(fetchMock, "GET", "/api/transactions").at(-1)!;
+        expect(new URL(last.url).searchParams.get("statement_id")).toBe("1");
+      });
+      await userEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+      await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    });
+
+    it("opens the Add dialog from the header button", async () => {
+      await mountWithFetch(routes());
+      await screen.findByText("Corner Store");
+      await userEvent.click(screen.getByRole("button", { name: "Add transaction…" }));
+      expect(await screen.findByRole("dialog", { name: "Add transaction" })).toBeInTheDocument();
+    });
+
+    it("excludes the edited row from the editor, with an Undo that includes it again", async () => {
+      const user = userEvent.setup();
+      const fetchMock = await mountWithFetch(
+        routes((request) =>
+          request.method === "PATCH" ? jsonResponse({ ...TRANSACTIONS[0], excluded: true }) : undefined,
+        ),
+      );
+      await screen.findByText("Corner Store");
+      await user.click(screen.getByRole("button", { name: "Edit Corner Store" }));
+      const dialog = await screen.findByRole("dialog", { name: "Edit transaction" });
+      await user.click(within(dialog).getByRole("button", { name: "Exclude from totals" }));
+      await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+      let body = (await callsTo(fetchMock, "PATCH", "/api/transactions/1")[0]!.clone().json()) as Record<string, unknown>;
+      expect(body.excluded).toBe(true);
+      await user.click(await screen.findByRole("button", { name: "Undo" }));
+      await waitFor(() => expect(callsTo(fetchMock, "PATCH", "/api/transactions/1")).toHaveLength(2));
+      body = (await callsTo(fetchMock, "PATCH", "/api/transactions/1")[1]!.clone().json()) as Record<string, unknown>;
+      expect(body.excluded).toBe(false);
+    });
+
+    it("deletes a hand-added row after confirming", async () => {
+      const user = userEvent.setup();
+      const fetchMock = await mountWithFetch(
+        routes(
+          (request) => (request.method === "DELETE" ? new Response(null, { status: 204 }) : undefined),
+          [MANUAL],
+        ),
+      );
+      await screen.findByText("Corner Store");
+      await user.click(screen.getByRole("button", { name: "Edit Corner Store" }));
+      const dialog = await screen.findByRole("dialog", { name: "Edit transaction" });
+      await user.click(within(dialog).getByRole("button", { name: "Delete…" }));
+      await user.click(within(dialog).getByRole("button", { name: "Delete transaction" }));
+      await waitFor(() => expect(callsTo(fetchMock, "DELETE", "/api/transactions/1")).toHaveLength(1));
+      expect(await screen.findByText("Transaction deleted")).toBeInTheDocument();
+      await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    });
+
+    it("suggests excluding when the server refuses to delete a parsed row (409 parsed_row)", async () => {
+      const user = userEvent.setup();
+      await mountWithFetch(
+        routes(
+          (request) =>
+            request.method === "DELETE"
+              ? errorResponse(
+                  { detail: { code: "parsed_row", message: "Rows read from the statement can't be deleted." } },
+                  409,
+                )
+              : undefined,
+          // Stale view: the grid still thinks it is hand-added.
+          [MANUAL],
+        ),
+      );
+      await screen.findByText("Corner Store");
+      await user.click(screen.getByRole("button", { name: "Edit Corner Store" }));
+      const dialog = await screen.findByRole("dialog", { name: "Edit transaction" });
+      await user.click(within(dialog).getByRole("button", { name: "Delete…" }));
+      await user.click(within(dialog).getByRole("button", { name: "Delete transaction" }));
+      expect(await within(dialog).findByRole("alert")).toHaveTextContent(/Exclude from totals/);
+      // The dialog stays open so the user can do exactly that.
+      expect(within(dialog).getByRole("button", { name: "Exclude from totals" })).toBeInTheDocument();
+    });
+  });
 });

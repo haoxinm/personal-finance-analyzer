@@ -1,5 +1,7 @@
+import * as React from "react";
 import { useQuery } from "@tanstack/react-query";
 
+import { useStatements } from "@/api/hooks";
 import { apiClient, throwIfError } from "@/api/client";
 
 /** The subset of `SpendQuery` (§3.9) every dashboard chart shares: who, when, and which
@@ -123,4 +125,41 @@ export function useTopMerchants(filters: DashboardFilters, limit = 8, enabled = 
       return data ?? [];
     },
   });
+}
+
+export interface ImportAttention {
+  /** Parsed statements carrying an attention flag (reconciliation mismatch, no rows, ...). */
+  statements: number;
+  /** Files in the watched folder that failed or are not in a folder the app imports from. */
+  folderProblems: number;
+  total: number;
+}
+
+/**
+ * What on the Import page needs a look, for the Overview's hint: statements the server flags
+ * (`attention`) plus folder-import problems. Quiet by design: a failed lookup counts as zero,
+ * the hint is a nudge and must never turn the Overview into an error screen.
+ */
+export function useImportAttention(userId?: number, enabled = true) {
+  const statements = useStatements(userId);
+  const problems = useQuery({
+    enabled,
+    queryKey: ["dashboard", "watch-problems"],
+    queryFn: async () => {
+      const { data, error } = await apiClient.GET("/watch/files", {
+        params: { query: { view: "problems", limit: 1 } },
+      });
+      throwIfError(error);
+      return data?.total ?? 0;
+    },
+    refetchInterval: 60_000,
+  });
+  const attention: ImportAttention = React.useMemo(() => {
+    const flagged = (statements.data ?? []).filter(
+      (statement) => statement.status === "parsed" && (statement.attention ?? []).length > 0,
+    ).length;
+    const folder = problems.data ?? 0;
+    return { statements: flagged, folderProblems: folder, total: flagged + folder };
+  }, [statements.data, problems.data]);
+  return { ...attention, isLoading: statements.isLoading || problems.isLoading };
 }

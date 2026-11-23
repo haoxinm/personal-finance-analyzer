@@ -50,6 +50,8 @@ function wrapper({ children }: { children: React.ReactNode }) {
 type Route =
   | "/users"
   | "/accounts"
+  | "/statements"
+  | "/watch/files"
   | "/taxonomy"
   | "/analytics/summary"
   | "/analytics/timeseries"
@@ -249,6 +251,52 @@ describe("DashboardScreen", () => {
       mockGet(DATA);
       render(<DashboardScreen />, { wrapper });
       expect(await screen.findByTestId("trend-line")).toBeInTheDocument();
+    });
+  });
+
+  describe("import attention hint", () => {
+    const base = { "/users": [{ id: 1, name: "Alex", is_default: true }] };
+
+    it("shows no hint when nothing needs attention", async () => {
+      mockGet({ ...base, "/statements": [{ id: 1, status: "parsed", attention: [] }], "/watch/files": { items: [], total: 0 } });
+      render(<DashboardScreen />, { wrapper });
+      await screen.findByText("No data yet");
+      expect(screen.queryByTestId("attention-hint")).not.toBeInTheDocument();
+    });
+
+    it("counts flagged parsed statements and folder problems, and links to Import", async () => {
+      mockGet({
+        ...base,
+        "/statements": [
+          { id: 1, status: "parsed", attention: ["reconciliation_mismatch"] },
+          { id: 2, status: "parsed", attention: [] },
+          { id: 3, status: "error", attention: ["pdf_missing"] },
+        ],
+        "/watch/files": { items: [], total: 2 },
+      });
+      render(<DashboardScreen />, { wrapper });
+      expect(await screen.findByRole("link", { name: "1 statement needs attention" })).toHaveAttribute(
+        "href",
+        "/spending/import#imported-statements",
+      );
+      expect(screen.getByRole("link", { name: "2 folder files could not be imported" })).toHaveAttribute(
+        "href",
+        "/spending/import#folder-imports",
+      );
+    });
+
+    it("stays quiet, not an error screen, when the lookups fail", async () => {
+      (apiClient.GET as ReturnType<typeof vi.fn>).mockImplementation((path: string) =>
+        path === "/statements" || path === "/watch/files"
+          ? Promise.resolve({ data: undefined, error: { detail: "down" } })
+          : Promise.resolve({
+              data: path === "/users" ? [{ id: 1, name: "Alex", is_default: true }] : [],
+              error: undefined,
+            }),
+      );
+      render(<DashboardScreen />, { wrapper });
+      await screen.findByText("No data yet");
+      expect(screen.queryByTestId("attention-hint")).not.toBeInTheDocument();
     });
   });
 });

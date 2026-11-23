@@ -160,4 +160,29 @@ describe("TransactionsTable column layout", () => {
     expect(table).toHaveStyle({ minWidth: "920px" });
     expect(table.parentElement?.className).toContain("overflow-x-auto");
   });
+
+  it("marks hand-added rows and shows excluded rows muted and struck through", () => {
+    render(
+      <TransactionsTable
+        rows={[
+          { ...TRANSACTIONS[0]!, id: 2, description_clean: "MY COFFEE", source: "manual" },
+          { ...TRANSACTIONS[0]!, id: 3, description_clean: "DUP LINE", excluded: true },
+          TRANSACTIONS[0]!,
+        ]}
+        context={{ categories: CATEGORIES, selectedIds: new Set(), onToggleRow: noop, onEdit: noop }}
+      />,
+    );
+    const manualRow = screen.getByRole("button", { name: "Edit MY COFFEE" }).closest("[role=row]")!;
+    expect(within(manualRow as HTMLElement).getByText("added by you")).toBeInTheDocument();
+    expect(within(manualRow as HTMLElement).queryByText("Excluded")).not.toBeInTheDocument();
+
+    const excludedRow = screen.getByRole("button", { name: "Edit DUP LINE" }).closest("[role=row]") as HTMLElement;
+    expect(within(excludedRow).getByText("Excluded")).toBeInTheDocument();
+    expect(excludedRow.className).toContain("text-muted-foreground");
+    expect(screen.getByTitle("DUP LINE").className).toContain("line-through");
+
+    const plainRow = screen.getByRole("button", { name: "Edit GARDEN CENTER" }).closest("[role=row]") as HTMLElement;
+    expect(within(plainRow).queryByText("Excluded")).not.toBeInTheDocument();
+    expect(within(plainRow).queryByText("added by you")).not.toBeInTheDocument();
+  });
 });

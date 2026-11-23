@@ -198,3 +198,50 @@ describe("FiltersBar", () => {
     expect(screen.queryByLabelText("Account")).not.toBeInTheDocument();
   });
 });
+
+describe("FiltersBar excluded rows and hand-added rows", () => {
+  it("defaults to hiding excluded rows and sets only/include through the grid params", async () => {
+    const onGridChange = vi.fn();
+    render(<Bar filters={baseFilters()} onChange={vi.fn()} onGridChange={onGridChange} />);
+    const select = screen.getByLabelText("Excluded rows");
+    expect(select).toHaveValue("hide");
+    expect(screen.queryByText("Clear filters")).not.toBeInTheDocument();
+    await userEvent.selectOptions(select, "only");
+    expect(onGridChange).toHaveBeenLastCalledWith({ excluded: "only" });
+    await userEvent.selectOptions(select, "include");
+    expect(onGridChange).toHaveBeenLastCalledWith({ excluded: "include" });
+  });
+
+  it("goes back to the default with undefined, and counts as an active filter", async () => {
+    const onGridChange = vi.fn();
+    render(
+      <Bar
+        filters={baseFilters()}
+        onChange={vi.fn()}
+        onGridChange={onGridChange}
+        grid={{ sort: DEFAULT_SORT, excluded: "include" }}
+      />,
+    );
+    expect(screen.getByText("Clear filters")).toBeInTheDocument();
+    await userEvent.selectOptions(screen.getByLabelText("Excluded rows"), "hide");
+    expect(onGridChange).toHaveBeenLastCalledWith({ excluded: undefined });
+  });
+
+  it("toggles the Added by hand chip", async () => {
+    const onGridChange = vi.fn();
+    const { rerender } = render(<Bar filters={baseFilters()} onChange={vi.fn()} onGridChange={onGridChange} />);
+    await userEvent.click(screen.getByRole("button", { name: "Added by hand" }));
+    expect(onGridChange).toHaveBeenLastCalledWith({ source: "manual" });
+    rerender(
+      <Bar
+        filters={baseFilters()}
+        onChange={vi.fn()}
+        onGridChange={onGridChange}
+        grid={{ sort: DEFAULT_SORT, source: "manual" }}
+      />,
+    );
+    expect(screen.getByRole("button", { name: "Added by hand" })).toHaveAttribute("aria-pressed", "true");
+    await userEvent.click(screen.getByRole("button", { name: "Added by hand" }));
+    expect(onGridChange).toHaveBeenLastCalledWith({ source: undefined });
+  });
+});

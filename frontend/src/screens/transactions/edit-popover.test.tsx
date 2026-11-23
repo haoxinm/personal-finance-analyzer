@@ -484,3 +484,82 @@ describe("EditPopover details", () => {
     expect(save()).toBeEnabled();
   });
 });
+
+describe("EditPopover exclusion and deletion", () => {
+  function setupWith(
+    transaction: Transaction,
+    handlers: { onToggleExcluded?: () => void; onDelete?: () => void; saveError?: string } = {},
+  ) {
+    render(
+      <EditPopover
+        transaction={transaction}
+        categories={CATEGORIES}
+        onSave={vi.fn()}
+        onClose={vi.fn()}
+        {...handlers}
+      />,
+    );
+  }
+
+  it("offers Exclude from totals with help text, and Include again for an excluded row", async () => {
+    const onToggleExcluded = vi.fn();
+    const { unmount } = render(
+      <EditPopover
+        transaction={makeTransaction()}
+        categories={CATEGORIES}
+        onSave={vi.fn()}
+        onClose={vi.fn()}
+        onToggleExcluded={onToggleExcluded}
+      />,
+    );
+    expect(screen.getByTestId("inclusion-section")).toHaveTextContent(/out of every total/);
+    await userEvent.click(screen.getByRole("button", { name: "Exclude from totals" }));
+    expect(onToggleExcluded).toHaveBeenCalledTimes(1);
+    unmount();
+
+    setupWith(makeTransaction({ excluded: true }), { onToggleExcluded });
+    expect(screen.getByText("Excluded from totals")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Include again" }));
+    expect(onToggleExcluded).toHaveBeenCalledTimes(2);
+  });
+
+  it("never offers Delete for a row read from the statement", () => {
+    setupWith(makeTransaction(), { onDelete: vi.fn(), onToggleExcluded: vi.fn() });
+    expect(screen.queryByRole("button", { name: "Delete…" })).not.toBeInTheDocument();
+  });
+
+  it("asks before deleting a hand-added row, and Keep it backs out", async () => {
+    const onDelete = vi.fn();
+    setupWith(makeTransaction({ source: "manual" }), { onDelete });
+    await userEvent.click(screen.getByRole("button", { name: "Delete…" }));
+    expect(screen.getByRole("alertdialog", { name: "Delete this transaction?" })).toBeInTheDocument();
+    expect(onDelete).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: "Keep it" }));
+    expect(onDelete).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: "Delete…" }));
+    await userEvent.click(screen.getByRole("button", { name: "Delete transaction" }));
+    expect(onDelete).toHaveBeenCalledTimes(1);
+  });
+
+  it("says original, not imported, for the restore controls of a hand-added row", () => {
+    setupWith(
+      makeTransaction({
+        source: "manual",
+        posted_date: "2026-01-09",
+        corrections: { posted_date: "2026-01-05" },
+      }),
+    );
+    expect(screen.getByText(/^Originally/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Restore original date" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Restore imported date" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/Imported as/)).not.toBeInTheDocument();
+  });
+
+  it("shows a failed delete's sentence in the footer", () => {
+    setupWith(makeTransaction({ source: "manual" }), {
+      onDelete: vi.fn(),
+      saveError: "Rows read from the statement can’t be deleted. Use “Exclude from totals” instead.",
+    });
+    expect(screen.getByRole("alert")).toHaveTextContent("Use “Exclude from totals” instead");
+  });
+});

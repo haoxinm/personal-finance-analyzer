@@ -16,6 +16,7 @@ import { stableColorMap } from "./chart-colors";
 import { CategoryLines } from "./components/category-lines";
 import { CategoryPie } from "./components/category-pie";
 import { CategoryStackedBar } from "./components/category-stacked-bar";
+import { AttentionHint } from "./components/attention-hint";
 import { CurrencyBanner } from "./components/currency-banner";
 import { FiltersBar } from "./components/filters-bar";
 import { MonthOverMonth } from "./components/month-over-month";
@@ -27,6 +28,7 @@ import {
   type DashboardFilters,
   useAccounts,
   useCategoryBreakdown,
+  useImportAttention,
   useTopMerchants,
   useTrend,
   useUserBreakdown,
@@ -76,6 +78,7 @@ export default function DashboardScreen() {
   const showUserComparison = users.length > 1 && sel.selectedUserId === null;
   const ready = !sel.isLoading;
 
+  const importAttention = useImportAttention(sel.selectedUserId ?? undefined, ready);
   const categoryQuery = useCategoryBreakdown(filters, granularity, ready);
   const trendQuery = useTrend(filters, granularity, ready);
   const topMerchantsQuery = useTopMerchants(filters, 8, ready);
@@ -172,6 +175,7 @@ export default function DashboardScreen() {
       />
 
       <CurrencyBanner currencies={otherCurrencies} selectedCurrency={currency} />
+      <AttentionHint attention={importAttention} />
 
       {anyError ? (
         <ErrorState

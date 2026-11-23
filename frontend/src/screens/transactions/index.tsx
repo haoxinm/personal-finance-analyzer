@@ -14,11 +14,15 @@ import { useToast } from "@/components/ui/use-toast";
 import { useSelectedUser } from "@/hooks/use-selected-user";
 import { useSpendQueryParams } from "@/hooks/use-spend-query-params";
 
+import { AddTransactionDialog } from "./add-transaction-dialog";
 import {
   downloadTransactionsExport,
+  isParsedRowError,
   useAccountOptions,
   useAllMatchingIds,
+  useBulkExclude,
   useBulkUpdateTransactions,
+  useDeleteTransaction,
   useTransactionsGrid,
 } from "./api";
 import { BulkBar } from "./bulk-bar";
@@ -64,6 +68,18 @@ export default function TransactionsScreen() {
   const patchTransaction = usePatchTransaction();
   const bulkUpdate = useBulkUpdateTransactions();
   const allMatchingIds = useAllMatchingIds();
+  const bulkExclude = useBulkExclude();
+  const deleteTransaction = useDeleteTransaction();
+
+  // The Add dialog. `?statement_id=X&add=1` (the Import page's "Add a missing transaction" link)
+  // opens it once, preset to X, then drops `add` so a refresh does not reopen it.
+  const [adding, setAdding] = React.useState(false);
+  const { add: addRequested, ...gridWithoutAdd } = gridParams;
+  React.useEffect(() => {
+    if (!addRequested) return;
+    setAdding(true);
+    setGridParams({ add: false });
+  }, [addRequested, setGridParams]);
 
   const [selectedIds, setSelectedIds] = React.useState<Set<number>>(new Set());
   // The selection is "everything the filters match" (from `handleSelectAllMatching`), not rows
@@ -94,7 +110,7 @@ export default function TransactionsScreen() {
   // A selection (ticked rows, or "all matching") describes the rows one particular filter set
   // matched; once the filters change it would silently target rows the user can no longer see.
   // Sort does not change the matched set, so it is left out of the key.
-  const filterKey = JSON.stringify({ filters, grid: { ...gridParams, sort: undefined } });
+  const filterKey = JSON.stringify({ filters, grid: { ...gridWithoutAdd, sort: undefined } });
   React.useEffect(() => {
     setSelectedIds(new Set());
     setAllMatchingSelected(false);
@@ -199,6 +215,110 @@ export default function TransactionsScreen() {
     }
   }
 
+  /** Exclude (or include again) the selected rows. The Undo sends back exactly the ids the server
+   *  says changed, never the whole selection: rows that were already in that state stay as they were. */
+  async function handleBulkExclude(excluded: boolean) {
+    const requested = selectedIds.size;
+    try {
+      const result = await bulkExclude.mutateAsync({
+        transactionIds: Array.from(selectedIds),
+        excluded,
+      });
+      const changed = result.changed_ids;
+      const verb = excluded ? "Excluded" : "Included";
+      if (changed.length === 0) {
+        toast({
+          title: `Nothing to ${excluded ? "exclude" : "include"}`,
+          description: `The selected transactions were already ${excluded ? "excluded" : "counted"}.`,
+        });
+      } else {
+        const skipped = requested - changed.length;
+        toast({
+          title: `${verb} ${changed.length.toLocaleString()} transaction${changed.length === 1 ? "" : "s"}`,
+          description:
+            skipped > 0
+              ? `${skipped.toLocaleString()} ${skipped === 1 ? "was" : "were"} already ${excluded ? "excluded" : "counted"} or no longer exist${skipped === 1 ? "s" : ""}.`
+              : excluded
+                ? "They stay on file but are left out of totals."
+                : undefined,
+          action: {
+            label: "Undo",
+            onClick: () => {
+              bulkExclude
+                .mutateAsync({ transactionIds: changed, excluded: !excluded })
+                .then(() => toast({ title: "Undone" }))
+                .catch((error: unknown) =>
+                  toast({
+                    title: "Undo failed",
+                    description: error instanceof Error ? error.message : undefined,
+                    variant: "destructive",
+                  }),
+                );
+            },
+          },
+        });
+      }
+      setSelectedIds(new Set());
+      setAllMatchingSelected(false);
+    } catch (error) {
+      toast({
+        title: excluded ? "Could not exclude" : "Could not include",
+        description: error instanceof Error ? error.message : undefined,
+        variant: "destructive",
+      });
+    }
+  }
+
+  /** Exclude / include the row open in the editor, with an Undo. */
+  async function handleToggleExcluded() {
+    if (!editing) return;
+    const target = editing;
+    const excluded = !(target.excluded === true);
+    try {
+      await patchTransaction.mutateAsync({ id: target.id, body: { excluded, create_rule: false } });
+      setEditing(null);
+      toast({
+        title: excluded ? "Excluded from totals" : "Counted in totals again",
+        action: {
+          label: "Undo",
+          onClick: () => {
+            patchTransaction
+              .mutateAsync({ id: target.id, body: { excluded: !excluded, create_rule: false } })
+              .then(() => toast({ title: "Undone" }))
+              .catch((error: unknown) =>
+                toast({
+                  title: "Undo failed",
+                  description: error instanceof Error ? error.message : undefined,
+                  variant: "destructive",
+                }),
+              );
+          },
+        },
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : undefined;
+      setSaveError(message ? `Could not save: ${message}` : "Could not save this transaction.");
+    }
+  }
+
+  async function handleDelete() {
+    if (!editing) return;
+    setSaveError(null);
+    try {
+      await deleteTransaction.mutateAsync(editing.id);
+      toast({ title: "Transaction deleted" });
+      setEditing(null);
+    } catch (error) {
+      setSaveError(
+        isParsedRowError(error)
+          ? "Rows read from the statement can’t be deleted (a re-import would bring them back). Use “Exclude from totals” instead."
+          : error instanceof Error && error.message
+            ? `Could not delete: ${error.message}`
+            : "Could not delete this transaction.",
+      );
+    }
+  }
+
   async function handleSaveEdit(patch: {
     categoryKey?: string;
     subcategoryKey?: string;
@@ -292,6 +412,9 @@ export default function TransactionsScreen() {
         }
         actions={
           <>
+            <Button type="button" size="sm" onClick={() => setAdding(true)}>
+              Add transaction…
+            </Button>
             <Button
               type="button"
               variant="outline"
@@ -341,6 +464,8 @@ export default function TransactionsScreen() {
         reverting={revertToAutomatic.isPending}
         selectingAll={allMatchingIds.isPending}
         allMatchingSelected={allMatchingSelected}
+        onExclude={(excluded) => void handleBulkExclude(excluded)}
+        excluding={bulkExclude.isPending}
       />
 
       {grid.isLoading || sel.isLoading ? (
@@ -396,6 +521,17 @@ export default function TransactionsScreen() {
           onApplySuggestion={handleApplySuggestion}
           onRevert={handleRevertEditing}
           saveError={saveError}
+          onToggleExcluded={() => void handleToggleExcluded()}
+          onDelete={() => void handleDelete()}
+          deleting={deleteTransaction.isPending}
+        />
+      ) : null}
+      {adding ? (
+        <AddTransactionDialog
+          initialStatementId={gridWithoutAdd.statementId}
+          userId={sel.selectedUserId ?? undefined}
+          categories={categories}
+          onClose={() => setAdding(false)}
         />
       ) : null}
     </Page>

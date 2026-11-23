@@ -15,7 +15,8 @@ import {
 } from "@/components/ui/dialog";
 
 import { formatAmountInput, parseAmountInput } from "./amount-input";
-import { KINDS, type Category, type Kind, type Transaction } from "./types";
+import { isoDateFromToday } from "./dates";
+import { KINDS, isExcluded, isManual, type Category, type Kind, type Transaction } from "./types";
 
 export type CorrectableField = "posted_date" | "amount_minor" | "description_clean";
 
@@ -59,14 +60,14 @@ export interface EditPopoverProps {
   onRevert?: () => void;
   /** The last save failed: shown in the footer, beside the buttons (a toast alone can be missed). */
   saveError?: string | null;
-}
-
-/** `YYYY-MM-DD` of today plus `days`, in local time. The date field's `max`. */
-function isoDateFromToday(days: number): string {
-  const d = new Date();
-  d.setDate(d.getDate() + days);
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  /** Leave this row out of every total (or, when it already is, count it again). The caller
+   * performs the change and closes the dialog. Offered for every row. */
+  onToggleExcluded?: () => void;
+  /** Delete this row for good. Offered only for rows added by hand; the caller closes the dialog
+   * on success. Parsed rows cannot be deleted (a re-import would bring them back): exclude them. */
+  onDelete?: () => void;
+  /** A delete is in flight. */
+  deleting?: boolean;
 }
 
 /**
@@ -95,14 +96,22 @@ export function EditPopover({
   onApplySuggestion,
   onRevert,
   saveError,
+  onToggleExcluded,
+  onDelete,
+  deleting,
 }: EditPopoverProps) {
   const ids = React.useId();
+  const manual = isManual(transaction);
+  const excluded = isExcluded(transaction);
+  // What the restore controls call the first value: a hand-added row was never "imported".
+  const original = manual ? "original" : "imported";
   const [confirmingDiscard, setConfirmingDiscard] = React.useState(false);
+  const [confirmingDelete, setConfirmingDelete] = React.useState(false);
   const keepEditingRef = React.useRef<HTMLButtonElement>(null);
   // Move focus to the safe choice when the confirmation appears (its buttons replace Cancel/Save).
   React.useEffect(() => {
-    if (confirmingDiscard) keepEditingRef.current?.focus();
-  }, [confirmingDiscard]);
+    if (confirmingDiscard || confirmingDelete) keepEditingRef.current?.focus();
+  }, [confirmingDiscard, confirmingDelete]);
   const [categoryKey, setCategoryKey] = React.useState(transaction.category_key ?? "");
   const [subcategoryKey, setSubcategoryKey] = React.useState(transaction.subcategory_key ?? "");
   const [kind, setKind] = React.useState<Kind>(transaction.kind);
@@ -213,8 +222,9 @@ export function EditPopover({
 
   // Escape, a press outside and Cancel never throw away edits silently: ask first, in the footer.
   function requestClose() {
-    if (saving) return; // a save in flight: Escape / outside click must not close the dialog
-    if (confirmingDiscard) setConfirmingDiscard(false);
+    if (saving || deleting) return; // a save in flight: Escape / outside click must not close the dialog
+    if (confirmingDelete) setConfirmingDelete(false);
+    else if (confirmingDiscard) setConfirmingDiscard(false);
     else if (dirty) setConfirmingDiscard(true);
     else onClose();
   }
@@ -316,8 +326,9 @@ export function EditPopover({
         <fieldset className="flex min-w-0 flex-col gap-3 rounded-md border border-border p-3">
           <legend className="px-1 text-xs font-medium text-foreground">Details</legend>
           <p className="text-xs text-muted-foreground">
-            Fix something the statement parser got wrong. The imported value is kept, so you can
-            restore it.
+            {manual
+              ? "Change what you entered. The original value is kept, so you can restore it."
+              : "Fix something the statement parser got wrong. The imported value is kept, so you can restore it."}
           </p>
 
           <div className="flex flex-col gap-1">
@@ -339,11 +350,11 @@ export function EditPopover({
               <FieldError id={`${ids}-date-err`}>{dateError}</FieldError>
             ) : null}
             {importedDate !== null && postedDate !== importedDate ? (
-              <ImportedAs label="date" onRestore={() => setPostedDate(importedDate)}>
+              <ImportedAs label="date" word={original} onRestore={() => setPostedDate(importedDate)}>
                 {importedDate}
               </ImportedAs>
             ) : importedDate !== null ? (
-              <p className="text-xs text-muted-foreground">Restored to the imported date.</p>
+              <p className="text-xs text-muted-foreground">Restored to the {original} date.</p>
             ) : null}
           </div>
 
@@ -372,12 +383,13 @@ export function EditPopover({
             {importedDescription !== null && trimmedDescription !== importedDescription ? (
               <ImportedAs
                 label="description"
+                word={original}
                 onRestore={() => setDescription(importedDescription)}
               >
                 {importedDescription}
               </ImportedAs>
             ) : importedDescription !== null ? (
-              <p className="text-xs text-muted-foreground">Restored to the imported description.</p>
+              <p className="text-xs text-muted-foreground">Restored to the {original} description.</p>
             ) : null}
           </div>
 
@@ -434,6 +446,7 @@ export function EditPopover({
             {importedAmount !== null && signedAmount !== importedAmount ? (
               <ImportedAs
                 label="amount"
+                word={original}
                 onRestore={() => {
                   setDirection(importedAmount < 0 ? "in" : "out");
                   setAmountText(formatAmountInput(importedAmount));
@@ -442,10 +455,37 @@ export function EditPopover({
                 <Money minorUnits={importedAmount} currency={transaction.currency} />
               </ImportedAs>
             ) : importedAmount !== null ? (
-              <p className="text-xs text-muted-foreground">Restored to the imported amount.</p>
+              <p className="text-xs text-muted-foreground">Restored to the {original} amount.</p>
             ) : null}
           </div>
         </fieldset>
+
+        {onToggleExcluded ? (
+          <div
+            className="flex flex-col gap-2 rounded-md border border-border p-3"
+            data-testid="inclusion-section"
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="text-xs font-medium text-foreground">
+                {excluded ? "Excluded from totals" : "Counted in totals"}
+              </span>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={saving || deleting}
+                onClick={onToggleExcluded}
+              >
+                {excluded ? "Include again" : "Exclude from totals"}
+              </Button>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              {excluded
+                ? "This row stays on file but is left out of every total, chart and forecast,."
+                : "Excluding keeps the row on file but leaves it out of every total, chart and forecast, for example a duplicate or a line that is not yours. You can include it again at any time."}
+            </p>
+          </div>
+        ) : null}
 
         <label className="flex flex-col gap-1 text-xs text-muted-foreground">
           Notes
@@ -475,7 +515,36 @@ export function EditPopover({
         ) : null}
       </DialogBody>
       <DialogFooter className="items-center">
-        {confirmingDiscard ? (
+        {confirmingDelete ? (
+          <div
+            role="alertdialog"
+            aria-label="Delete this transaction?"
+            className="flex w-full flex-wrap items-center justify-end gap-2"
+          >
+            <p className="mr-auto text-sm">Delete this transaction for good? This can’t be undone.</p>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              ref={keepEditingRef}
+              onClick={() => setConfirmingDelete(false)}
+            >
+              Keep it
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              size="sm"
+              disabled={deleting}
+              onClick={() => {
+                setConfirmingDelete(false);
+                onDelete?.();
+              }}
+            >
+              {deleting ? "Deleting…" : "Delete transaction"}
+            </Button>
+          </div>
+        ) : confirmingDiscard ? (
           <div
             role="alertdialog"
             aria-label="Discard changes?"
@@ -501,6 +570,18 @@ export function EditPopover({
               <p role="alert" className="mr-auto min-w-0 flex-1 text-sm text-destructive [overflow-wrap:anywhere]">
                 {saveError}
               </p>
+            ) : null}
+            {manual && onDelete ? (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="mr-auto text-destructive hover:text-destructive"
+                disabled={saving || deleting}
+                onClick={() => setConfirmingDelete(true)}
+              >
+                Delete…
+              </Button>
             ) : null}
             <Button type="button" variant="outline" size="sm" onClick={requestClose}>
               Cancel
@@ -531,20 +612,22 @@ function FieldError({ id, children }: { id: string; children: React.ReactNode })
 /** "Imported as X · Restore": shown only for a field the user corrected. */
 function ImportedAs({
   label,
+  word,
   onRestore,
   children,
 }: {
   label: string;
+  word: "imported" | "original";
   onRestore: () => void;
   children: React.ReactNode;
 }) {
   return (
     <p className="text-xs text-muted-foreground">
-      Imported as <span className="text-foreground">{children}</span> ·{" "}
+      {word === "original" ? "Originally" : "Imported as"} <span className="text-foreground">{children}</span> ·{" "}
       <button
         type="button"
         className="rounded-sm text-primary underline underline-offset-2 hover:opacity-80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        aria-label={`Restore imported ${label}`}
+        aria-label={`Restore ${word} ${label}`}
         onClick={onRestore}
       >
         Restore

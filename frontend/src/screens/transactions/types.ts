@@ -14,3 +14,12 @@ export const KINDS: Kind[] = [
   "interest",
   "adjustment",
 ];
+
+/** A row that sits out of totals: shown muted and struck through when the grid includes it. */
+export function isExcluded(txn: Transaction): boolean {
+  return txn.excluded === true;
+}
+
+export function isManual(txn: Transaction): boolean {
+  return txn.source === "manual";
+}
