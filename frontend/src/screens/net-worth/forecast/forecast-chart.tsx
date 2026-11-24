@@ -11,6 +11,13 @@ import {
   YAxis,
 } from "recharts";
 
+import {
+  CHART_AXIS_PROPS,
+  CHART_GRID_PROPS,
+  CHART_LEGEND_STYLE,
+  CHART_LINE_CURSOR,
+  CHART_TOOLTIP_PROPS,
+} from "@/lib/chart-theme";
 import { CHART_NET_WORTH } from "../chart-colors";
 import type { DollarMode, ForecastRow } from "./forecast-logic";
 import { chartData } from "./chart-data";
@@ -27,13 +34,6 @@ export interface ForecastChartProps {
   mode: DollarMode;
 }
 
-const TOOLTIP_STYLE = {
-  background: "hsl(var(--card))",
-  color: "hsl(var(--card-foreground))",
-  border: "1px solid hsl(var(--border))",
-  borderRadius: 6,
-};
-
 /** Net worth over time: history as a solid line, the projection dashed, the target year marked. */
 export function ForecastChart({ history, rows, baseYear, startNetWorthMinor, targetYear, mode }: ForecastChartProps) {
   const data = React.useMemo(
@@ -41,11 +41,6 @@ export function ForecastChart({ history, rows, baseYear, startNetWorthMinor, tar
     [history, rows, baseYear, startNetWorthMinor],
   );
   const last = rows[rows.length - 1];
-  const axisProps = {
-    stroke: "hsl(var(--muted-foreground))",
-    tick: { fill: "hsl(var(--muted-foreground))" },
-    fontSize: 12,
-  };
   const label = `Net worth by year, ${data[0]?.year ?? baseYear} to ${targetYear}${
     last ? `; projected ${formatUsd(last.netWorth)} in ${last.year}` : ""
   } (${mode === "real" ? `${baseYear} dollars` : "nominal dollars"}).`;
@@ -54,21 +49,22 @@ export function ForecastChart({ history, rows, baseYear, startNetWorthMinor, tar
     <div className="h-80 w-full" role="img" aria-label={label} data-testid="forecast-chart">
       <ResponsiveContainer width="100%" height="100%">
         <LineChart data={data} margin={{ top: 8, right: 16, bottom: 0, left: 8 }}>
-          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" />
+          <CartesianGrid {...CHART_GRID_PROPS} />
           <XAxis
             dataKey="year"
             type="number"
             domain={["dataMin", "dataMax"]}
             allowDecimals={false}
             tickFormatter={(v: number) => String(v)}
-            {...axisProps}
+            {...CHART_AXIS_PROPS}
           />
-          <YAxis tickFormatter={(v: number) => formatCompactUsd(v)} width={72} {...axisProps} />
-          <Legend wrapperStyle={{ fontSize: 12 }} />
+          <YAxis tickFormatter={(v: number) => formatCompactUsd(v)} width={72} {...CHART_AXIS_PROPS} />
+          <Legend wrapperStyle={CHART_LEGEND_STYLE} />
           <Tooltip
             formatter={(value: number, name: string) => [formatUsd(value), name]}
             labelFormatter={(year: number) => String(year)}
-            contentStyle={TOOLTIP_STYLE}
+            {...CHART_TOOLTIP_PROPS}
+            cursor={CHART_LINE_CURSOR}
           />
           <ReferenceLine
             x={targetYear}

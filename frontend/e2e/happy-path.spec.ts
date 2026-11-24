@@ -49,7 +49,7 @@ test("import a statement, confirm the extractor, review it, and see an overview 
   await page.getByPlaceholder("Issuer name, e.g. Bank of America").fill("Test Bank");
   await page.getByRole("button", { name: "Add" }).click();
 
-  await page.getByRole("button", { name: "Import" }).click();
+  await page.getByRole("button", { name: "Import", exact: true }).click();
 
   // Extraction, then classification (LLM mode "none" — no network call, §D2), finish and the
   // summary line reports an exact needs-review count (`pollClassifyJobNeedsReview`, §3.12).

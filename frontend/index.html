@@ -10,6 +10,17 @@
       exists. `lib/api/client.ts` reads it at startup; its absence (dev, or before P2-C lands)
       just means requests go out without the header, which a mocked/dev backend tolerates.
     -->
+    <script>
+      (function () {
+        try {
+          var p = localStorage.getItem("pfa:theme");
+          var dark = p === "dark" || (p !== "light" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+          var r = document.documentElement;
+          r.classList.toggle("dark", dark);
+          r.style.colorScheme = dark ? "dark" : "light";
+        } catch (e) {}
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

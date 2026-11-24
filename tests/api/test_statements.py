@@ -153,7 +153,18 @@ def test_extract_enqueues_import_job(
 def test_reassign_calls_gateway(
     client: TestClient, session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from personal_finance_analyzer.db.models import Account, Issuer, User
+
     statement_id = _make_statement(session, status="parsed")
+    user = User(name="Owner")
+    issuer = Issuer(name="Bank", slug="bank")
+    session.add_all([user, issuer])
+    session.flush()
+    account = Account(
+        user_id=user.id, issuer_id=issuer.id, account_type="credit", display_name="Card"
+    )
+    session.add(account)
+    session.commit()
     calls: list[tuple[int, int]] = []
 
     def fake_reassign(
@@ -164,9 +175,11 @@ def test_reassign_calls_gateway(
 
     monkeypatch.setattr(gateway, "reassign", fake_reassign)
 
-    response = client.patch(f"/api/statements/{statement_id}", json={"user_id": 1, "account_id": 5})
+    response = client.patch(
+        f"/api/statements/{statement_id}", json={"user_id": user.id, "account_id": account.id}
+    )
     assert response.status_code == 200
-    assert calls == [(1, 5)]
+    assert calls == [(user.id, account.id)]
 
 
 def _wait_for_job(client: TestClient, job_id: str, *, attempts: int = 50) -> dict:

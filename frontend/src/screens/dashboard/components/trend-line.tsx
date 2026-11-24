@@ -9,6 +9,12 @@ import {
   YAxis,
 } from "recharts";
 
+import {
+  CHART_AXIS_PROPS,
+  CHART_GRID_PROPS,
+  CHART_LINE_CURSOR,
+  CHART_TOOLTIP_PROPS,
+} from "@/lib/chart-theme";
 import { EmptyState } from "@/components/primitives/states";
 
 import { CHART_OUTFLOW } from "../chart-colors";
@@ -40,13 +46,20 @@ export function TrendLine({ rows, currency }: TrendLineProps) {
   }
 
   return (
-    <div className="h-56 w-full" data-testid="trend-line">
+    <div
+      className="h-56 w-full"
+      data-testid="trend-line"
+      role="img"
+      aria-label={`Total spending trend: ${points.length} ${points.length === 1 ? "period" : "periods"}`}
+    >
       <ResponsiveContainer width="100%" height="100%">
         <LineChart data={points} margin={{ top: 8, right: 8, bottom: 0, left: 8 }}>
-          <CartesianGrid strokeDasharray="3 3" vertical={false} className="stroke-border" />
-          <XAxis dataKey="period" fontSize={12} />
-          <YAxis tickFormatter={(v: number) => format(v)} width={80} fontSize={12} />
+          <CartesianGrid {...CHART_GRID_PROPS} />
+          <XAxis dataKey="period" {...CHART_AXIS_PROPS} />
+          <YAxis tickFormatter={(v: number) => format(v)} width={80} {...CHART_AXIS_PROPS} />
           <Tooltip
+            {...CHART_TOOLTIP_PROPS}
+            cursor={CHART_LINE_CURSOR}
             formatter={(value: number) => [format(value), "Total"]}
             labelFormatter={(label: string) => `Period: ${label}`}
           />

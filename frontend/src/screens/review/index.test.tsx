@@ -238,6 +238,33 @@ describe("ReviewScreen", () => {
     expect(screen.queryByText(/Accept \+ create rule/)).not.toBeInTheDocument();
   });
 
+  it("keeps the amount and the rule button reachable for very long text", async () => {
+    const long = "VERYLONGMERCHANT".repeat(20);
+    await renderScreen({
+      transactions: [
+        makeTransaction({
+          id: 1,
+          description_clean: long,
+          description_raw: `${long} RAW`,
+          merchant_key: long,
+          amount_minor: 123456,
+        }),
+      ],
+      categories: CATEGORIES,
+    });
+    const title = await screen.findByText(long, { selector: "div, h3, h2, p" });
+    const left = title.closest(".min-w-0");
+    expect(left?.className).toContain("flex-1");
+    expect(left?.className).toContain("[overflow-wrap:anywhere]");
+    const amount = screen.getByLabelText("outflow $1,234.56");
+    expect(amount.parentElement?.className).toContain("shrink-0");
+    expect(screen.getByText(`${long} RAW`).className).toContain("break-all");
+    const rule = screen.getByRole("button", { name: `Always categorize “${long}” this way` });
+    expect(rule.className).toContain("whitespace-normal");
+    expect(rule.className).toContain("max-w-full");
+    expect(within(rule).getByTitle(long).className).toContain("truncate");
+  });
+
   it("says Accept is for this transaction only and the other button saves a rule", async () => {
     const { fetchMock } = await renderScreen({
       transactions: [makeTransaction({ id: 1, merchant_key: "trader joes", category_key: "groceries", subcategory_key: "groceries" })],
@@ -546,5 +573,25 @@ describe("ReviewScreen suggestion chips", () => {
       (c) => new URL((c[0] as Request).url).pathname === "/api/review/accept",
     );
     expect(accepts).toHaveLength(1);
+  });
+
+  it("opens the edit dialog from the card and keeps j/k/Enter shortcuts out of it", async () => {
+    const { fetchMock } = await renderScreen({
+      transactions: [
+        makeTransaction({ id: 1, description_clean: "Coffee Shop", amount_minor: 450 }),
+        makeTransaction({ id: 2, description_clean: "Bakery" }),
+      ],
+      categories: CATEGORIES,
+    });
+    await screen.findByText("Coffee Shop");
+    await userEvent.click(screen.getByRole("button", { name: /Edit details/ }));
+    const dialog = await screen.findByRole("dialog", { name: "Edit transaction" });
+    expect(within(dialog).getByLabelText("Description")).toHaveValue("Coffee Shop");
+    await userEvent.type(within(dialog).getByLabelText("Description"), "jk");
+    fireEvent.keyDown(within(dialog).getByRole("button", { name: "Cancel" }), { key: "Enter" });
+    const acceptCalls = fetchMock.mock.calls.filter(
+      (c) => new URL((c[0] as Request).url).pathname === "/api/review/accept",
+    );
+    expect(acceptCalls).toHaveLength(0);
   });
 });

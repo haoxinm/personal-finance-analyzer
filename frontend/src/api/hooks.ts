@@ -87,7 +87,15 @@ export function usePatchTransaction() {
       return data;
     },
     onSuccess: () => {
+      // A corrected date or amount moves charts and totals, and the review queue's counts.
       void queryClient.invalidateQueries({ queryKey: ["transactions"] });
+      void queryClient.invalidateQueries({ queryKey: ["analytics"] });
+      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+      void queryClient.invalidateQueries({ queryKey: ["review"] });
+      void queryClient.invalidateQueries({ queryKey: ["statements"] });
+      // Tax and net-worth screens read corrected transactions too (income by payer, balances).
+      void queryClient.invalidateQueries({ queryKey: ["net-worth"] });
+      void queryClient.invalidateQueries({ queryKey: ["tax"] });
     },
   });
 }

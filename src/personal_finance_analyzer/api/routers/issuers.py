@@ -38,6 +38,7 @@ def _issuer_schema(issuer: IssuerModel) -> schemas.Issuer:
         slug=issuer.slug,
         match_terms=json.loads(issuer.match_terms),
         default_spec_id=issuer.default_spec_id,
+        default_parser_id=issuer.default_parser_id,
     )
 
 
@@ -65,6 +66,10 @@ def update_issuer(
     issuer = crud.get_issuer(session, issuer_id)
     if issuer is None:
         raise HTTPException(status_code=404, detail="issuer not found")
+    if body.default_spec_id is not None:
+        problem = crud.remembered_spec_problem(session, issuer_id, body.default_spec_id)
+        if problem is not None:
+            raise HTTPException(status_code=400, detail=problem)
     try:
         issuer = crud.update_issuer(
             session,

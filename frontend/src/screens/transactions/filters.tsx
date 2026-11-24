@@ -105,6 +105,8 @@ export function FiltersBar({
     grid.needsReview ||
     grid.uncategorized ||
     grid.conflict ||
+    grid.excluded !== undefined ||
+    grid.source !== undefined ||
     grid.statementId !== undefined;
 
   return (
@@ -172,6 +174,23 @@ export function FiltersBar({
             </select>
           </label>
         ) : null}
+        <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+          Excluded rows
+          <select
+            className="h-9 rounded-md border border-input bg-transparent px-2 text-sm text-foreground"
+            value={grid.excluded ?? "hide"}
+            title="Excluded rows stay on file but are left out of every total and chart"
+            onChange={(e) =>
+              onGridChange({
+                excluded: e.target.value === "hide" ? undefined : (e.target.value as "only" | "include"),
+              })
+            }
+          >
+            <option value="hide">Hide excluded</option>
+            <option value="include">Show with the rest</option>
+            <option value="only">Only excluded</option>
+          </select>
+        </label>
         {hasFilters ? (
           <Button
             type="button"
@@ -196,6 +215,8 @@ export function FiltersBar({
                 uncategorized: undefined,
                 conflict: undefined,
                 statementId: undefined,
+                excluded: undefined,
+                source: undefined,
               });
             }}
           >
@@ -233,6 +254,16 @@ export function FiltersBar({
           title="Transactions where your rules, built-in rules, the issuer's label and the saved merchant answer name different categories"
         >
           Conflicting suggestions
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant={grid.source === "manual" ? "default" : "outline"}
+          onClick={() => onGridChange({ source: grid.source ? undefined : "manual" })}
+          aria-pressed={grid.source === "manual"}
+          title="Only transactions you added by hand"
+        >
+          Added by hand
         </Button>
         {grid.statementId !== undefined ? (
           <Button

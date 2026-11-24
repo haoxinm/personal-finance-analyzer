@@ -45,3 +45,22 @@ export function setSkipConfirmForIssuer(issuerId: number, skip: boolean): void {
     // Ignore: this is a convenience, not a requirement.
   }
 }
+
+const DISMISSED_OPEN_KEY = "pfa:import:dismissed-open";
+
+/** Whether the Folder imports "Dismissed" list was left open. */
+export function isDismissedListOpen(): boolean {
+  try {
+    return window.localStorage.getItem(DISMISSED_OPEN_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+export function setDismissedListOpen(open: boolean): void {
+  try {
+    window.localStorage.setItem(DISMISSED_OPEN_KEY, open ? "1" : "0");
+  } catch {
+    // storage unavailable: the list just starts closed next time
+  }
+}

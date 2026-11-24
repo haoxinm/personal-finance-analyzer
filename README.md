@@ -57,6 +57,34 @@ counterpart except the layout mapper and the forecast.
   row, never an LLM (if none answers, the row becomes Uncategorized and flagged for review). On an
   edited row the chip the rules would pick is marked *Automatic*. Undo puts the edit back. A kind
   you changed by hand stays; the original kind is not stored.
+- **Fix an import.** *Re-import* a statement from its kept PDF (same extractor by default, or a
+  different one): the rows are rebuilt and classified again, and your edits are kept unless you
+  choose to discard them; edits that cannot be matched to exactly one rebuilt row are reported, not
+  guessed. You can also correct a single transaction's **date, amount or description** in the edit
+  dialog: the imported value is remembered ("Imported as ..." with a restore), rules still match the
+  merchant as imported, and overlapping re-imports still skip the row as a duplicate. A statement
+  that was read but yielded **no transactions** is flagged as needing attention (also in the folder
+  scan's problem list) instead of counted as imported, and a re-import that would leave a statement
+  with no rows is refused unless you confirm it. The re-import offers every extractor that fits the
+  PDF, scored, and the pages to read. If a statement was filed under the wrong person, *change
+  person* moves it and its rows to that person's matching account; *change bank* moves it to the
+  same person's account under another issuer.
+- **Add a missed transaction, exclude a bogus one.** A transaction can be **added by hand** to an
+  imported statement (its account and person come from the statement); it is filed by your rules,
+  the built-in rules and the saved merchant answers, never by an LLM, and is never deleted by a
+  re-import. When a later import or re-import finds the same date and amount on the bank's
+  statement, the hand-added row is merged into it (your category, kind and note are kept). A row
+  read from a statement cannot be deleted, because a re-import would bring it back: **exclude** it
+  instead. An excluded row stays on file (so an overlapping statement does not re-add it and it
+  survives a re-import) but is left out of every chart, total, export and the review queue; an
+  excluded line is also taken out of the statement's reconciliation. The grid can show excluded or
+  hand-added rows only.
+- **Correct a statement itself.** The statement's period can be corrected (the detected one is
+  remembered and can be restored; row dates do not change), the currency of an account can be
+  changed (all its rows follow), and a re-import can **flip the sign** of every amount when an
+  extractor read debits and credits the wrong way round (the import list suggests it when flipping
+  would make the statement reconcile). Reconciliation is computed from the rows as they are now,
+  including corrections, hand-added and excluded rows.
 - **Reconcile every import** against the statement's own printed totals and warn, rather than
   silently accept numbers that don't add up; **never double-count a card payment** (a payment from
   a tracked checking account is a transfer on both sides, not spend).
@@ -130,7 +158,7 @@ The folder name must be the name of a person in the app (capitals and spacing do
 an unknown name is reported, never created. Files stay exactly where you put them, a PDF still
 being copied waits until it is complete, and anything the app cannot import (unknown person, a
 password-protected PDF, a layout it does not recognise yet) is listed on the Import page with the
-reason and a Retry button. Deleting a statement or tax document in the app **keeps** your PDF
+reason, a Retry button and Dismiss (a dismissed file shows up again if it changes). Deleting a statement or tax document in the app **keeps** your PDF
 (tick "Also delete the PDF file" to remove it too); it is not imported again unless the file
 changes or you press Import again. It is **off by default**: turn on *Folder imports* in Settings (or run
 `pfa documents scan` once). If an LLM is enabled, new statements' descriptions are sent to it for

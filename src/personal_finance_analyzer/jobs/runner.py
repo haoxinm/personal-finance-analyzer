@@ -122,6 +122,7 @@ class JobRunner:
                 if job is not None:
                     job.status = "error"
                     job.error_detail = str(exc)
+                    job.error_code = getattr(exc, "code", None)
                     job.updated_at = utcnow_iso()
                     session.commit()
             return

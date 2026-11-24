@@ -24,6 +24,7 @@ function makeItem(overrides: Partial<ImportItem> = {}): ImportItem {
       layout_spec_id: null,
       confidence: 0.92,
       auto_confirmed: false,
+      remembered: false,
     },
     ...overrides,
   };
@@ -106,6 +107,15 @@ describe("StatementCard", () => {
           shape_warnings: JSON.stringify(["missing section: PAYMENTS"]),
           error_detail: null,
           created_at: "2024-02-01T00:00:00Z",
+          original_name: "statement.pdf",
+          has_pdf: true,
+          pdf_in_place: false,
+          pdf_missing: false,
+          flip_sign: false,
+          period_corrected: false,
+          manual_count: 0,
+          excluded_count: 0,
+          sign_flip_suggested: false,
         },
         needsReviewCount: 3,
       }),
@@ -129,6 +139,15 @@ describe("StatementCard", () => {
     shape_warnings: null,
     error_detail: null,
     created_at: "2024-02-01T00:00:00Z",
+    original_name: "statement.pdf",
+    has_pdf: true,
+    pdf_in_place: false,
+    pdf_missing: false,
+    flip_sign: false,
+    period_corrected: false,
+    manual_count: 0,
+    excluded_count: 0,
+    sign_flip_suggested: false,
   };
 
   it("shows 'Already imported' for a duplicate PDF instead of a count of new transactions", () => {
@@ -155,7 +174,104 @@ describe("StatementCard", () => {
     expect(screen.getByRole("link", { name: /Review 5/ })).toHaveAttribute("href", "/spending/review");
     expect(screen.getByRole("link", { name: "View transactions" })).toHaveAttribute(
       "href",
-      "/spending/transactions?statement_id=9",
+      "/spending/transactions?statement_id=9&include_non_spend=true",
     );
+  });
+
+  it("offers Re-import… on an already-imported duplicate, for that existing statement", async () => {
+    const onReimportExisting = vi.fn();
+    renderCard(makeItem({ status: "parsed", duplicate: true, statementId: 12 }), { onReimportExisting });
+    const { default: userEvent } = await import("@testing-library/user-event");
+    await userEvent.click(screen.getByRole("button", { name: "Re-import…" }));
+    expect(onReimportExisting).toHaveBeenCalledWith(12);
+  });
+
+  it("does not offer Re-import… for a fresh import", () => {
+    renderCard(makeItem({ status: "parsed", statementId: 12 }), { onReimportExisting: vi.fn() });
+    expect(screen.queryByRole("button", { name: "Re-import…" })).not.toBeInTheDocument();
+  });
+
+  const emptyStatement = (overrides: Record<string, unknown> = {}) =>
+    ({
+      id: 9,
+      user_id: 1,
+      account_id: 5,
+      status: "parsed",
+      period_start: "2024-01-01",
+      period_end: "2024-01-31",
+      txn_count: 0,
+      reconciliation_delta_minor: null,
+      detect_score: 0.6,
+      shape_warnings: JSON.stringify(["No transactions were found in the selected pages."]),
+      error_detail: null,
+      created_at: "2024-02-01T00:00:00Z",
+      original_name: "empty.pdf",
+      has_pdf: true,
+      pdf_in_place: false,
+      pdf_missing: false,
+      flip_sign: false,
+      period_corrected: false,
+      manual_count: 0,
+      excluded_count: 0,
+      sign_flip_suggested: false,
+      parsed_row_count: 0,
+      attention: ["no_transactions", "layout_drift"],
+      ...overrides,
+    }) as never;
+
+  it("flags a statement that parsed to zero rows as a warning with Re-import and Map this layout", () => {
+    const onReimportExisting = vi.fn();
+    renderCard(makeItem({ status: "parsed", statementId: 9, statement: emptyStatement(), insertedCount: 0 }), {
+      onReimportExisting,
+    });
+    expect(screen.getByTestId("parsed-outcome")).toHaveTextContent("No transactions were found in this statement");
+    expect(screen.queryByText(/0 new transactions/)).not.toBeInTheDocument();
+    // The generic "parsed differently" text is not the explanation here.
+    expect(screen.queryByText(/parsed differently/)).not.toBeInTheDocument();
+    screen.getByRole("link", { name: "Map this layout" });
+    screen.getByRole("button", { name: "Re-import…" }).click();
+    expect(onReimportExisting).toHaveBeenCalledWith(9);
+  });
+
+  it("words a re-dropped zero-row statement as imported before, with no transactions found", () => {
+    renderCard(makeItem({ status: "parsed", statementId: 9, duplicate: true, statement: emptyStatement() }), {
+      onReimportExisting: vi.fn(),
+    });
+    expect(screen.getByTestId("parsed-outcome")).toHaveTextContent("Imported before, but no transactions were found");
+    expect(screen.getByRole("button", { name: "Re-import…" })).toBeInTheDocument();
+  });
+
+  it("explains an all-duplicates statement without calling it empty", () => {
+    renderCard(
+      makeItem({
+        status: "parsed",
+        statementId: 9,
+        statement: emptyStatement({ txn_count: 0, parsed_row_count: 12, attention: ["all_duplicates"], shape_warnings: null }),
+        insertedCount: 0,
+      }),
+    );
+    expect(screen.getByText("All 12 transactions were already on file from another statement.")).toBeInTheDocument();
+    expect(screen.queryByText(/No transactions were found/)).not.toBeInTheDocument();
+  });
+
+  it("offers a remembered extractor to a hand-picked item instead of applying it", () => {
+    const onUse = vi.fn();
+    renderCard(makeItem(), { suggestion: { text: "Chase's remembered extractor is Chase layout v2.", onUse } });
+    expect(screen.getByTestId("remembered-suggestion")).toHaveTextContent("remembered extractor is Chase layout v2");
+    screen.getByRole("button", { name: "Use it" }).click();
+    expect(onUse).toHaveBeenCalled();
+  });
+
+  it("mentions hand-added rows an import matched", () => {
+    renderCard(
+      makeItem({
+        status: "parsed",
+        statementId: 1,
+        statement: { id: 1, status: "parsed", txn_count: 5, reconciliation_delta_minor: 0 } as never,
+        insertedCount: 5,
+        absorbedManual: 2,
+      }),
+    );
+    expect(screen.getByText(/5 new transactions · 2 hand-added replaced by the bank.s copy/)).toBeInTheDocument();
   });
 });

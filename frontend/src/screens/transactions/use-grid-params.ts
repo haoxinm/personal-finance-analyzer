@@ -17,6 +17,14 @@ export interface GridParams {
   /** `true`: only rows whose classification sources disagree ("Conflicting suggestions"). */
   conflict?: boolean;
   statementId?: number;
+  /** Rows the user excluded from totals: `hide` (the default, `undefined`), `only` them, or
+   *  `include` them alongside everything else. */
+  excluded?: "only" | "include";
+  /** `manual`: only rows added by hand. */
+  source?: "manual";
+  /** One-shot: `?statement_id=X&add=1` opens the Add dialog preset to X. The screen consumes it
+   *  (removes it from the URL) right away, and any other param change drops it too. */
+  add?: boolean;
   /** `GET /transactions`'s `sort`: `posted_date` or `amount_minor`, `-` prefix for descending. */
   sort: string;
 }
@@ -28,13 +36,20 @@ const KEYS = {
   uncategorized: "uncategorized",
   conflict: "conflict",
   statementId: "statement_id",
+  excluded: "excluded",
+  source: "source",
+  add: "add",
   sort: "sort",
 } as const;
 
 function parse(searchParams: URLSearchParams): GridParams {
   const statementId = Number(searchParams.get(KEYS.statementId));
   const sort = searchParams.get(KEYS.sort);
+  const excluded = searchParams.get(KEYS.excluded);
   return {
+    excluded: excluded === "only" || excluded === "include" ? excluded : undefined,
+    source: searchParams.get(KEYS.source) === "manual" ? "manual" : undefined,
+    add: searchParams.get(KEYS.add) === "1" ? true : undefined,
     needsReview: searchParams.get(KEYS.needsReview) === "true" ? true : undefined,
     uncategorized: searchParams.get(KEYS.uncategorized) === "true" ? true : undefined,
     conflict: searchParams.get(KEYS.conflict) === "true" ? true : undefined,
@@ -58,6 +73,9 @@ export function useGridParams(): [GridParams, (next: Partial<GridParams>) => voi
           if (current.uncategorized) merged.set(KEYS.uncategorized, "true");
           if (current.conflict) merged.set(KEYS.conflict, "true");
           if (current.statementId !== undefined) merged.set(KEYS.statementId, String(current.statementId));
+          if (current.excluded) merged.set(KEYS.excluded, current.excluded);
+          if (current.source) merged.set(KEYS.source, current.source);
+          if (current.add) merged.set(KEYS.add, "1");
           if (current.sort !== DEFAULT_SORT) merged.set(KEYS.sort, current.sort);
           return merged;
         },

@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -67,14 +67,14 @@ const STATEMENT_PARSED = {
  * dynamically importing the screen, rather than importing it (and its transitive `apiClient`)
  * once at this file's top, which would freeze in whichever `fetch` happened to be global first.
  */
-async function renderScreen(fetchMock: typeof fetch) {
+async function renderScreen(fetchMock: typeof fetch, entry = "/") {
   vi.resetModules();
   vi.stubGlobal("fetch", fetchMock);
   const { default: ImportScreen } = await import("./index");
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+      <MemoryRouter initialEntries={[entry]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <ImportScreen />
       </MemoryRouter>
     </QueryClientProvider>,
@@ -99,6 +99,46 @@ describe("ImportScreen", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
+  });
+
+  it("shows the Imported statements panel above the folder imports", async () => {
+    const fetchMock = vi.fn<typeof fetch>((input) => {
+      const { url } = describeRequest(input);
+      if (url.includes("/api/users")) return Promise.resolve(jsonResponse([USER]));
+      if (url.includes("/api/settings")) return Promise.resolve(jsonResponse({ llm: { mode: "none" } }));
+      return Promise.resolve(jsonResponse([]));
+    });
+    await renderScreen(fetchMock);
+    const imported = await screen.findByRole("region", { name: "Imported statements" });
+    expect(await screen.findByText("No statements imported yet.")).toBeInTheDocument();
+    const folder = await screen.findByTestId("folder-imports-panel");
+    expect(imported.compareDocumentPosition(folder) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it.each([
+    ["#imported-statements", "imported-statements-title"],
+    ["#folder-imports", "folder-imports-title"],
+  ])("focuses the card title named by the %s hash once the card is there", async (hash, titleId) => {
+    const fetchMock = vi.fn<typeof fetch>((input) => {
+      const { url } = describeRequest(input);
+      if (url.includes("/api/users")) return Promise.resolve(jsonResponse([USER]));
+      if (url.includes("/api/settings")) return Promise.resolve(jsonResponse({ llm: { mode: "none" } }));
+      return Promise.resolve(jsonResponse([]));
+    });
+    await renderScreen(fetchMock, `/spending/import${hash}`);
+    await waitFor(() => expect(document.getElementById(titleId)).toHaveFocus());
+  });
+
+  it("leaves focus alone without a hash", async () => {
+    const fetchMock = vi.fn<typeof fetch>((input) => {
+      const { url } = describeRequest(input);
+      if (url.includes("/api/users")) return Promise.resolve(jsonResponse([USER]));
+      if (url.includes("/api/settings")) return Promise.resolve(jsonResponse({ llm: { mode: "none" } }));
+      return Promise.resolve(jsonResponse([]));
+    });
+    await renderScreen(fetchMock);
+    await screen.findByRole("region", { name: "Imported statements" });
+    expect(document.getElementById("imported-statements-title")).not.toHaveFocus();
   });
 
   it("defaults the user selector to the default user and lets the user drop a file through to a confident, pre-selected proposal", async () => {
@@ -536,5 +576,196 @@ describe("ImportScreen", () => {
     expect(screen.getByRole("button", { name: "Import" })).toBeEnabled();
     // Re-uploading never auto-runs the extractor that failed.
     expect(fetchMock.mock.calls.some(([i]) => describeRequest(i as Request).url.includes("/extract"))).toBe(false);
+  });
+
+  describe("remembering an extractor in a batch", () => {
+    const REMEMBERED = {
+      issuer_id: 3,
+      parser_id: null as string | null,
+      layout_spec_id: 9 as number | null,
+      confidence: 0.9,
+      auto_confirmed: false,
+      remembered: true,
+    };
+
+    /** Three files of one bank: the first is a clear match, the other two matched nothing. */
+    async function dropBatch(opts: { proposeWith: typeof REMEMBERED; skipConfirm?: boolean; proposeStatus?: number }) {
+      if (opts.skipConfirm) window.localStorage.setItem("pfa:import:skip-confirm-issuer-ids", JSON.stringify([3]));
+      const extracted: number[] = [];
+      const proposed: number[] = [];
+      const fetchMock = vi.fn<typeof fetch>((input) => Promise.resolve(((): Response => {
+        const { url, method } = describeRequest(input);
+        if (url.includes("/api/users")) return jsonResponse([USER]);
+        if (url.includes("/api/issuers")) return jsonResponse([ISSUER]);
+        if (url.includes("/api/layout-specs")) {
+          return jsonResponse([{ id: 9, name: "Chase layout", version: 2, issuer_id: 3, approved: true, source: "user" }]);
+        }
+        if (url.includes("/api/settings")) return jsonResponse({ llm: { mode: "cloud" } });
+        const extract = /\/api\/statements\/(\d+)\/extract/.exec(url);
+        if (extract && method === "POST") {
+          extracted.push(Number(extract[1]));
+          return jsonResponse({ job_id: `job-${extract[1]}` }, 202);
+        }
+        const propose = /\/api\/statements\/(\d+)\/propose/.exec(url);
+        if (propose && method === "POST") {
+          proposed.push(Number(propose[1]));
+          if (opts.proposeStatus && opts.proposeStatus >= 400) return jsonResponse({ detail: "already parsed" }, opts.proposeStatus);
+          return jsonResponse(
+            { statement: { ...STATEMENT_AWAITING, id: Number(propose[1]) }, proposal: opts.proposeWith, duplicate: false },
+            200,
+          );
+        }
+        if (url.endsWith("/api/statements") && method === "POST") {
+          return jsonResponse(
+            {
+              statement: { ...STATEMENT_AWAITING, id: 100 + (uploadCount += 1) },
+              proposal:
+                uploadCount === 1
+                  ? { issuer_id: 3, parser_id: "layout_a_credit", layout_spec_id: null, confidence: 0.5, auto_confirmed: false, remembered: false }
+                  : { issuer_id: null, parser_id: null, layout_spec_id: null, confidence: 0, auto_confirmed: false, remembered: false },
+            },
+            201,
+          );
+        }
+        if (url.includes("/api/jobs/job-101")) {
+          return jsonResponse({ id: "job-101", kind: "import", status: "done", progress: 1, inserted: 5, remembered: true });
+        }
+        if (/\/api\/statements\/101$/.test(url)) return jsonResponse({ ...STATEMENT_PARSED, id: 101 });
+        if (url.includes("/api/transactions")) return jsonResponse({ items: [], total: 0, page: 1, page_size: 1 });
+        if (url.includes("/api/statements")) return jsonResponse([]);
+        return jsonResponse([]);
+      })()));
+      let uploadCount = 0;
+      await renderScreen(fetchMock);
+      await waitFor(() => expect(screen.getByTestId("import-target")).toBeInTheDocument());
+      const files = ["a.pdf", "b.pdf", "c.pdf"].map((name) => new File(["%PDF-1.4"], name, { type: "application/pdf" }));
+      await userEvent.upload(screen.getByLabelText("Choose statement PDFs"), files);
+      await waitFor(() => expect(screen.getAllByText("Ready to import")).toHaveLength(3));
+      // Import the first one (remember is on by default).
+      const cards = screen.getAllByRole("button", { name: "Import" });
+      await userEvent.click(cards[0]!);
+      await waitFor(() => expect(extracted).toContain(101));
+      await waitFor(() => expect(MockEventSource.instances.some((i) => i.url.includes("job-101"))).toBe(true));
+      act(() => {
+        MockEventSource.instances.find((i) => i.url.includes("job-101"))!.onmessage?.({
+          data: JSON.stringify({ status: "done", progress: 1 }),
+        });
+      });
+      return { extracted, proposed };
+    }
+
+    it("re-proposes the other pending files and shows what they would now be offered", async () => {
+      const { proposed, extracted } = await dropBatch({ proposeWith: REMEMBERED });
+      await waitFor(() => expect(proposed.sort()).toEqual([102, 103]));
+      await waitFor(() => expect(screen.getAllByText(/Detected confidence: 90%/)).toHaveLength(2));
+      expect(screen.getAllByText(/confident match/).length).toBeGreaterThanOrEqual(2);
+      // Not a skip-confirm issuer: nothing is imported without a click.
+      expect(extracted).toEqual([101]);
+    });
+
+    it("imports the peers on its own where a fresh upload would (skip-confirm issuer, confident proposal)", async () => {
+      const { extracted } = await dropBatch({ proposeWith: REMEMBERED, skipConfirm: true });
+      await waitFor(() => expect([...extracted].sort()).toEqual([101, 102, 103]));
+    });
+
+    it("never confirms a file twice: a peer refresh leaves an upload whose import request is still in flight alone", async () => {
+      window.localStorage.setItem("pfa:import:skip-confirm-issuer-ids", JSON.stringify([3]));
+      const extracted: number[] = [];
+      let release: () => void = () => undefined;
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const confident = { issuer_id: 3, parser_id: "layout_a_credit", layout_spec_id: null, confidence: 0.9, auto_confirmed: false, remembered: false };
+      const unsure = { ...confident, confidence: 0.5 };
+      let uploads = 0;
+      const fetchMock = vi.fn<typeof fetch>(async (input) => {
+        const { url, method } = describeRequest(input);
+        if (url.includes("/api/users")) return jsonResponse([USER]);
+        if (url.includes("/api/issuers")) return jsonResponse([ISSUER]);
+        if (url.includes("/api/settings")) return jsonResponse({ llm: { mode: "none" } });
+        const extract = /\/api\/statements\/(\d+)\/extract/.exec(url);
+        if (extract && method === "POST") {
+          extracted.push(Number(extract[1]));
+          if (extract[1] === "202") await held;
+          return jsonResponse({ job_id: `job-${extract[1]}` }, 202);
+        }
+        const propose = /\/api\/statements\/(\d+)\/propose/.exec(url);
+        if (propose) {
+          return jsonResponse({ statement: { ...STATEMENT_AWAITING, id: Number(propose[1]) }, proposal: { ...confident, remembered: true }, duplicate: false });
+        }
+        if (url.endsWith("/api/statements") && method === "POST") {
+          uploads += 1;
+          return jsonResponse({ statement: { ...STATEMENT_AWAITING, id: 200 + uploads }, proposal: uploads === 1 ? unsure : confident }, 201);
+        }
+        if (url.includes("/api/jobs/job-201")) {
+          return jsonResponse({ id: "job-201", kind: "import", status: "done", progress: 1, inserted: 5, remembered: true });
+        }
+        if (/\/api\/statements\/201$/.test(url)) return jsonResponse({ ...STATEMENT_PARSED, id: 201 });
+        return jsonResponse([]);
+      });
+      await renderScreen(fetchMock);
+      await waitFor(() => expect(screen.getByTestId("import-target")).toBeInTheDocument());
+      await userEvent.upload(screen.getByLabelText("Choose statement PDFs"), [new File(["%PDF-1.4"], "a.pdf", { type: "application/pdf" })]);
+      await userEvent.click(await screen.findByRole("button", { name: "Import" }));
+      await waitFor(() => expect(MockEventSource.instances.some((i) => i.url.includes("job-201"))).toBe(true));
+      // b is auto-imported at upload; its request is held in flight.
+      await userEvent.upload(screen.getByLabelText("Choose statement PDFs"), [new File(["%PDF-1.4"], "b.pdf", { type: "application/pdf" })]);
+      await waitFor(() => expect(extracted).toEqual([201, 202]));
+      // a finishes and remembers its extractor: the peer refresh must not confirm b again.
+      act(() => {
+        MockEventSource.instances.find((i) => i.url.includes("job-201"))!.onmessage?.({ data: JSON.stringify({ status: "done", progress: 1 }) });
+      });
+      const sawUrl = (part: string) => fetchMock.mock.calls.some(([i]) => describeRequest(i).url.includes(part));
+      // The refresh after a's job has run (its needs-review count was asked for)...
+      await waitFor(() => expect(sawUrl("/api/transactions?statement_id=201")).toBe(true));
+      // ...and b, whose request is still in flight, was neither re-proposed nor re-confirmed.
+      expect(sawUrl("/propose")).toBe(false);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      release();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(extracted).toEqual([201, 202]);
+    });
+
+    it("explains what the remember box keeps and what it would replace", async () => {
+      const fetchMock = vi.fn<typeof fetch>((input) => Promise.resolve(((): Response => {
+        const { url, method } = describeRequest(input);
+        if (url.includes("/api/users")) return jsonResponse([USER]);
+        if (url.includes("/api/issuers")) return jsonResponse([{ ...ISSUER, default_parser_id: "llm" }]);
+        if (url.includes("/api/settings")) return jsonResponse({ llm: { mode: "none" } });
+        if (url.endsWith("/api/statements") && method === "POST") {
+          return jsonResponse({
+            statement: { ...STATEMENT_AWAITING, id: 301 },
+            proposal: { issuer_id: 3, parser_id: "layout_a_credit", layout_spec_id: null, confidence: 0.5, auto_confirmed: false, remembered: false },
+          }, 201);
+        }
+        return jsonResponse([]);
+      })()));
+      await renderScreen(fetchMock);
+      await waitFor(() => expect(screen.getByTestId("import-target")).toBeInTheDocument());
+      await userEvent.upload(screen.getByLabelText("Choose statement PDFs"), [new File(["%PDF-1.4"], "a.pdf", { type: "application/pdf" })]);
+      expect(await screen.findByLabelText("Use layout a credit for future Chase statements")).toBeChecked();
+      expect(screen.getByTestId("remember-note")).toHaveTextContent(
+        "Chase currently remembers the LLM. Importing will replace it with layout a credit",
+      );
+      await userEvent.click(screen.getByLabelText("Use layout a credit for future Chase statements"));
+      expect(screen.getByTestId("remember-note")).toHaveTextContent("it will stay that way");
+    });
+
+    it("quietly leaves a peer alone when propose answers 409 (already parsed)", async () => {
+      const { extracted } = await dropBatch({ proposeWith: REMEMBERED, proposeStatus: 409 });
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      expect(extracted).toEqual([101]);
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    });
+
+    it("never imports a peer with the LLM on its own", async () => {
+      const { proposed, extracted } = await dropBatch({
+        proposeWith: { ...REMEMBERED, parser_id: "llm", layout_spec_id: null },
+        skipConfirm: true,
+      });
+      await waitFor(() => expect(proposed.sort()).toEqual([102, 103]));
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      expect(extracted).toEqual([101]);
+    });
   });
 });

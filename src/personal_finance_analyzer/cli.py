@@ -407,6 +407,18 @@ def import_cmd(
                 resolved_issuer_id = crud.unknown_issuer_id(session)
 
             used_parser_id = parser_id if parser_id is not None else proposal.parser_id
+            remember_extractor = remember or issuer_id is not None
+            if remember_extractor and layout_spec_id is not None:
+                spec_problem = crud.remembered_spec_problem(
+                    session, resolved_issuer_id, layout_spec_id
+                )
+                if spec_problem is not None:
+                    typer.echo(
+                        f"{raw_path}: warning: not remembering layout spec {layout_spec_id}: "
+                        f"{spec_problem}",
+                        err=True,
+                    )
+                    remember_extractor = False
             try:
                 result = gateway.confirm_import(
                     session,
@@ -416,7 +428,7 @@ def import_cmd(
                     layout_spec_id=(
                         layout_spec_id if layout_spec_id is not None else proposal.layout_spec_id
                     ),
-                    remember=remember or issuer_id is not None,
+                    remember=remember_extractor,
                     pages=selected_pages,
                 )
                 session.commit()
@@ -744,6 +756,12 @@ def issuers_add(
             typer.echo(f"{exc} (issuer #{exc.existing.id})", err=True)
             raise typer.Exit(code=1) from None
         if default_spec is not None:
+            problem = crud.remembered_spec_problem(session, issuer.id, default_spec)
+            if problem is not None:
+                # Nothing is created: the issuer and the bad spec are rejected together.
+                session.rollback()
+                typer.echo(f"--default-spec {default_spec}: {problem}", err=True)
+                raise typer.Exit(code=1)
             issuer = crud.update_issuer(
                 session, issuer, name=None, match_terms=None, default_spec_id=default_spec
             )

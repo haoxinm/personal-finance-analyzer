@@ -66,6 +66,12 @@ describe("App shell nav", () => {
     expect(screen.queryByRole("link", { name: "Component gallery" })).not.toBeInTheDocument();
   });
 
+  it("has the colour theme toggle in the header", async () => {
+    await renderApp("/spending");
+    const group = screen.getByRole("radiogroup", { name: "Colour theme" });
+    expect(within(group).getAllByRole("radio")).toHaveLength(3);
+  });
+
   it("renders a 'Page not found' page with links to the sections for an unknown route", async () => {
     await renderApp("/no/such/page");
     const page = await screen.findByTestId("not-found");

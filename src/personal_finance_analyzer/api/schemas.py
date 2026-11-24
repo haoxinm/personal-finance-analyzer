@@ -12,11 +12,19 @@ Amounts are minor units everywhere (I5). `mask` never appears here (A12/export l
 
 from __future__ import annotations
 
+import unicodedata
 from datetime import date, datetime
 from enum import StrEnum
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
 
 from personal_finance_analyzer.core.forecast import (
     MAX_AMOUNT_MINOR,
@@ -105,14 +113,28 @@ class AccountUpdate(_Model):
     issuer_id: int | None = None
     account_type: AccountType | None = None
     mask: str | None = None
+    #: ISO-4217-style code (three capital letters). Also rewrites the currency of the account's
+    #: transactions, which is what analytics and the grid filter on.
     currency: str | None = None
 
 
 # --- Statements ----------------------------------------------------------------------------------
 
 
+#: Largest absolute amount a user may type for a corrected transaction (1,000,000,000.00).
+MAX_CORRECTED_AMOUNT_MINOR = 100_000_000_000
+
+
+#: Why a parsed statement needs a second look (`Statement.attention`).
+StatementAttention = Literal[
+    "no_transactions", "all_duplicates", "reconciliation_mismatch", "layout_drift", "pdf_missing"
+]
+
+
 class Statement(_Model):
     id: int
+    #: The person it belongs to: the account's owner once imported, else the user it was uploaded
+    #: for.
     user_id: int | None = None
     account_id: int | None
     issuer_id: int | None = None
@@ -131,6 +153,58 @@ class Statement(_Model):
     #: 1-based page numbers kept for parsing (and sent to the LLM, for the LLM parser);
     #: `None` = every page.
     selected_pages: list[int] | None = None
+    #: The uploaded file's (sanitized) name.
+    original_name: str = ""
+    #: A PDF copy is on record (`stored_path` is set), so the statement can be re-imported.
+    has_pdf: bool = False
+    #: The PDF is a file the user put in the documents folder themselves (never removed unless
+    #: the user asks when deleting the statement).
+    pdf_in_place: bool = False
+    #: Rows the extractor returned before dedupe (`txn_count` counts only the rows added);
+    #: `None` for a statement imported before this was recorded.
+    parsed_row_count: int | None = None
+    #: What needs attention on a parsed statement (empty otherwise).
+    attention: list[StatementAttention] = Field(default_factory=list)
+    #: The account's currency (`None` until imported).
+    currency: str | None = None
+    #: A PDF copy was recorded but is no longer in the documents folder (re-import is impossible
+    #: until it is put back).
+    pdf_missing: bool = False
+    #: Every parsed amount is negated (set by a re-import with `flip_sign`).
+    flip_sign: bool = False
+    #: The user corrected the period: `period_start`/`period_end` are the corrected values.
+    period_corrected: bool = False
+    #: The period as parsed (equals `period_*` when it was not corrected).
+    parsed_period_start: date | None = None
+    parsed_period_end: date | None = None
+    #: Rows added by hand / excluded from totals on this statement.
+    manual_count: int = 0
+    excluded_count: int = 0
+    #: The rows would reconcile if every amount were sign-flipped (re-import with `flip_sign`).
+    sign_flip_suggested: bool = False
+
+
+class StatementPatchResult(Statement):
+    """`PATCH /api/statements/{id}`: the statement after the change, plus what moved."""
+
+    rows_moved: int = 0
+    duplicates_deleted: int = 0
+
+
+class ExtractorCandidate(_Model):
+    """`GET /api/statements/{id}/extractors` row: an extractor the statement could be re-imported
+    with. Send `parser_id` or `layout_spec_id` (exactly one) in the re-import request."""
+
+    kind: Literal["parser", "spec", "llm"]
+    parser_id: str | None = None
+    layout_spec_id: int | None = None
+    label: str
+    #: `detect()` on the statement's saved pages (0..1); `None` for the LLM or an unscorable spec.
+    score: float | None = None
+    #: The extractor the statement was imported with.
+    recorded: bool = False
+    #: The issuer's remembered extractor.
+    remembered: bool = False
 
 
 class ExtractorProposal(_Model):
@@ -139,6 +213,8 @@ class ExtractorProposal(_Model):
     layout_spec_id: int | None
     confidence: float
     auto_confirmed: bool
+    #: This is the extractor remembered for the issuer (not just the best-scoring one).
+    remembered: bool = False
 
 
 class StatementUploadResponse(_Model):
@@ -157,6 +233,30 @@ class ExtractRequest(_Model):
     remember: bool = False
     #: 1-based pages to keep/parse; `None` = the statement's saved selection (default: all).
     pages: list[int] | None = None
+
+
+class ReparseRequest(_Model):
+    """`POST /api/statements/{id}/reparse`. With neither `parser_id` nor `layout_spec_id` the
+    statement's recorded extractor is used."""
+
+    #: Accepted for compatibility with the Layout mapper; the statement's own issuer is used.
+    issuer_id: int | None = None
+    layout_spec_id: int | None = None
+    #: A built-in parser id, or `"llm"` for the LLM statement parser.
+    parser_id: str | None = None
+    #: Accepted and ignored: a re-import never rewrites the remembered layout.
+    remember: bool = False
+    #: 1-based pages to keep/parse; `None` = the statement's saved selection (default: all).
+    pages: list[int] | None = None
+    #: Drop the user's edits (category, kind, notes, field corrections) on this statement's
+    #: transactions instead of restoring them onto the rebuilt rows.
+    discard_edits: bool = False
+    #: Allow a re-import that finds no transactions to replace a statement that has some. Without
+    #: it such a job fails with `error_code="empty_result"` and nothing is changed.
+    allow_empty: bool = False
+    #: Negate every parsed amount (the extractor read the signs the wrong way round). `None` keeps
+    #: the statement's current setting. Hand-added rows are never flipped.
+    flip_sign: bool | None = None
 
 
 class StatementPageInfo(_Model):
@@ -186,6 +286,14 @@ class LlmParsePreview(_Model):
 class StatementPatch(_Model):
     user_id: int | None = None
     account_id: int | None = None
+    #: Change the bank: the statement moves to the account of the same person, type and mask under
+    #: this issuer (created when missing). Not with `account_id`.
+    issuer_id: int | None = None
+    #: Correct the statement period (both, `start <= end`, at most 400 days, 1970..today+1y).
+    period_start: date | None = None
+    period_end: date | None = None
+    #: Put the parsed period back.
+    revert_period: bool | None = None
 
 
 class JobIdResponse(_Model):
@@ -220,6 +328,24 @@ class Job(_Model):
     #: and edits dropped because no single rebuilt row could be matched to them. `None` otherwise.
     restored_edits: int | None = None
     unmatched_edits: int | None = None
+    #: On a re-parse job run with `discard_edits`: edited rows whose edits were dropped.
+    discarded_edits: int | None = None
+    #: Machine-readable failure code on an `error` job (`PfaError.code`): `empty_result` = a
+    #: re-import would have removed every transaction and was not applied (nothing changed).
+    error_code: str | None = None
+    #: On a finished `import` job: the shape warnings of the parse (reconciliation, drift, "no
+    #: transactions found" ...) and whether the layout drifted. `None` otherwise.
+    warnings: list[str] | None = None
+    layout_drift: bool | None = None
+    #: Rows the extractor returned (before dedupe): 0 means it found nothing.
+    parsed_count: int | None = None
+    #: On a finished re-parse job: how many transactions the statement had before.
+    previous_txn_count: int | None = None
+    #: On a finished extract job with `remember`: the extractor was stored for the issuer.
+    remembered: bool | None = None
+    #: On a finished import or re-import job: hand-added rows the statement now covers, merged
+    #: into the parsed rows and removed.
+    absorbed_manual: int | None = None
 
 
 # --- Transactions ----------------------------------------------------------------------------------
@@ -262,6 +388,14 @@ class TransactionCandidates(_Model):
     conflict: bool
 
 
+class TransactionCorrections(_Model):
+    """The *imported* values of the fields the user corrected (None = not corrected)."""
+
+    posted_date: date | None = None
+    amount_minor: int | None = None
+    description_clean: str | None = None
+
+
 class Transaction(_Model):
     id: int
     statement_id: int
@@ -278,9 +412,52 @@ class Transaction(_Model):
     merchant_key: str | None
     notes: str | None
     needs_review: bool
+    #: Imported values of the date/amount/description the user corrected; None when none is.
+    corrections: TransactionCorrections | None = None
+    #: `parsed` (read from the statement) or `manual` (added by hand).
+    source: Literal["parsed", "manual"] = "parsed"
+    #: Left out of every total (analytics, the grid by default, export by default).
+    excluded: bool = False
     #: Only present when the list was asked for it (`include_candidates` / `include_conflict`).
     candidates: list[TransactionCandidate] | None = None
     conflict: bool | None = None
+
+
+class TransactionCreate(_Model):
+    """`POST /api/transactions`: add a row by hand to an imported statement. The account and
+    person come from the statement. Without a category the deterministic cascade (never the LLM)
+    files it; with one it is a one-time edit."""
+
+    statement_id: int
+    posted_date: date
+    description: str
+    #: Signed minor units, positive = money out (I5), non-zero.
+    amount_minor: int
+    kind: Kind | None = None
+    category_key: str | None = None
+    subcategory_key: str | None = None
+    notes: str | None = None
+
+    @field_validator("description")
+    @classmethod
+    def _check_description(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("description must not be blank")
+        if len(value) > 200:
+            raise ValueError("description must be at most 200 characters")
+        if any(unicodedata.category(ch) in ("Cc", "Cf") or ch in "\u2028\u2029" for ch in value):
+            raise ValueError("description must not contain control or invisible characters")
+        return value
+
+    @field_validator("amount_minor")
+    @classmethod
+    def _check_amount(cls, value: int) -> int:
+        if value == 0:
+            raise ValueError("amount must not be zero")
+        if abs(value) > MAX_CORRECTED_AMOUNT_MINOR:
+            raise ValueError("amount is too large")
+        return value
 
 
 class TransactionList(_Model):
@@ -303,10 +480,47 @@ class TransactionPatch(_Model):
     subcategory_key: str | None = None
     kind: Kind | None = None
     notes: str | None = None
+    #: Corrections of what was imported. The imported value is kept (`Transaction.corrections`);
+    #: `dedupe_hash`, `description_raw` and `merchant_key` never change. Amount is signed minor
+    #: units, positive = money out (I5), non-zero.
+    posted_date: date | None = None
+    amount_minor: int | None = None
+    description_clean: str | None = None
+    #: Corrected fields to put back to their imported value.
+    revert_fields: list[Literal["posted_date", "amount_minor", "description_clean"]] = Field(
+        default_factory=list
+    )
     #: Also save an exact user rule for this transaction's merchant ("always categorize this
     #: merchant this way"), for future transactions. Needs a category and subcategory. Off by
     #: default: an edit is otherwise a one-time patch.
     create_rule: bool = False
+    #: Exclude the row from totals (`true`) or include it again (`false`).
+    excluded: bool | None = None
+
+    @field_validator("description_clean")
+    @classmethod
+    def _check_description(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            raise ValueError("description must not be blank")
+        if len(value) > 200:
+            raise ValueError("description must be at most 200 characters")
+        if any(unicodedata.category(ch) in ("Cc", "Cf") or ch in "\u2028\u2029" for ch in value):
+            raise ValueError("description must not contain control or invisible characters")
+        return value
+
+    @field_validator("amount_minor")
+    @classmethod
+    def _check_amount(cls, value: int | None) -> int | None:
+        if value is None:
+            return None
+        if value == 0:
+            raise ValueError("amount must not be zero")
+        if abs(value) > MAX_CORRECTED_AMOUNT_MINOR:
+            raise ValueError("amount is too large")
+        return value
 
 
 class TransactionState(_Model):
@@ -401,6 +615,20 @@ class BulkUpdateRequest(_Model):
 
 class BulkUpdateResponse(_Model):
     updated: int
+
+
+class BulkExcludeRequest(_Model):
+    transaction_ids: list[int]
+    #: `true` excludes the rows from totals, `false` includes them again.
+    excluded: bool
+
+
+class BulkExcludeResponse(_Model):
+    """`updated` rows changed; `changed_ids` are exactly those (send them back with `excluded`
+    negated to undo). Missing ids and rows already in that state are skipped."""
+
+    updated: int
+    changed_ids: list[int]
 
 
 class RevertToAutomaticResponse(_Model):
@@ -518,6 +746,8 @@ class Issuer(_Model):
     slug: str
     match_terms: list[str]
     default_spec_id: int | None = None
+    #: A remembered built-in parser id (or `"llm"`); exclusive with `default_spec_id`.
+    default_parser_id: str | None = None
 
 
 class IssuerCreate(_Model):
@@ -1757,6 +1987,10 @@ class WatchScanStarted(_Model):
     status: WatchStatus
 
 
+class WatchDismissAllResponse(_Model):
+    dismissed: int
+
+
 class WatchFile(_Model):
     id: int
     path: str
@@ -1771,6 +2005,8 @@ class WatchFile(_Model):
     statement_id: int | None = None
     tax_document_id: int | None = None
     warnings: list[str] = Field(default_factory=list)
+    #: When the user dismissed this problem (None = not dismissed).
+    dismissed_at: str | None = None
     first_seen: str
     last_seen: str
 

@@ -11,7 +11,9 @@ import {
   YAxis,
 } from "recharts";
 
-import { CHART_INCOME, CHART_TAX, TOOLTIP_STYLE } from "../chart-colors";
+import { CHART_AXIS_PROPS, CHART_GRID_PROPS, CHART_LEGEND_STYLE, CHART_TOOLTIP_PROPS } from "@/lib/chart-theme";
+
+import { CHART_INCOME, CHART_TAX } from "../chart-colors";
 import {
   headlineBasisLabel,
   headlineBasisNote,
@@ -52,11 +54,6 @@ export function YearOverYear({
       ),
     ),
   ];
-  const axis = {
-    stroke: "hsl(var(--muted-foreground))",
-    tick: { fill: "hsl(var(--muted-foreground))" },
-    fontSize: 12,
-  };
   return (
     <div className="flex flex-col gap-2">
       <div
@@ -77,16 +74,12 @@ export function YearOverYear({
             data={points}
             margin={{ top: 8, right: 8, bottom: 0, left: 8 }}
           >
-            <CartesianGrid
-              strokeDasharray="3 3"
-              vertical={false}
-              stroke="hsl(var(--border))"
-            />
-            <XAxis dataKey="label" {...axis} />
+            <CartesianGrid {...CHART_GRID_PROPS} />
+            <XAxis dataKey="label" {...CHART_AXIS_PROPS} />
             <YAxis
               tickFormatter={(v: number) => compact.format(v / 100)}
               width={72}
-              {...axis}
+              {...CHART_AXIS_PROPS}
             />
             <Tooltip
               formatter={(value: number, name: string) => [
@@ -101,9 +94,9 @@ export function YearOverYear({
                   ? `${label} · tax ${headlineBasisLabel(basis as HeadlineBasis)}`
                   : label;
               }}
-              contentStyle={TOOLTIP_STYLE}
+              {...CHART_TOOLTIP_PROPS}
             />
-            <Legend wrapperStyle={{ fontSize: 12 }} />
+            <Legend wrapperStyle={CHART_LEGEND_STYLE} />
             <Bar
               dataKey="income"
               name="Total income"

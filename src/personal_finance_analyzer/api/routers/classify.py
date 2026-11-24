@@ -31,7 +31,11 @@ def run_classify(
     session_factory: SessionFactoryDep,
 ) -> schemas.ClassifyRunResponse:
     # A hand-corrected transaction is final: a re-run never reconsiders it.
-    stmt = select(Transaction.id).where(Transaction.classified_by.is_distinct_from(USER_CLASSIFIED))
+    # An excluded row is not worth any LLM money either.
+    stmt = select(Transaction.id).where(
+        Transaction.classified_by.is_distinct_from(USER_CLASSIFIED),
+        Transaction.excluded.is_(False),
+    )
     if body.user_id is not None:
         stmt = stmt.where(Transaction.user_id == body.user_id)
     if body.statement_id is not None:

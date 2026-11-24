@@ -59,8 +59,21 @@ export interface ImportItem {
    * was already present (an overlapping statement). Undefined until the job's counts are read. */
   insertedCount?: number;
   skippedDuplicates?: number;
+  /** Hand-added rows an import replaced by matching freshly read ones. */
+  absorbedManual?: number;
 
   errorMessage?: string;
+
+  /** The user changed the issuer or extractor by hand: a re-proposal (after "remember", a new
+   * issuer, ...) must not overwrite it. */
+  choiceTouched?: boolean;
+
+  /** A fresh proposal that differs from what a touched item has: offered as "Use it". */
+  suggestedChoice?: {
+    issuerId: number | null;
+    extractorChoice: ExtractorChoice | null;
+    proposal: ExtractorProposal;
+  };
 
   /** Whether the extractor of the in-flight/last import attempt was the LLM (decides the wording
    * of a failure warning and whether to preselect the LLM afterwards). */

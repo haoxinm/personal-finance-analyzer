@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
 from personal_finance_analyzer.api.services import gateway
-from personal_finance_analyzer.core.paths import staging_dir
+from personal_finance_analyzer.core.paths import documents_dir, staging_dir
 from personal_finance_analyzer.db.models import Statement, utcnow_iso
 from personal_finance_analyzer.ingest.extract import sha256_file
 from tests.fixtures.gen.base import render_lines_pdf
@@ -39,6 +39,29 @@ def _staged_statement(session: Session, tmp_path: Path, **fields: object) -> int
     session.add(statement)
     session.commit()
     return statement.id
+
+
+def _confirm_in_place(session: Session, sid: int) -> None:
+    """Make the staged statement look confirmed with a kept PDF (what reparse requires up front)."""
+    from personal_finance_analyzer.db.models import Account, Issuer, User
+
+    user = User(name="Re", is_default=True)
+    issuer = Issuer(name="Re Bank", slug="re-bank", match_terms="[]")
+    session.add_all([user, issuer])
+    session.flush()
+    account = Account(
+        user_id=user.id, issuer_id=issuer.id, account_type="credit", display_name="Card"
+    )
+    session.add(account)
+    session.flush()
+    statement = session.get(Statement, sid)
+    assert statement is not None
+    statement.account_id = account.id
+    statement.stored_path = "Re/s.pdf"
+    kept = documents_dir() / "Re" / "s.pdf"  # the kept copy a re-import reads must exist
+    kept.parent.mkdir(parents=True, exist_ok=True)
+    kept.write_bytes((staging_dir() / f"{statement.file_sha256}.pdf").read_bytes())
+    session.commit()
 
 
 def test_pages_listing_and_selection_flags(
@@ -149,6 +172,7 @@ def test_extract_and_reparse_pass_pages_through(
     client: TestClient, session: Session, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     sid = _staged_statement(session, tmp_path)
+    _confirm_in_place(session, sid)
     seen: dict[str, object] = {}
 
     def fake_confirm(db: Session, statement_id: int, **kw: object) -> gateway.ImportResult:
@@ -188,6 +212,7 @@ def test_reparse_job_reports_restored_and_unmatched_edits(
     import time
 
     sid = _staged_statement(session, tmp_path)
+    _confirm_in_place(session, sid)
 
     def fake_reparse(db: Session, statement_id: int, **kw: object) -> gateway.ImportResult:
         return gateway.ImportResult(

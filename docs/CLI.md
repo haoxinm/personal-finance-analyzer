@@ -84,8 +84,9 @@ statement.pdf: statement #7 awaiting_extractor (detect_score=0.4); confirm with:
 ```
 
 Options: `--user-id`, `--issuer-id` / `--parser-id` / `--layout-spec-id` (pin the extractor
-instead of accepting the proposal), `--remember` (make this the issuer's default extractor for
-future imports), `--pages` (see below). Re-importing a byte-identical file is a no-op; an
+instead of accepting the proposal), `--remember` (make this the issuer's remembered extractor,
+a layout spec or a built-in parser or the LLM, which later proposals for that issuer use first;
+nothing is remembered when the import finds no transactions), `--pages` (see below). Re-importing a byte-identical file is a no-op; an
 overlapping statement period never creates duplicate transaction rows.
 
 ### Choosing pages and the LLM extractor
@@ -483,7 +484,9 @@ $ pfa export --output transactions.csv
 Exports transactions to CSV (default) or `--format json`, to a file or `-` for stdout.
 **Never includes `accounts.mask`** (the last-4 account digits) — this is checked directly by
 `tests/api/test_export.py`, not only by the response schema. `--user-id` / `--all-users` narrow
-the export; with neither, everything is exported.
+the export; with neither, everything is exported, except rows you excluded from totals in the web
+UI. The CSV and JSON end with two columns, `source` (`parsed` or `manual`, a row added by hand) and
+`excluded`.
 
 ## `backup`
 

@@ -242,3 +242,109 @@ def test_the_service_starts_and_stops_with_the_app(app_instance: FastAPI) -> Non
     with TestClient(app_instance, base_url="http://127.0.0.1"):
         assert service._thread is not None
     assert service._thread is None
+
+
+# ----------------------------------------------------------------------------- dismiss
+
+BROKEN = "Alex/Statements/Bank/broken.pdf"
+
+
+def _problems(client: TestClient, view: str = "problems") -> list[dict[str, object]]:
+    items: list[dict[str, object]] = client.get("/api/watch/files", params={"view": view}).json()[
+        "items"
+    ]
+    return items
+
+
+def _one_broken(client: TestClient, app: FastAPI) -> int:
+    _no_wait(app)
+    put_pdf_bytes(BROKEN, b"%PDF-1.4\nnot a pdf\n%%EOF\n")
+    _scan(client, app)
+    (problem,) = _problems(client)
+    assert problem["dismissed_at"] is None
+    return int(str(problem["id"]))
+
+
+def test_dismissing_a_problem_moves_it_to_the_dismissed_view(
+    client: TestClient, app_instance: FastAPI, alex: User
+) -> None:
+    file_id = _one_broken(client, app_instance)
+    assert client.post(f"/api/watch/files/{file_id}/dismiss").status_code == 204
+    assert _problems(client) == []
+    assert client.get("/api/watch/files", params={"view": "problems"}).json()["total"] == 0
+    (dismissed,) = _problems(client, "dismissed")
+    assert dismissed["id"] == file_id and dismissed["dismissed_at"] is not None
+    assert client.get("/api/watch/files", params={"view": "dismissed"}).json()["total"] == 1
+
+    assert client.post(f"/api/watch/files/{file_id}/undismiss").status_code == 204
+    assert len(_problems(client)) == 1 and _problems(client, "dismissed") == []
+
+
+def test_an_unchanged_dismissed_file_stays_dismissed_across_scans(
+    client: TestClient, app_instance: FastAPI, alex: User
+) -> None:
+    file_id = _one_broken(client, app_instance)
+    client.post(f"/api/watch/files/{file_id}/dismiss")
+    time.sleep(0.01)
+    _scan(client, app_instance)
+    _scan(client, app_instance)
+    assert _problems(client) == []
+    assert len(_problems(client, "dismissed")) == 1
+
+
+def test_a_changed_dismissed_file_shows_again(
+    client: TestClient, app_instance: FastAPI, alex: User
+) -> None:
+    file_id = _one_broken(client, app_instance)
+    client.post(f"/api/watch/files/{file_id}/dismiss")
+    put_pdf_bytes(BROKEN, b"%PDF-1.4\nstill not a pdf, but different\n%%EOF\n")
+    _scan(client, app_instance)
+    (again,) = _problems(client)
+    assert again["path"] == BROKEN and again["dismissed_at"] is None
+    assert _problems(client, "dismissed") == []
+
+
+def test_retry_of_a_dismissed_problem_shows_it_again_after_the_next_scan(
+    client: TestClient, app_instance: FastAPI, alex: User
+) -> None:
+    file_id = _one_broken(client, app_instance)
+    client.post(f"/api/watch/files/{file_id}/dismiss")
+    assert client.post(f"/api/watch/files/{file_id}/retry").status_code == 204
+    assert _problems(client, "dismissed") == []
+    _scan(client, app_instance)
+    (again,) = _problems(client)
+    assert again["dismissed_at"] is None
+
+
+def test_dismissing_something_that_is_not_a_problem_is_404(
+    client: TestClient, app_instance: FastAPI, alex: User
+) -> None:
+    _no_wait(app_instance)
+    put_statement(STATEMENT)
+    _scan(client, app_instance)
+    (done,) = client.get("/api/watch/files").json()["items"]
+    assert client.post(f"/api/watch/files/{done['id']}/dismiss").status_code == 404
+    assert client.post(f"/api/watch/files/{done['id']}/undismiss").status_code == 404
+    assert client.post("/api/watch/files/9999/dismiss").status_code == 404
+    assert client.post("/api/watch/files/9999/undismiss").status_code == 404
+
+
+def test_dismiss_all_counts_what_it_dismissed(
+    client: TestClient, app_instance: FastAPI, alex: User
+) -> None:
+    _no_wait(app_instance)
+    put_pdf_bytes(BROKEN, b"%PDF-1.4\nnot a pdf\n%%EOF\n")
+    put_pdf_bytes("Alex/Statements/Bank/broken2.pdf", b"%PDF-1.4\nnor this\n%%EOF\n")
+    _scan(client, app_instance)
+    assert len(_problems(client)) == 2
+    assert client.post("/api/watch/files/dismiss-all").json() == {"dismissed": 2}
+    assert _problems(client) == [] and len(_problems(client, "dismissed")) == 2
+    assert client.post("/api/watch/files/dismiss-all").json() == {"dismissed": 0}
+
+
+def test_the_dismiss_endpoints_need_the_api_token(app_instance: FastAPI) -> None:
+    with TestClient(
+        app_instance, base_url="http://127.0.0.1", headers={"Host": "127.0.0.1"}
+    ) as bare:
+        for path in ("1/dismiss", "1/undismiss", "dismiss-all"):
+            assert bare.post(f"/api/watch/files/{path}").status_code in (401, 403)

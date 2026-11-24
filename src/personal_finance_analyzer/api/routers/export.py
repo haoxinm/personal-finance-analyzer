@@ -21,7 +21,7 @@ from personal_finance_analyzer.api.services import crud
 router = APIRouter(tags=["export"])
 
 #: `schemas.Transaction` fields that are list-view extras (one-click suggestions), not exported.
-_NOT_EXPORTED = {"candidates", "conflict"}
+_NOT_EXPORTED = {"candidates", "conflict", "corrections"}
 
 _FIELDS = (
     "id",
@@ -39,6 +39,8 @@ _FIELDS = (
     "merchant_key",
     "notes",
     "needs_review",
+    "source",
+    "excluded",
 )
 
 
@@ -90,6 +92,8 @@ def export_transactions(
             merchant_key=t.merchant_key,
             notes=t.notes,
             needs_review=t.needs_review,
+            source="manual" if t.source == "manual" else "parsed",
+            excluded=t.excluded,
         )
         for t in transactions
     ]

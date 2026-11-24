@@ -1,12 +1,18 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  OTHER_KEY,
+  buildCategoryDrillParams,
   computeMonthOverMonthDelta,
+  defaultCategoryLabel,
   detectOtherCurrencies,
   distinctCategories,
   humanizeMerchantKey,
+  pieSlicesFromTotals,
   pivotByCategory,
   toTrendPoints,
+  topCategoriesWithOther,
+  totalsByCategory,
   totalsByUser,
   type AnalyticsRow,
 } from "./logic";
@@ -188,5 +194,96 @@ describe("detectOtherCurrencies", () => {
 
   it("returns an empty array with no accounts", () => {
     expect(detectOtherCurrencies([], "USD")).toEqual([]);
+  });
+});
+
+describe("chart-type helpers", () => {
+  const row = (period: string, category: string | null, total: number) =>
+    ({ period, category, currency: "USD", total_minor: total, txn_count: 1, avg_minor: total }) as AnalyticsRow;
+
+  it("totalsByCategory sums across periods, buckets null as uncategorized, sorts descending", () => {
+    const totals = totalsByCategory([row("2026-01", "food", 100), row("2026-02", "food", 50), row("2026-01", null, 400), row("2026-01", "rent", 10)]);
+    expect(totals).toEqual([
+      { key: "uncategorized", totalMinor: 400 },
+      { key: "food", totalMinor: 150 },
+      { key: "rent", totalMinor: 10 },
+    ]);
+  });
+
+  it("pieSlicesFromTotals excludes non-positive totals and lists them", () => {
+    const result = pieSlicesFromTotals([
+      { key: "a", totalMinor: 300 },
+      { key: "b", totalMinor: 100 },
+      { key: "refunds", totalMinor: -50 },
+      { key: "zero", totalMinor: 0 },
+    ]);
+    expect(result.excluded).toEqual(["refunds", "zero"]);
+    expect(result.totalMinor).toBe(400);
+    expect(result.slices.map((s) => s.key)).toEqual(["a", "b"]);
+    expect(result.slices[0]!.percent).toBeCloseTo(75);
+  });
+
+  it("pieSlicesFromTotals merges the tail above maxSlices into Other", () => {
+    const totals = Array.from({ length: 11 }, (_, i) => ({ key: `c${i}`, totalMinor: (11 - i) * 10 }));
+    const result = pieSlicesFromTotals(totals, 8);
+    expect(result.slices).toHaveLength(9);
+    expect(result.slices[8]).toMatchObject({ key: OTHER_KEY, totalMinor: 30 + 20 + 10 });
+    expect(result.slices.reduce((sum, s) => sum + s.percent, 0)).toBeCloseTo(100);
+  });
+
+  it("pieSlicesFromTotals handles empty input", () => {
+    expect(pieSlicesFromTotals([])).toEqual({ slices: [], excluded: [], totalMinor: 0 });
+  });
+
+  it("topCategoriesWithOther keeps the top n by absolute total and sums the rest, filling gaps with 0", () => {
+    const points = pivotByCategory([
+      row("2026-01", "big", 1000),
+      row("2026-02", "big", 900),
+      row("2026-01", "mid", 500),
+      row("2026-02", "neg", -700),
+      row("2026-01", "tiny1", 5),
+      row("2026-02", "tiny2", 7),
+    ]);
+    const { keys, data } = topCategoriesWithOther(points, distinctCategories(points), 3);
+    expect(keys).toEqual(["big", "neg", "mid", OTHER_KEY]);
+    expect(data).toEqual([
+      { period: "2026-01", big: 1000, neg: 0, mid: 500, [OTHER_KEY]: 5 },
+      { period: "2026-02", big: 900, neg: -700, mid: 0, [OTHER_KEY]: 7 },
+    ]);
+  });
+
+  it("topCategoriesWithOther adds no Other series when everything fits", () => {
+    const points = pivotByCategory([row("2026-01", "a", 1)]);
+    expect(topCategoriesWithOther(points, ["a"], 8).keys).toEqual(["a"]);
+  });
+});
+
+describe("merged bucket label", () => {
+  it("is not confusable with the taxonomy's Others category", () => {
+    expect(defaultCategoryLabel(OTHER_KEY)).toBe("All other categories");
+  });
+  it("records which categories were merged", () => {
+    const totals = Array.from({ length: 10 }, (_, i) => ({ key: `c${i}`, totalMinor: (10 - i) * 100 }));
+    const merged = pieSlicesFromTotals(totals, 8).slices.at(-1)!;
+    expect(merged.key).toBe(OTHER_KEY);
+    expect(merged.members).toEqual(["c8", "c9"]);
+  });
+});
+
+describe("buildCategoryDrillParams", () => {
+  it("maps the uncategorized pseudo-key to the grid's uncategorized filter", () => {
+    const q = buildCategoryDrillParams("uncategorized", { currency: "EUR", userIds: [1, 2], dateFrom: "2025-01-01" });
+    expect(q.get("uncategorized")).toBe("true");
+    expect(q.has("category_keys")).toBe(false);
+    expect(q.get("currency")).toBe("EUR");
+    expect(q.getAll("user_ids")).toEqual(["1", "2"]);
+    expect(q.get("date_from")).toBe("2025-01-01");
+  });
+
+  it("uses category_keys for a real category", () => {
+    const q = buildCategoryDrillParams("groceries", { currency: "USD" });
+    expect(q.get("category_keys")).toBe("groceries");
+    expect(q.has("uncategorized")).toBe(false);
+    expect(q.has("user_ids")).toBe(false);
   });
 });

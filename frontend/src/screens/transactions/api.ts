@@ -1,6 +1,6 @@
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { apiClient, throwIfError } from "@/api/client";
+import { ApiError, apiClient, throwIfError, type components } from "@/api/client";
 import type { SpendQueryParams } from "@/hooks/use-spend-query-params";
 
 import type { GridParams } from "./use-grid-params";
@@ -26,7 +26,10 @@ export function toTransactionsQuery(filters: SpendQueryParams, grid?: GridParams
     amount_min_minor: filters.amountMinMinor,
     amount_max_minor: filters.amountMaxMinor,
     kinds: filters.kinds as Kind[] | undefined,
-    include_non_spend: filters.includeNonSpend,
+    // A statement's own rows include its payments, so the count matches the statement card; the
+    // spend-only default stays for every other view (an explicit `include_non_spend` still wins).
+    include_non_spend:
+      filters.includeNonSpend ?? (grid?.statementId !== undefined ? true : undefined),
     search: filters.search,
     currency: filters.currency,
     // Grid-only filters (`use-grid-params.ts`); omitted when no `grid` is given.
@@ -37,6 +40,9 @@ export function toTransactionsQuery(filters: SpendQueryParams, grid?: GridParams
           uncategorized: grid.uncategorized,
           conflict: grid.conflict,
           statement_id: grid.statementId,
+          // Default (undefined) lets the server hide excluded rows.
+          excluded: grid.excluded,
+          source: grid.source,
         }),
   };
 }
@@ -77,6 +83,68 @@ export function useTransactionsGrid(filters: SpendQueryParams, grid: GridParams,
       const loaded = pages.reduce((sum, page) => sum + page.items.length, 0);
       return loaded < lastPage.total ? pages.length + 1 : undefined;
     },
+  });
+}
+
+/** Everything a change to a transaction's inclusion, existence or amount moves: the grid, the
+ *  statement cards (counts, reconciliation), every chart and total, the review queue. */
+function invalidateAfterRowChange(queryClient: ReturnType<typeof useQueryClient>) {
+  for (const key of ["transactions", "statements", "analytics", "dashboard", "review", "net-worth", "tax"]) {
+    void queryClient.invalidateQueries({ queryKey: [key] });
+  }
+}
+
+export type TransactionCreateBody = components["schemas"]["TransactionCreate"];
+
+/** `POST /transactions`: add a row by hand to an imported statement. */
+export function useCreateTransaction() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (body: TransactionCreateBody) => {
+      const { data, error } = await apiClient.POST("/transactions", { body });
+      throwIfError(error);
+      return data!;
+    },
+    onSuccess: () => invalidateAfterRowChange(queryClient),
+  });
+}
+
+/** `DELETE /transactions/{id}`: only hand-added rows; a parsed row answers 409 `parsed_row`. */
+export function useDeleteTransaction() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (id: number) => {
+      const { error } = await apiClient.DELETE("/transactions/{id}", { params: { path: { id } } });
+      throwIfError(error);
+    },
+    onSuccess: () => invalidateAfterRowChange(queryClient),
+  });
+}
+
+/** True for the 409 the server sends when asked to delete a row read from the statement. */
+export function isParsedRowError(error: unknown): boolean {
+  return (
+    error instanceof ApiError &&
+    typeof error.detail === "object" &&
+    error.detail !== null &&
+    "code" in error.detail &&
+    error.detail.code === "parsed_row"
+  );
+}
+
+/** `POST /transactions/bulk-exclude`. The result's `changed_ids` are exactly the rows that
+ *  changed; an Undo sends only those back with `excluded` negated. */
+export function useBulkExclude() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { transactionIds: number[]; excluded: boolean }) => {
+      const { data, error } = await apiClient.POST("/transactions/bulk-exclude", {
+        body: { transaction_ids: input.transactionIds, excluded: input.excluded },
+      });
+      throwIfError(error);
+      return data!;
+    },
+    onSuccess: () => invalidateAfterRowChange(queryClient),
   });
 }
 

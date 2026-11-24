@@ -7,6 +7,7 @@ import {
   CONFIDENT_SCORE_THRESHOLD,
   extractorChoiceForIssuer,
   isConfidentProposal,
+  pendingPeers,
   shouldAutoConfirm,
   useImportQueue,
 } from "./use-import-queue";
@@ -26,6 +27,15 @@ function makeStatement(overrides: Partial<Statement> = {}): Statement {
     shape_warnings: null,
     error_detail: null,
     created_at: "2024-02-01T00:00:00Z",
+    original_name: "statement.pdf",
+    has_pdf: true,
+    pdf_in_place: false,
+    pdf_missing: false,
+    flip_sign: false,
+    period_corrected: false,
+    manual_count: 0,
+    excluded_count: 0,
+    sign_flip_suggested: false,
     ...overrides,
   };
 }
@@ -37,6 +47,7 @@ function makeProposal(overrides: Partial<ExtractorProposal> = {}): ExtractorProp
     layout_spec_id: null,
     confidence: 0.9,
     auto_confirmed: false,
+    remembered: false,
     ...overrides,
   };
 }
@@ -381,5 +392,116 @@ describe("extractorChoiceForIssuer", () => {
 
   it("returns null when neither is available", () => {
     expect(extractorChoiceForIssuer(9, specs, null)).toBeNull();
+  });
+});
+
+describe("re-proposing pending items (remember reaches the batch)", () => {
+  const remembered = makeProposal({
+    issuer_id: 3,
+    parser_id: null,
+    layout_spec_id: 9,
+    confidence: 0.85,
+    remembered: true,
+  });
+
+  function setup(items: ImportItem[]) {
+    const hook = renderHook(() => useImportQueue());
+    act(() => hook.result.current.dispatch({ type: "files_queued", items }));
+    return hook;
+  }
+  const pending = (clientId: string, overrides: Partial<ImportItem> = {}) =>
+    makeItem({ clientId, statementId: Number(clientId.slice(1)), statement: makeStatement(), ...overrides });
+
+  it("an untouched peer adopts the new proposal and keeps its pages, remember flag and failure", () => {
+    const { result } = setup([
+      pending("c2", {
+        issuerId: null,
+        extractorChoice: null,
+        selectedPages: [2, 3],
+        remember: false,
+        failure: { detail: "boom", llm: false, previous: true },
+        proposal: makeProposal({ issuer_id: null, parser_id: null, confidence: 0 }),
+      }),
+    ]);
+    act(() =>
+      result.current.dispatch({
+        type: "proposal_refreshed",
+        clientId: "c2",
+        statement: makeStatement({ id: 2 }),
+        proposal: remembered,
+      }),
+    );
+    const item = result.current.items[0]!;
+    expect(item.issuerId).toBe(3);
+    expect(item.extractorChoice).toEqual({ kind: "spec", layoutSpecId: 9 });
+    expect(item.proposal).toEqual(remembered);
+    expect(item.selectedPages).toEqual([2, 3]);
+    expect(item.remember).toBe(false);
+    expect(item.failure).toEqual({ detail: "boom", llm: false, previous: true });
+    expect(item.suggestedChoice).toBeUndefined();
+  });
+
+  it("a touched peer keeps its choice and only gets a suggestion, which 'Use it' applies", () => {
+    const { result } = setup([pending("c2", { choiceTouched: true, extractorChoice: { kind: "parser", parserId: "llm" } })]);
+    act(() =>
+      result.current.dispatch({
+        type: "proposal_refreshed",
+        clientId: "c2",
+        statement: makeStatement({ id: 2 }),
+        proposal: remembered,
+      }),
+    );
+    let item = result.current.items[0]!;
+    expect(item.extractorChoice).toEqual({ kind: "parser", parserId: "llm" });
+    expect(item.suggestedChoice?.extractorChoice).toEqual({ kind: "spec", layoutSpecId: 9 });
+
+    act(() => result.current.dispatch({ type: "suggestion_applied", clientId: "c2" }));
+    item = result.current.items[0]!;
+    expect(item.extractorChoice).toEqual({ kind: "spec", layoutSpecId: 9 });
+    expect(item.suggestedChoice).toBeUndefined();
+    expect(item.choiceTouched).toBe(false);
+  });
+
+  it("a touched peer is not nagged by a proposal that is not remembered or matches its choice", () => {
+    const { result } = setup([pending("c2", { choiceTouched: true })]);
+    act(() =>
+      result.current.dispatch({
+        type: "proposal_refreshed",
+        clientId: "c2",
+        statement: makeStatement({ id: 2 }),
+        proposal: makeProposal({ parser_id: "other_parser", remembered: false }),
+      }),
+    );
+    expect(result.current.items[0]!.suggestedChoice).toBeUndefined();
+  });
+
+  it("ignores items that are no longer awaiting an extractor, and picking by hand marks the item touched", () => {
+    const { result } = setup([pending("c2", { status: "extracting" }), pending("c3")]);
+    act(() =>
+      result.current.dispatch({
+        type: "proposal_refreshed",
+        clientId: "c2",
+        statement: makeStatement({ id: 2 }),
+        proposal: remembered,
+      }),
+    );
+    expect(result.current.items[0]!.extractorChoice).toEqual({ kind: "parser", parserId: "layout_a_credit" });
+    act(() =>
+      result.current.dispatch({ type: "extractor_selected", clientId: "c3", extractorChoice: { kind: "parser", parserId: "llm" } }),
+    );
+    expect(result.current.items[1]!.choiceTouched).toBe(true);
+    act(() => result.current.dispatch({ type: "issuer_selected", clientId: "c2", issuerId: 3, extractorChoice: null }));
+    expect(result.current.items[0]!.choiceTouched).toBe(true);
+  });
+
+  it("pendingPeers picks other awaiting items of the same issuer or with none", () => {
+    const items = [
+      pending("c1"),
+      pending("c2"),
+      pending("c3", { issuerId: null }),
+      pending("c4", { issuerId: 8 }),
+      pending("c5", { status: "extracting" }),
+    ];
+    expect(pendingPeers(items, "c1", 3).map((i) => i.clientId)).toEqual(["c2", "c3"]);
   });
 });

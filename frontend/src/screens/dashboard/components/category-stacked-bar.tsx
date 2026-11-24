@@ -10,14 +10,24 @@ import {
   YAxis,
 } from "recharts";
 
+import {
+  CHART_AXIS_PROPS,
+  CHART_GRID_PROPS,
+  CHART_LEGEND_STYLE,
+  CHART_TOOLTIP_PROPS,
+} from "@/lib/chart-theme";
 import { EmptyState } from "@/components/primitives/states";
 
 import { colorMapForKeys } from "../chart-colors";
-import { distinctCategories, pivotByCategory, type AnalyticsRow } from "../logic";
+import { defaultCategoryLabel, distinctCategories, pivotByCategory, type AnalyticsRow } from "../logic";
 
 export interface CategoryStackedBarProps {
   rows: readonly AnalyticsRow[];
   currency: string;
+  /** Shared category -> colour map, so a category keeps its colour across chart types. */
+  colors?: Map<string, string>;
+  /** Category key -> display name (taxonomy name); defaults to the raw key. */
+  labelFor?: (key: string) => string;
 }
 
 function formatPeriodTick(period: string): string {
@@ -40,10 +50,16 @@ function currencyFormatter(currency: string) {
  * screen before then (a screenshot, a scripted test, a person glancing over) sees a transient,
  * *wrong* total. Numbers this load-bearing should be right the instant the chart mounts.
  */
-export function CategoryStackedBar({ rows, currency }: CategoryStackedBarProps) {
+export function CategoryStackedBar({
+  rows,
+  currency,
+  colors: sharedColors,
+  labelFor = defaultCategoryLabel,
+}: CategoryStackedBarProps) {
   const points = React.useMemo(() => pivotByCategory(rows), [rows]);
   const categories = React.useMemo(() => distinctCategories(points), [points]);
-  const colors = React.useMemo(() => colorMapForKeys(categories), [categories]);
+  const ownColors = React.useMemo(() => colorMapForKeys(categories, true), [categories]);
+  const colors = sharedColors ?? ownColors;
   const format = React.useMemo(() => currencyFormatter(currency), [currency]);
 
   if (points.length === 0) {
@@ -58,21 +74,30 @@ export function CategoryStackedBar({ rows, currency }: CategoryStackedBarProps) 
   const data = points.map((point) => ({ period: point.period, ...point.categories }));
 
   return (
-    <div className="h-72 w-full" data-testid="category-stacked-bar">
+    <div
+      className="h-72 w-full"
+      data-testid="category-stacked-bar"
+      role="img"
+      aria-label={`Stacked bar chart of spending by category over time: ${points.length} ${
+        points.length === 1 ? "period" : "periods"
+      }, ${categories.length} ${categories.length === 1 ? "category" : "categories"}`}
+    >
       <ResponsiveContainer width="100%" height="100%">
         <BarChart data={data} margin={{ top: 8, right: 8, bottom: 0, left: 8 }}>
-          <CartesianGrid strokeDasharray="3 3" vertical={false} className="stroke-border" />
-          <XAxis dataKey="period" tickFormatter={formatPeriodTick} fontSize={12} />
-          <YAxis tickFormatter={(v: number) => format(v)} width={80} fontSize={12} />
+          <CartesianGrid {...CHART_GRID_PROPS} />
+          <XAxis dataKey="period" tickFormatter={formatPeriodTick} {...CHART_AXIS_PROPS} />
+          <YAxis tickFormatter={(v: number) => format(v)} width={80} {...CHART_AXIS_PROPS} />
           <Tooltip
+            {...CHART_TOOLTIP_PROPS}
             formatter={(value: number, name: string) => [format(value), name]}
             labelFormatter={(label: string) => `Period: ${label}`}
           />
-          <Legend wrapperStyle={{ fontSize: 12 }} />
+          <Legend wrapperStyle={CHART_LEGEND_STYLE} />
           {categories.map((category) => (
             <Bar
               key={category}
               dataKey={category}
+              name={labelFor(category)}
               stackId="spend"
               fill={colors.get(category)}
               isAnimationActive={false}

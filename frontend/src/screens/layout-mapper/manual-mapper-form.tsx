@@ -220,7 +220,7 @@ export function ManualMapperForm({
           </ul>
         </div>
       ) : (
-        <p className="text-xs font-medium text-emerald-600">Valid — no problems found.</p>
+        <p className="text-xs font-medium text-emerald-600 dark:text-emerald-400">Valid — no problems found.</p>
       )}
     </div>
   );

@@ -45,6 +45,20 @@ class ImportProposal:
     layout_spec_id: int | None
     detect_score: float | None
     confident: bool
+    remembered: bool = False
+
+
+@dataclass(frozen=True)
+class ExtractorCandidate:
+    """Mirrors `ingest.pipeline.ExtractorCandidate`."""
+
+    kind: str  # 'parser' | 'spec' | 'llm'
+    parser_id: str | None
+    layout_spec_id: int | None
+    label: str
+    score: float | None
+    recorded: bool
+    remembered: bool
 
 
 @dataclass(frozen=True)
@@ -60,6 +74,11 @@ class ImportResult:
     warnings: tuple[str, ...]
     restored_edits: int = 0
     unmatched_edits: int = 0
+    discarded_edits: int = 0
+    parsed_count: int = 0
+    previous_txn_count: int | None = None
+    remembered: bool = False
+    absorbed_manual: int = 0
 
 
 @dataclass(frozen=True)
@@ -177,13 +196,21 @@ def reparse(
     parser_id: str | None,
     layout_spec_id: int | None,
     pages: Sequence[int] | None = None,
+    discard_edits: bool = False,
+    allow_empty: bool = False,
+    flip_sign: bool | None = None,
 ) -> ImportResult:
-    """Re-run extraction with a different extractor, rebuilding the statement's rows.
+    """Re-run extraction with a different extractor, rebuilding the statement's rows. A result
+    with no transactions replaces a statement that has some only with ``allow_empty``.
+    ``flip_sign`` (None = keep the statement's setting) negates every parsed amount.
 
     Raises:
         ModuleNotFoundError: `ingest/pipeline.py` (P2-A) is not present in this build.
     """
     fn = _resolve("personal_finance_analyzer.ingest.pipeline", "reparse")
+    extra: dict[str, Any] = {"allow_empty": True} if allow_empty else {}
+    if flip_sign is not None:
+        extra["flip_sign"] = flip_sign
     return cast(
         ImportResult,
         fn(
@@ -192,6 +219,64 @@ def reparse(
             parser_id=parser_id,
             layout_spec_id=layout_spec_id,
             pages=pages,
+            discard_edits=discard_edits,
+            **extra,
+        ),
+    )
+
+
+def extractor_exists(
+    session: Session, *, parser_id: str | None, layout_spec_id: int | None
+) -> bool:
+    """Whether the named extractor (parser id or layout spec) can be resolved."""
+    fn = _resolve("personal_finance_analyzer.ingest.pipeline", "extractor_exists")
+    return cast(bool, fn(session, parser_id=parser_id, layout_spec_id=layout_spec_id))
+
+
+def repropose(session: Session, statement_id: int) -> ImportProposal:
+    """Re-run issuer matching and extractor scoring for a not-yet-parsed statement. Does not
+    commit. Raises `PfaError` when it is parsed or its PDF is unavailable."""
+    fn = _resolve("personal_finance_analyzer.ingest.pipeline", "repropose")
+    return cast(ImportProposal, fn(session, statement_id))
+
+
+def extractor_candidates(session: Session, statement_id: int) -> list[ExtractorCandidate]:
+    """Every extractor the statement could be re-imported with, scored on its saved pages."""
+    fn = _resolve("personal_finance_analyzer.ingest.pipeline", "extractor_candidates")
+    return cast(list[ExtractorCandidate], fn(session, statement_id))
+
+
+def resolve_account_for_move(
+    session: Session, statement_id: int, *, user_id: int, issuer_id: int | None = None
+) -> Any:
+    """The account of ``user_id`` matching the statement's account (under ``issuer_id`` when the
+    bank changes), created when missing (flushes, does not commit). Returns the `Account` row."""
+    fn = _resolve("personal_finance_analyzer.ingest.pipeline", "resolve_account_for_move")
+    return fn(session, statement_id, user_id=user_id, issuer_id=issuer_id)
+
+
+def add_manual_transaction(
+    session: Session,
+    statement_id: int,
+    *,
+    posted_date: Any,
+    description: str,
+    amount_minor: int,
+    kind: Kind | None,
+    notes: str | None,
+) -> int:
+    """Insert a hand-added row on an imported statement; returns its id (flushes, no commit)."""
+    fn = _resolve("personal_finance_analyzer.ingest.pipeline", "add_manual_transaction")
+    return cast(
+        int,
+        fn(
+            session,
+            statement_id,
+            posted_date=posted_date,
+            description=description,
+            amount_minor=amount_minor,
+            kind=kind,
+            notes=notes,
         ),
     )
 
@@ -240,6 +325,17 @@ def classify_transactions(
     )
 
 
+def classify_deterministic(
+    session: Session, transaction_ids: Sequence[int], *, confidence_threshold: float
+) -> list[int]:
+    """Run the deterministic cascade (no LLM, no cache writes) over the rows; does not commit."""
+    fn = _resolve("personal_finance_analyzer.classify.cascade", "classify_deterministic")
+    return cast(
+        list[int],
+        fn(session, transaction_ids, confidence_threshold=confidence_threshold),
+    )
+
+
 def preview_egress(session: Session, transaction_ids: Sequence[int]) -> str:
     """The exact CSV the next classify run would send (A5). No network call.
 
@@ -279,6 +375,13 @@ def apply_kind_edit(session: Session, txn: Any, kind: Kind) -> None:
     """Apply a kind-only edit to `txn` and re-file its category to match (does not commit)."""
     fn = _resolve("personal_finance_analyzer.classify.cascade", "apply_kind_edit")
     fn(session, txn, kind)
+
+
+def advance_remembered_spec(session: Session, spec: Any) -> None:
+    """Point the issuer's remembered spec at ``spec`` when it is a newer approved revision of it
+    (does not commit)."""
+    fn = _resolve("personal_finance_analyzer.ingest.layout_spec", "advance_remembered_spec")
+    fn(session, spec)
 
 
 def approve_subcategory(session: Session, subcategory_id: int) -> None:

@@ -24,6 +24,8 @@ const TRANSACTIONS: Transaction[] = [
     merchant_key: "garden center",
     notes: null,
     needs_review: true,
+    source: "parsed",
+    excluded: false,
   },
 ];
 
@@ -144,5 +146,43 @@ describe("TransactionsTable column layout", () => {
     expect(onRowClick).not.toHaveBeenCalled();
     await userEvent.keyboard(" ");
     expect(onEdit).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps Description usable on a phone: the grid has a minimum width and scrolls sideways", () => {
+    render(
+      <TransactionsTable
+        rows={TRANSACTIONS}
+        context={{ categories: CATEGORIES, selectedIds: new Set(), onToggleRow: noop, onEdit: noop }}
+      />,
+    );
+    const table = screen.getByRole("table", { name: "Transactions" });
+    // 36 + 104 + 240 + 90 + 110 + 140 fixed, plus 200 for Description.
+    expect(table).toHaveStyle({ minWidth: "920px" });
+    expect(table.parentElement?.className).toContain("overflow-x-auto");
+  });
+
+  it("marks hand-added rows and shows excluded rows muted and struck through", () => {
+    render(
+      <TransactionsTable
+        rows={[
+          { ...TRANSACTIONS[0]!, id: 2, description_clean: "MY COFFEE", source: "manual" },
+          { ...TRANSACTIONS[0]!, id: 3, description_clean: "DUP LINE", excluded: true },
+          TRANSACTIONS[0]!,
+        ]}
+        context={{ categories: CATEGORIES, selectedIds: new Set(), onToggleRow: noop, onEdit: noop }}
+      />,
+    );
+    const manualRow = screen.getByRole("button", { name: "Edit MY COFFEE" }).closest("[role=row]")!;
+    expect(within(manualRow as HTMLElement).getByText("added by you")).toBeInTheDocument();
+    expect(within(manualRow as HTMLElement).queryByText("Excluded")).not.toBeInTheDocument();
+
+    const excludedRow = screen.getByRole("button", { name: "Edit DUP LINE" }).closest("[role=row]") as HTMLElement;
+    expect(within(excludedRow).getByText("Excluded")).toBeInTheDocument();
+    expect(excludedRow.className).toContain("text-muted-foreground");
+    expect(screen.getByTitle("DUP LINE").className).toContain("line-through");
+
+    const plainRow = screen.getByRole("button", { name: "Edit GARDEN CENTER" }).closest("[role=row]") as HTMLElement;
+    expect(within(plainRow).queryByText("Excluded")).not.toBeInTheDocument();
+    expect(within(plainRow).queryByText("added by you")).not.toBeInTheDocument();
   });
 });

@@ -16,6 +16,8 @@ export function makeTransaction(overrides: Partial<Transaction> & { id: number }
     merchant_key: `merchant-${overrides.id}`,
     notes: null,
     needs_review: true,
+    source: "parsed",
+    excluded: false,
     ...overrides,
   };
 }
@@ -132,6 +134,8 @@ export function createApiFetchMock(state: {
         transaction: {
           ...primary,
           needs_review: false,
+          source: "parsed",
+          excluded: false,
           category_key: body.category_key,
           subcategory_key: body.subcategory_key,
         },

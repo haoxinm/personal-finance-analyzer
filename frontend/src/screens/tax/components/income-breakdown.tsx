@@ -3,8 +3,9 @@ import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from "recharts";
 
 import { Money } from "@/components/primitives/money";
 import { EmptyState } from "@/components/primitives/states";
+import { CHART_TOOLTIP_PROPS } from "@/lib/chart-theme";
 
-import { TOOLTIP_STYLE, incomeColor } from "../chart-colors";
+import { incomeColor } from "../chart-colors";
 import {
   donutSlices,
   incomeShare,
@@ -68,8 +69,7 @@ export function IncomeBreakdown({ summary }: { summary: TaxSummary }) {
                   usd.format(value / 100),
                   name,
                 ]}
-                contentStyle={TOOLTIP_STYLE}
-                itemStyle={{ color: "hsl(var(--card-foreground))" }}
+                {...CHART_TOOLTIP_PROPS}
               />
             </PieChart>
           </ResponsiveContainer>

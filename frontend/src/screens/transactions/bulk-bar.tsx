@@ -20,6 +20,9 @@ export interface BulkBarProps {
   /** The selection is "everything the filters match" (not rows the user ticked): applying a label
    *  then asks for confirmation, with the count, first. */
   allMatchingSelected?: boolean;
+  /** Leave the selected rows out of totals (`true`), or count them again (`false`). */
+  onExclude?: (excluded: boolean) => void;
+  excluding?: boolean;
 }
 
 /**
@@ -41,6 +44,8 @@ export function BulkBar({
   reverting,
   selectingAll,
   allMatchingSelected,
+  onExclude,
+  excluding,
 }: BulkBarProps) {
   const [categoryKey, setCategoryKey] = React.useState("");
   const [subcategoryKey, setSubcategoryKey] = React.useState("");
@@ -149,6 +154,30 @@ export function BulkBar({
         >
           {reverting ? "Reverting…" : "Revert to automatic"}
         </Button>
+      ) : null}
+      {onExclude ? (
+        <>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={excluding || applying}
+            onClick={() => onExclude(true)}
+            title="Keep the selected rows on file but leave them out of every total and chart. You can undo it."
+          >
+            {excluding ? "Working…" : "Exclude"}
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={excluding || applying}
+            onClick={() => onExclude(false)}
+            title="Count the selected excluded rows in totals again"
+          >
+            Include again
+          </Button>
+        </>
       ) : null}
       <Button type="button" variant="ghost" size="sm" onClick={onClear}>
         Clear selection

@@ -24,8 +24,11 @@ from tests.llm_fakes import FakeLLM, install
 from tests.watch.support import (
     actions,
     add_bank,
+    add_layout_b_bank,
+    add_layout_b_spec,
     add_person,
     new_scanner,
+    put_layout_b,
     put_pdf_bytes,
     put_statement,
     put_tax,
@@ -659,3 +662,129 @@ def test_with_an_llm_enabled_the_descriptions_are_sent_without_a_click(
     assert fake.requests, "the folder import must go through the same classification as an upload"
     assert "ZQXV" in str(fake.requests[0]).upper() or fake.requests
     assert fake.urls[0].startswith("https://llm.example.com")
+
+
+# ---------------------------------------------------------------------------------- dismissal
+
+
+def test_dismissal_survives_an_unchanged_rescan_and_is_cleared_when_the_record_is_rewritten(
+    setup: FolderScanner, session: Session
+) -> None:
+    path = put_statement("loose.pdf")
+    scan_stable(setup)
+    record = records(session)["loose.pdf"]
+    assert scanner_mod.dismiss(session, record.id) is True
+    assert records(session)["loose.pdf"].dismissed_at is not None
+
+    scan_stable(setup)  # unchanged file: record not rewritten
+    assert records(session)["loose.pdf"].dismissed_at is not None
+
+    put_statement("loose.pdf", "fx")  # different content: re-evaluated, record rewritten
+    os.utime(path, ns=(path.stat().st_atime_ns, path.stat().st_mtime_ns + 5_000_000_000))
+    scan_stable(setup)
+    assert records(session)["loose.pdf"].dismissed_at is None
+
+
+def test_only_problems_can_be_dismissed(setup: FolderScanner, session: Session) -> None:
+    put_statement(STATEMENT)
+    scan_stable(setup)
+    done = records(session)[STATEMENT]
+    assert done.outcome == "imported"
+    assert scanner_mod.dismiss(session, done.id) is False
+    assert scanner_mod.undismiss(session, done.id) is False
+    assert scanner_mod.dismiss(session, 9999) is False
+
+
+def test_a_dismissed_failure_finished_by_hand_is_undismissed_when_settled(
+    setup: FolderScanner, session: Session
+) -> None:
+    from personal_finance_analyzer.db.models import Statement, utcnow_iso
+
+    put_statement("loose.pdf")
+    scan_stable(setup)
+    statement = Statement(
+        file_sha256="e" * 64,
+        original_name="loose.pdf",
+        status="parsed",
+        txn_count=3,
+        parsed_row_count=3,
+        ingested_at=utcnow_iso(),
+    )
+    session.add(statement)
+    session.flush()
+    record = records(session)["loose.pdf"]
+    record.outcome = "failed"
+    record.statement_id = statement.id
+    record.dismissed_at = utcnow_iso()
+    session.commit()
+
+    setup._settle_records(session, records(session))
+    settled = records(session)["loose.pdf"]
+    assert settled.outcome == "imported" and settled.dismissed_at is None
+
+
+# ---------------------------------------------------------------------------------- spec proposals
+
+
+LAYOUT_B = "Alex/Statements/Bank B/jan.pdf"
+
+
+def test_a_folder_file_that_proposes_a_layout_spec_is_imported(
+    setup: FolderScanner, session: Session
+) -> None:
+    add_layout_b_spec(session, add_layout_b_bank(session))
+    put_layout_b(LAYOUT_B)
+    report = scan_stable(setup)
+    assert actions(report) == {LAYOUT_B: "imported"}, report.items
+    (statement,) = statements(session)
+    assert statement.layout_spec_id is not None
+    assert (statement.txn_count or 0) > 0
+
+
+# ---------------------------------------------------------------------------------- 0-row imports
+
+
+def test_a_statement_read_with_no_transactions_needs_attention(
+    setup: FolderScanner, session: Session
+) -> None:
+    add_layout_b_spec(session, add_layout_b_bank(session), wrong=True)
+    put_layout_b(LAYOUT_B)
+    report = scan_stable(setup)
+    assert actions(report) == {LAYOUT_B: "failed"}, report.items
+    (statement,) = statements(session)
+    assert statement.status == "parsed" and statement.parsed_row_count == 0
+    record = records(session)[LAYOUT_B]
+    assert (record.outcome, record.code) == ("failed", "no_transactions")
+    assert record.statement_id == statement.id
+    # The file is known now, but the problem stays until the statement is fixed.
+    again = scan_stable(setup)
+    assert again.items == []
+    assert records(session)[LAYOUT_B].outcome == "failed"
+
+
+def test_a_reimport_that_finds_rows_settles_the_record(
+    setup: FolderScanner, session: Session, engine: Engine
+) -> None:
+    add_layout_b_spec(session, add_layout_b_bank(session), wrong=True)
+    put_layout_b(LAYOUT_B)
+    scan_stable(setup)
+    (statement,) = statements(session)
+    with make_session_factory(engine)() as fixer:
+        gateway.reparse(fixer, statement.id, parser_id="layout_b_credit", layout_spec_id=None)
+        fixer.commit()
+    scan_stable(setup)
+    record = records(session)[LAYOUT_B]
+    assert (record.outcome, record.code) == ("imported", None)
+    assert (statements(session)[0].txn_count or 0) > 0
+
+
+def test_a_failed_record_of_a_statement_that_stays_empty_is_not_settled(
+    setup: FolderScanner, session: Session
+) -> None:
+    add_layout_b_spec(session, add_layout_b_bank(session), wrong=True)
+    put_layout_b(LAYOUT_B)
+    scan_stable(setup)
+    record = records(session)[LAYOUT_B]
+    assert scanner_mod.retry(session, record.id) is False  # Retry cannot help; re-import instead
+    assert scanner_mod.needs_reimport(session, record.id) is True
+    assert LAYOUT_B in records(session)

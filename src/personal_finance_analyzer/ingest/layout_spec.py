@@ -41,7 +41,7 @@ from personal_finance_analyzer.core.types import (
     ParsedStatement,
     RawTransaction,
 )
-from personal_finance_analyzer.db.models import LayoutSpec
+from personal_finance_analyzer.db.models import Issuer, LayoutSpec
 from personal_finance_analyzer.ingest.layout import (
     Band,
     assign_to_bands,
@@ -883,7 +883,27 @@ def approve_spec(session: Session, row: LayoutSpec) -> None:
     """Mark a persisted spec version approved, making it eligible for `resolve_spec`. Approving a
     version is a lifecycle flag, not an edit to its (immutable) content (A21)."""
     row.approved = True
+    advance_remembered_spec(session, row)
     session.flush()
+
+
+def advance_remembered_spec(session: Session, row: LayoutSpec) -> None:
+    """When ``row`` (just approved) revises a spec some issuer remembered (same name and issuer,
+    lower version), point that issuer's `default_spec_id` at ``row``: a revision supersedes the
+    version it replaces."""
+    if row.issuer_id is None or not row.approved:
+        return
+    issuer = session.get(Issuer, row.issuer_id)
+    if issuer is None or issuer.default_spec_id is None or issuer.default_spec_id == row.id:
+        return
+    current = session.get(LayoutSpec, issuer.default_spec_id)
+    if (
+        current is not None
+        and current.name == row.name
+        and current.issuer_id == row.issuer_id
+        and current.version < row.version
+    ):
+        issuer.default_spec_id = row.id
 
 
 def resolve_spec(session: Session, *, issuer_id: int, account_type: str) -> LayoutSpec | None:

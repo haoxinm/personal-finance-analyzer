@@ -1,5 +1,6 @@
 import { useQueryClient } from "@tanstack/react-query";
 import * as React from "react";
+import { useLocation } from "react-router-dom";
 
 import { useUsers } from "@/api/hooks";
 import { FileDropZone } from "@/components/primitives/file-drop-zone";
@@ -8,19 +9,70 @@ import { ErrorState, LoadingState } from "@/components/primitives/states";
 import { useSelectedUser } from "@/hooks/use-selected-user";
 import type { JobEvent } from "@/hooks/use-job-progress";
 
-import { useExtractStatement, useImportSettings, useUploadStatement } from "./api";
+import {
+  fetchStatement,
+  reproposeStatement,
+  useExtractStatement,
+  useImportSettings,
+  useIssuers,
+  useLayoutSpecs,
+  useUploadStatement,
+} from "./api";
 import { FolderImportsPanel } from "./folder-imports-panel";
+import { ImportedStatementsPanel, type OpenRequest } from "./imported-statements-panel";
 import { IssuerExtractorPicker } from "./issuer-extractor-picker";
 import { StatementCard } from "./statement-card";
 import { PageSelector } from "./page-selector";
 import { SummaryBar } from "./summary-bar";
-import type { ExtractorChoice, ImportItem } from "./types";
+import type { ExtractorChoice, ImportItem, Issuer, LayoutSpec } from "./types";
 import {
+  applyRefreshedProposal,
   extractorChoiceFromProposal,
+  pendingPeers,
   refreshAfterJob,
   shouldAutoConfirm,
   useImportQueue,
 } from "./use-import-queue";
+
+/** A short name for an extractor choice, for the "remembered extractor" suggestion. */
+function describeChoice(choice: ExtractorChoice | null, specs: readonly LayoutSpec[]): string {
+  if (choice === null) return "an extractor";
+  if (choice.kind === "spec") {
+    const spec = specs.find((s) => s.id === choice.layoutSpecId);
+    return spec ? `${spec.name} v${spec.version}` : "a saved layout";
+  }
+  return choice.parserId === "llm" ? "the LLM" : choice.parserId.replace(/_/g, " ");
+}
+
+/** The "remember" checkbox's wording for `item`: exactly which extractor is kept for which bank,
+ * and, when the bank already remembers a different one, that this replaces it. */
+function rememberInfoFor(
+  item: ImportItem,
+  issuers: readonly Issuer[],
+  specs: readonly LayoutSpec[],
+): { label: string; note?: string } | undefined {
+  const issuer = issuers.find((i) => i.id === item.issuerId);
+  if (!issuer || item.extractorChoice === null) return undefined;
+  const chosen = describeChoice(item.extractorChoice, specs);
+  const stored = extractorChoiceFromProposal({
+    layout_spec_id: issuer.default_spec_id ?? null,
+    parser_id: issuer.default_parser_id ?? null,
+  });
+  const info: { label: string; note?: string } = { label: `Use ${chosen} for future ${issuer.name} statements` };
+  const same =
+    stored !== null &&
+    stored.kind === item.extractorChoice.kind &&
+    (stored.kind === "spec"
+      ? stored.layoutSpecId === (item.extractorChoice as typeof stored).layoutSpecId
+      : stored.parserId === (item.extractorChoice as typeof stored).parserId);
+  if (stored !== null && !same) {
+    const was = describeChoice(stored, specs);
+    info.note = item.remember
+      ? `${issuer.name} currently remembers ${was}. Importing will replace it with ${chosen}; untick the box to keep ${was}.`
+      : `${issuer.name} currently remembers ${was}; it will stay that way.`;
+  }
+  return info;
+}
 
 /** The Import screen (P3-A): drag-and-drop multiple statement PDFs, resolve the two-phase
  * import's user choice up front (D4) and its issuer/extractor choice per file (§2f.2), and
@@ -32,6 +84,8 @@ function ImportScreen() {
   const uploadStatement = useUploadStatement();
   const extractStatement = useExtractStatement();
   const settingsQuery = useImportSettings();
+  const issuersQuery = useIssuers();
+  const specsQuery = useLayoutSpecs();
   const llmMode = settingsQuery.data?.llm.mode;
   const llmConfigured = llmMode !== undefined && llmMode !== "none";
 
@@ -39,6 +93,9 @@ function ImportScreen() {
   // The upload target is the app-wide selected user. Only when "All users" is selected do we
   // ask which user to import for (the pick is local to this screen).
   const sel = useSelectedUser();
+  const dropRef = React.useRef<HTMLDivElement>(null);
+  const [finishHint, setFinishHint] = React.useState<string | null>(null);
+  const [openRequest, setOpenRequest] = React.useState<OpenRequest | null>(null);
   const [pickedUserId, setPickedUserId] = React.useState<number | null>(null);
   const selectedUserId: number | null =
     sel.selectedUserId ?? (users.some((u) => u.id === pickedUserId) ? pickedUserId : null);
@@ -47,12 +104,17 @@ function ImportScreen() {
   // callbacks only for the *latest* `mutate` on a shared `useMutation`, so with several files in
   // flight every earlier file would sit at "Uploading…" forever. Each promise settles for its own
   // call regardless of how many others are running.
+  // Items whose extract request is in flight: a second confirm (a peer refresh racing the
+  // user's click, or a double click) must never send another.
+  const inFlight = React.useRef(new Set<string>());
   const confirmImport = React.useCallback(
     async (item: ImportItem) => {
       if (item.statementId === undefined || item.issuerId === null || item.extractorChoice === null) {
         return;
       }
       if (item.selectedPages?.length === 0) return;
+      if (inFlight.current.has(item.clientId)) return;
+      inFlight.current.add(item.clientId);
       const choice = item.extractorChoice;
       try {
         const response = await extractStatement.mutateAsync({
@@ -72,9 +134,69 @@ function ImportScreen() {
           clientId: item.clientId,
           message: error instanceof Error ? error.message : "Import failed",
         });
+      } finally {
+        inFlight.current.delete(item.clientId);
       }
     },
     [extractStatement, dispatch],
+  );
+
+  // Pending files are proposed an issuer and extractor once, at upload. When something changes
+  // what a fresh upload would be offered (an extractor remembered, an issuer created, "don't ask
+  // again" ticked), the other pending files are asked again, one after the other. Files the user
+  // has already decided about keep their choice and are only offered the new one.
+  const itemsRef = React.useRef(items);
+  itemsRef.current = items;
+  const peerQueue = React.useRef<Promise<void>>(Promise.resolve());
+  const autoStarted = React.useRef(new Set<string>());
+  const refreshPeers = React.useCallback(
+    (sourceClientId: string, issuerId: number | null) => {
+      peerQueue.current = peerQueue.current
+        .then(async () => {
+          for (const peer of pendingPeers(itemsRef.current, sourceClientId, issuerId)) {
+            // Never touch an item that is importing (or about to): an in-flight request, or one
+            // the screen already started on its own.
+            if (inFlight.current.has(peer.clientId) || autoStarted.current.has(peer.clientId)) continue;
+            let response: Awaited<ReturnType<typeof reproposeStatement>>;
+            try {
+              response = await reproposeStatement(peer.statementId as number);
+            } catch {
+              // 409: already parsed (another tab, or it was started meanwhile), or its PDF is gone.
+              // Quietly show the statement as it is now; never an error.
+              if (!inFlight.current.has(peer.clientId) && peer.statementId !== undefined) {
+                const current = await fetchStatement(peer.statementId).catch(() => null);
+                const again = itemsRef.current.find((candidate) => candidate.clientId === peer.clientId);
+                if (current?.status === "parsed" && again?.status === "awaiting_extractor" && !inFlight.current.has(peer.clientId)) {
+                  dispatch({ type: "statement_refreshed", clientId: peer.clientId, statement: current, llmConfigured });
+                }
+              }
+              continue;
+            }
+            const latest = itemsRef.current.find((candidate) => candidate.clientId === peer.clientId);
+            if (!latest || latest.status !== "awaiting_extractor") continue;
+            if (inFlight.current.has(latest.clientId) || autoStarted.current.has(latest.clientId)) continue;
+            dispatch({
+              type: "proposal_refreshed",
+              clientId: latest.clientId,
+              statement: response.statement,
+              proposal: response.proposal,
+            });
+            const updated = applyRefreshedProposal(latest, response.statement, response.proposal);
+            // Exactly what a fresh upload gets: one click saved only where it would be.
+            if (
+              !updated.choiceTouched &&
+              response.statement.status === "awaiting_extractor" &&
+              shouldAutoConfirm(updated) &&
+              !autoStarted.current.has(updated.clientId)
+            ) {
+              autoStarted.current.add(updated.clientId);
+              await confirmImport(updated);
+            }
+          }
+        })
+        .catch(() => undefined);
+    },
+    [dispatch, confirmImport, llmConfigured],
   );
 
   const uploadFile = React.useCallback(
@@ -116,6 +238,7 @@ function ImportScreen() {
           : undefined,
       };
       if (response.statement.status === "awaiting_extractor" && shouldAutoConfirm(updatedItem)) {
+        autoStarted.current.add(clientId);
         await confirmImport(updatedItem);
       }
     },
@@ -153,10 +276,52 @@ function ImportScreen() {
         dispatch,
         queryClient,
         llmConfigured,
+        (job) => {
+          // The extractor was remembered by this import: the others from this issuer should use it.
+          if (item.remember && job?.remembered) refreshPeers(clientId, item.issuerId);
+        },
       );
     },
-    [items, dispatch, queryClient, llmConfigured],
+    [items, dispatch, queryClient, llmConfigured, refreshPeers],
   );
+
+  // A statement awaiting an extractor (or whose import failed) is finished by dropping its PDF
+  // again: the upload recognizes it and offers the extractor choice.
+  const finishImport = React.useCallback((statement: { original_name: string; id: number }) => {
+    setFinishHint(
+      `Drop \u201c${statement.original_name || `statement ${statement.id}`}\u201d here again to choose an extractor and finish importing it.`,
+    );
+    const zone = dropRef.current;
+    zone?.scrollIntoView?.({ block: "center", behavior: "smooth" });
+    zone?.querySelector<HTMLElement>('[role="button"]')?.focus();
+  }, []);
+  // A link from elsewhere (`/spending/import#imported-statements`, `#folder-imports`): once that
+  // card exists, scroll to it and focus its title. The cards render after their data loads, so look
+  // for a little while; a hash that names nothing here is ignored.
+  const { hash } = useLocation();
+  React.useEffect(() => {
+    const id = hash.replace(/^#/, "");
+    if (id !== "imported-statements" && id !== "folder-imports") return;
+    let tries = 0;
+    const timer = window.setInterval(() => {
+      tries += 1;
+      const card = document.getElementById(id);
+      if (card) {
+        window.clearInterval(timer);
+        card.scrollIntoView?.({ block: "start", behavior: "smooth" });
+        document.getElementById(`${id}-title`)?.focus();
+      } else if (tries >= 40) window.clearInterval(timer);
+    }, 100);
+    return () => window.clearInterval(timer);
+  }, [hash]);
+  const nonceRef = React.useRef(0);
+  const reimportExisting = React.useCallback((statementId: number) => {
+    nonceRef.current += 1;
+    setOpenRequest({ statementId, nonce: nonceRef.current });
+  }, []);
+  const requestHandled = React.useCallback((nonce: number) => {
+    setOpenRequest((prev) => (prev?.nonce === nonce ? null : prev));
+  }, []);
 
   const header = (
     <PageHeader
@@ -210,7 +375,14 @@ function ImportScreen() {
         </p>
       )}
 
-      <FileDropZone onFiles={handleFiles} disabled={selectedUserId === null} />
+      <div ref={dropRef} className="flex flex-col gap-2">
+        <FileDropZone onFiles={handleFiles} disabled={selectedUserId === null} />
+        {finishHint ? (
+          <p role="status" className="text-sm text-muted-foreground" data-testid="finish-hint">
+            {finishHint}
+          </p>
+        ) : null}
+      </div>
 
       <SummaryBar items={items} />
 
@@ -222,6 +394,19 @@ function ImportScreen() {
               item={item}
               onJobEvent={handleJobEvent}
               onConfirm={() => void confirmImport(item)}
+              onReimportExisting={reimportExisting}
+              onSkipConfirmChange={() => refreshPeers(item.clientId, item.issuerId)}
+              suggestion={
+                item.suggestedChoice
+                  ? {
+                      text: `${
+                        (issuersQuery.data ?? []).find((i) => i.id === item.suggestedChoice?.issuerId)?.name ?? "This issuer"
+                      }'s remembered extractor is ${describeChoice(item.suggestedChoice.extractorChoice, specsQuery.data ?? [])}.`,
+                      onUse: () => dispatch({ type: "suggestion_applied", clientId: item.clientId }),
+                    }
+                  : undefined
+              }
+              rememberInfo={rememberInfoFor(item, issuersQuery.data ?? [], specsQuery.data ?? [])}
               onRememberChange={(remember) =>
                 dispatch({ type: "remember_toggled", clientId: item.clientId, remember })
               }
@@ -229,6 +414,7 @@ function ImportScreen() {
               picker={
                 <IssuerExtractorPicker
                   item={item}
+                  onIssuerCreated={(issuerId) => refreshPeers(item.clientId, issuerId)}
                   onIssuerChange={(issuerId: number, extractorChoice: ExtractorChoice | null) =>
                     dispatch({
                       type: "issuer_selected",
@@ -247,7 +433,14 @@ function ImportScreen() {
         </div>
       ) : null}
 
-      <FolderImportsPanel />
+      <ImportedStatementsPanel
+        userId={sel.selectedUserId}
+        onFinishImport={finishImport}
+        request={openRequest}
+        onRequestHandled={requestHandled}
+      />
+
+      <FolderImportsPanel onReimportStatement={reimportExisting} />
     </Page>
   );
 }

@@ -69,6 +69,9 @@ class Issuer(Base):
         ForeignKey("layout_specs.id", use_alter=True, name="fk_issuers_default_spec_id"),
         nullable=True,
     )
+    #: The built-in parser id (or ``"llm"``) the user asked to remember for this issuer. Mutually
+    #: exclusive with `default_spec_id`: setting one clears the other.
+    default_parser_id: Mapped[str | None] = mapped_column(String, nullable=True)
     auto_confirm: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[str] = mapped_column(Text, nullable=False, default=utcnow_iso)
     last_used_at: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -156,6 +159,22 @@ class Statement(Base):
     # pending|awaiting_extractor|parsed|no_text_layer|unsupported_layout|error
     error_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
     txn_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    #: Rows the extractor returned, before dedupe (`txn_count` counts only the rows inserted).
+    #: NULL for a statement imported before this column existed.
+    parsed_row_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    #: Every parsed amount is negated by the pipeline before kind/hash/reconciliation (the
+    #: extractor read the signs the wrong way round). Set through a re-import.
+    flip_sign: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("0")
+    )
+    #: The user corrected the period: `period_*` hold the effective value, `orig_period_*` the
+    #: parsed one (which can legitimately be NULL, hence the flag).
+    period_corrected: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("0")
+    )
+    orig_period_start: Mapped[str | None] = mapped_column(Text, nullable=True)
+    orig_period_end: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: Sum of the parsed rows as extracted (written only by the pipeline's persist step).
     parsed_total_minor: Mapped[int | None] = mapped_column(Integer, nullable=True)
     stated_total_minor: Mapped[int | None] = mapped_column(Integer, nullable=True)
     opening_balance_minor: Mapped[int | None] = mapped_column(Integer, nullable=True)  # A25
@@ -213,6 +232,7 @@ class Transaction(Base):
             "(category_id IS NULL) = (subcategory_id IS NULL)",
             name="ck_txn_category_subcategory_both_or_neither",
         ),  # I4
+        CheckConstraint("source IN ('parsed','manual')", name="ck_txn_source"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -256,6 +276,19 @@ class Transaction(Base):
 
     dedupe_hash: Mapped[str] = mapped_column(Text, nullable=False)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # User corrections: non-NULL = the user corrected this field and this holds the imported value
+    # (the live column holds the corrected one). `dedupe_hash` is never recomputed.
+    orig_posted_date: Mapped[str | None] = mapped_column(Text, nullable=True)
+    orig_amount_minor: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    orig_description_clean: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: ``parsed`` (read from the statement) or ``manual`` (typed by the user; hash ``manual:<uuid>``).
+    source: Mapped[str] = mapped_column(
+        String, nullable=False, default="parsed", server_default=text("'parsed'")
+    )
+    #: The user excluded this row from totals (analytics, grid, export by default).
+    excluded: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("0")
+    )
     created_at: Mapped[str] = mapped_column(Text, nullable=False, default=utcnow_iso)
     updated_at: Mapped[str] = mapped_column(Text, nullable=False, default=utcnow_iso)
 
@@ -352,6 +385,8 @@ class Job(Base):
     payload_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     result_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     error_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: A machine-readable code for a failure the UI can act on (e.g. ``empty_result``).
+    error_code: Mapped[str | None] = mapped_column(String, nullable=True)
     llm_run_group_id: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[str] = mapped_column(Text, nullable=False, default=utcnow_iso)
     updated_at: Mapped[str] = mapped_column(Text, nullable=False, default=utcnow_iso)
@@ -733,5 +768,7 @@ class WatchedFile(Base):
         Integer, ForeignKey("tax_documents.id", ondelete="SET NULL"), nullable=True
     )
     warnings: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON list[str]
+    # Set when the user dismissed a failed/ignored record; cleared whenever the record is rewritten.
+    dismissed_at: Mapped[str | None] = mapped_column(Text, nullable=True)
     first_seen: Mapped[str] = mapped_column(Text, nullable=False, default=utcnow_iso)
     last_seen: Mapped[str] = mapped_column(Text, nullable=False, default=utcnow_iso)

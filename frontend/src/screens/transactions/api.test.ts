@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { toTransactionsQuery } from "./api";
+import { ApiError } from "@/api/client";
+
+import { isParsedRowError, toTransactionsQuery } from "./api";
 
 describe("toTransactionsQuery", () => {
   it("maps the SpendQueryParams subset onto GET /transactions's own query names", () => {
@@ -53,11 +55,39 @@ describe("toTransactionsQuery grid filters", () => {
     expect(toTransactionsQuery({})).not.toHaveProperty("needs_review");
   });
 
+  it("includes payments and other non-spend kinds when a statement is opened, unless told otherwise", () => {
+    expect(toTransactionsQuery({}, { statementId: 4, sort: "-posted_date" }).include_non_spend).toBe(true);
+    expect(toTransactionsQuery({ includeNonSpend: false }, { statementId: 4, sort: "-posted_date" }).include_non_spend).toBe(false);
+    expect(toTransactionsQuery({}, { sort: "-posted_date" }).include_non_spend).toBeUndefined();
+    expect(toTransactionsQuery({}).include_non_spend).toBeUndefined();
+  });
+
   it("carries the conflicting-suggestions filter as ?conflict=", () => {
     expect(toTransactionsQuery({}, { conflict: true, sort: "-posted_date" })).toMatchObject({
       conflict: true,
     });
     expect(toTransactionsQuery({}, { sort: "-posted_date" }).conflict).toBeUndefined();
+  });
+});
+
+describe("excluded and source filters", () => {
+  it("passes excluded and source through, and leaves them out by default", () => {
+    expect(
+      toTransactionsQuery({}, { excluded: "only", source: "manual", sort: "-posted_date" }),
+    ).toMatchObject({ excluded: "only", source: "manual" });
+    const plain = toTransactionsQuery({}, { sort: "-posted_date" });
+    expect(plain.excluded).toBeUndefined();
+    expect(plain.source).toBeUndefined();
+    expect(toTransactionsQuery({})).not.toHaveProperty("excluded");
+  });
+});
+
+describe("isParsedRowError", () => {
+  it("recognises the 409 parsed_row detail and nothing else", () => {
+    expect(isParsedRowError(new ApiError("x", { code: "parsed_row", message: "x" }))).toBe(true);
+    expect(isParsedRowError(new ApiError("x", "plain string"))).toBe(false);
+    expect(isParsedRowError(new ApiError("x", { code: "other" }))).toBe(false);
+    expect(isParsedRowError(new Error("x"))).toBe(false);
   });
 });
 

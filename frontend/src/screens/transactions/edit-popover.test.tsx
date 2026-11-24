@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
@@ -30,6 +30,8 @@ function makeTransaction(overrides: Partial<Transaction> = {}): Transaction {
     merchant_key: "acme",
     notes: null,
     needs_review: false,
+    source: "parsed",
+    excluded: false,
     ...overrides,
   };
 }
@@ -270,5 +272,303 @@ describe("EditPopover suggestions", () => {
       />,
     );
     expect(screen.queryByRole("button", { name: "Revert to automatic" })).not.toBeInTheDocument();
+  });
+});
+
+describe("EditPopover details (corrections)", () => {
+  const amount = () => screen.getByRole("textbox", { name: /^Amount/ });
+
+  it("shows a summary of the transaction being edited", () => {
+    setup(makeTransaction({ description_raw: "ACME RAW 123", description_clean: "Acme" }));
+    const summary = screen.getByTestId("edit-summary");
+    expect(summary).toHaveTextContent("2026-01-05");
+    expect(summary).toHaveTextContent("Acme");
+    expect(summary).toHaveTextContent("As printed: ACME RAW 123");
+  });
+
+  it("prefills date, description and the amount magnitude with its direction", () => {
+    setup(makeTransaction());
+    expect(screen.getByLabelText("Date")).toHaveValue("2026-01-05");
+    expect(screen.getByLabelText("Description")).toHaveValue("ACME DEPOSIT");
+    expect(amount()).toHaveValue("2500.00");
+    expect(screen.getByRole("radio", { name: "Money in" })).toBeChecked();
+  });
+
+  it("sends only changed detail fields", async () => {
+    const { onSave, save } = setup(makeTransaction({ amount_minor: 1000 }));
+    await userEvent.clear(screen.getByLabelText("Description"));
+    await userEvent.type(screen.getByLabelText("Description"), "  Better name ");
+    fireEvent.change(screen.getByLabelText("Date"), { target: { value: "2026-01-06" } });
+    await userEvent.click(save());
+    expect(onSave).toHaveBeenCalledWith({
+      postedDate: "2026-01-06",
+      descriptionClean: "Better name",
+    });
+  });
+
+  it("signs the amount from the direction: out is positive, in is negative", async () => {
+    const { onSave, save } = setup(makeTransaction({ amount_minor: 1000 }));
+    await userEvent.clear(amount());
+    await userEvent.type(amount(), "12.5");
+    await userEvent.click(save());
+    expect(onSave).toHaveBeenLastCalledWith({ amountMinor: 1250 });
+
+    await userEvent.click(screen.getByRole("radio", { name: "Money in" }));
+    await userEvent.click(save());
+    expect(onSave).toHaveBeenLastCalledWith({ amountMinor: -1250 });
+  });
+
+  it("flipping only the direction changes the sign", async () => {
+    const { onSave, save } = setup(makeTransaction({ amount_minor: 1000 }));
+    await userEvent.click(screen.getByRole("radio", { name: "Money in" }));
+    await userEvent.click(save());
+    expect(onSave).toHaveBeenCalledWith({ amountMinor: -1000 });
+  });
+
+  it("disables Save with an inline error for an invalid amount, then recovers", async () => {
+    const { save } = setup(makeTransaction({ notes: "n" }));
+    await userEvent.type(screen.getByLabelText("Notes"), "x");
+    expect(save()).toBeEnabled();
+    await userEvent.clear(amount());
+    await userEvent.type(amount(), "1.234");
+    expect(save()).toBeDisabled();
+    expect(amount()).toHaveAttribute("aria-invalid", "true");
+    expect(screen.getByRole("alert")).toHaveTextContent(/at most 2 decimals/);
+    await userEvent.clear(amount());
+    await userEvent.type(amount(), "1.23");
+    expect(save()).toBeEnabled();
+  });
+
+  it("disables Save for an empty description or date", () => {
+    const { save } = setup(makeTransaction());
+    fireEvent.change(screen.getByLabelText("Description"), { target: { value: "   " } });
+    expect(save()).toBeDisabled();
+    expect(screen.getByLabelText("Description")).toHaveAttribute("aria-invalid", "true");
+    fireEvent.change(screen.getByLabelText("Description"), { target: { value: "ok" } });
+    expect(save()).toBeEnabled();
+    fireEvent.change(screen.getByLabelText("Date"), { target: { value: "" } });
+    expect(save()).toBeDisabled();
+  });
+
+  it("offers Imported as / Restore only for corrected fields", () => {
+    setup(
+      makeTransaction({
+        description_clean: "Fixed",
+        corrections: { description_clean: "FIXD 99", amount_minor: null },
+      }),
+    );
+    expect(screen.getByRole("button", { name: "Restore imported description" })).toBeInTheDocument();
+    expect(screen.getByText("FIXD 99")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Restore imported date" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Restore imported amount" })).not.toBeInTheDocument();
+  });
+
+  it("restoring then saving sends revertFields instead of a value", async () => {
+    const { onSave, save } = setup(
+      makeTransaction({
+        description_clean: "Fixed",
+        amount_minor: 2000,
+        posted_date: "2026-01-09",
+        corrections: { description_clean: "FIXD 99", amount_minor: -2000, posted_date: "2026-01-05" },
+      }),
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Restore imported description" }));
+    await userEvent.click(screen.getByRole("button", { name: "Restore imported amount" }));
+    await userEvent.click(screen.getByRole("button", { name: "Restore imported date" }));
+    expect(screen.getByLabelText("Description")).toHaveValue("FIXD 99");
+    expect(amount()).toHaveValue("20.00");
+    expect(screen.getByRole("radio", { name: "Money in" })).toBeChecked();
+    await userEvent.click(save());
+    expect(onSave).toHaveBeenCalledWith({
+      revertFields: ["posted_date", "description_clean", "amount_minor"],
+    });
+  });
+
+  it("wraps long unbroken text instead of widening the dialog", () => {
+    const long = "A".repeat(400);
+    setup(makeTransaction({ description_clean: long, description_raw: long + "RAW", merchant_key: long }));
+    const dialog = screen.getByRole("dialog");
+    const body = dialog.querySelector("[data-dialog-body]");
+    expect(body?.className).toContain("[overflow-wrap:anywhere]");
+    expect(body?.className).toContain("overflow-y-auto");
+    expect(screen.getByText(/As printed:/).className).toContain("break-all");
+    expect(screen.getByRole("button", { name: "Save" })).toBeInTheDocument();
+  });
+});
+
+describe("EditPopover unsaved changes", () => {
+  function setupClose(transaction: Transaction) {
+    const onClose = vi.fn();
+    render(<EditPopover transaction={transaction} categories={CATEGORIES} onSave={vi.fn()} onClose={onClose} />);
+    return { onClose };
+  }
+
+  it("is named by its visible title", () => {
+    setupClose(makeTransaction());
+    const dialog = screen.getByRole("dialog", { name: "Edit transaction" });
+    expect(dialog).toHaveAttribute("aria-labelledby", screen.getByRole("heading", { name: "Edit transaction" }).id);
+  });
+
+  it("closes straight away when nothing changed", async () => {
+    const { onClose } = setupClose(makeTransaction());
+    await userEvent.keyboard("{Escape}");
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("asks before discarding edits on Escape, Cancel and an outside press", async () => {
+    const { onClose } = setupClose(makeTransaction());
+    await userEvent.type(screen.getByLabelText("Notes"), "x");
+    await userEvent.keyboard("{Escape}");
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getByText("Discard your unsaved changes?")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Keep editing" })).toHaveFocus();
+    // Escape again backs out of the question.
+    await userEvent.keyboard("{Escape}");
+    expect(screen.queryByText("Discard your unsaved changes?")).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.getByText("Discard your unsaved changes?")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Keep editing" }));
+    expect(onClose).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByTestId("dialog-overlay"));
+    expect(screen.getByText("Discard your unsaved changes?")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Discard changes" }));
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("ignores Escape and an outside press while saving", async () => {
+    const onClose = vi.fn();
+    render(
+      <EditPopover transaction={makeTransaction()} categories={CATEGORIES} onSave={vi.fn()} onClose={onClose} saving />,
+    );
+    await userEvent.keyboard("{Escape}");
+    await userEvent.click(screen.getByTestId("dialog-overlay"));
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+  });
+
+  it("shows a save error inline in the footer", () => {
+    render(
+      <EditPopover
+        transaction={makeTransaction()}
+        categories={CATEGORIES}
+        onSave={vi.fn()}
+        onClose={vi.fn()}
+        saveError="Could not save: boom"
+      />,
+    );
+    expect(screen.getByRole("alert")).toHaveTextContent("Could not save: boom");
+  });
+});
+
+describe("EditPopover details", () => {
+  it("limits the date to 1970 .. a year from now", () => {
+    setup(makeTransaction());
+    const date = screen.getByLabelText<HTMLInputElement>("Date");
+    expect(date.min).toBe("1970-01-01");
+    const max = new Date();
+    max.setDate(max.getDate() + 366);
+    expect(date.max).toBe(
+      `${max.getFullYear()}-${String(max.getMonth() + 1).padStart(2, "0")}-${String(max.getDate()).padStart(2, "0")}`,
+    );
+  });
+
+  it("hints at a refund when a purchase is switched to Money in, and applies it on request", async () => {
+    const { save } = setup(makeTransaction({ kind: "purchase", amount_minor: 5000 }));
+    expect(screen.queryByTestId("refund-hint")).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("radio", { name: "Money in" }));
+    expect(screen.getByTestId("refund-hint")).toBeInTheDocument();
+    expect(screen.getByLabelText<HTMLSelectElement>("Kind").value).toBe("purchase");
+    await userEvent.click(screen.getByRole("button", { name: "Set kind to refund" }));
+    expect(screen.getByLabelText<HTMLSelectElement>("Kind").value).toBe("refund");
+    expect(screen.queryByTestId("refund-hint")).not.toBeInTheDocument();
+    expect(save()).toBeEnabled();
+  });
+});
+
+describe("EditPopover exclusion and deletion", () => {
+  function setupWith(
+    transaction: Transaction,
+    handlers: { onToggleExcluded?: () => void; onDelete?: () => void; saveError?: string } = {},
+  ) {
+    render(
+      <EditPopover
+        transaction={transaction}
+        categories={CATEGORIES}
+        onSave={vi.fn()}
+        onClose={vi.fn()}
+        {...handlers}
+      />,
+    );
+  }
+
+  it("offers Exclude from totals with help text, and Include again for an excluded row", async () => {
+    const onToggleExcluded = vi.fn();
+    const { unmount } = render(
+      <EditPopover
+        transaction={makeTransaction()}
+        categories={CATEGORIES}
+        onSave={vi.fn()}
+        onClose={vi.fn()}
+        onToggleExcluded={onToggleExcluded}
+      />,
+    );
+    expect(screen.getByTestId("inclusion-section")).toHaveTextContent(/out of every total/);
+    await userEvent.click(screen.getByRole("button", { name: "Exclude from totals" }));
+    expect(onToggleExcluded).toHaveBeenCalledTimes(1);
+    unmount();
+
+    setupWith(makeTransaction({ excluded: true }), { onToggleExcluded });
+    expect(screen.getByText("Excluded from totals")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Include again" }));
+    expect(onToggleExcluded).toHaveBeenCalledTimes(2);
+  });
+
+  it("disables Exclude with a hint while there are unsaved edits", async () => {
+    const onToggleExcluded = vi.fn();
+    setupWith(makeTransaction(), { onToggleExcluded });
+    expect(screen.getByRole("button", { name: "Exclude from totals" })).toBeEnabled();
+    await userEvent.type(screen.getByLabelText("Notes"), "x");
+    expect(screen.getByRole("button", { name: "Exclude from totals" })).toBeDisabled();
+    expect(screen.getByTestId("inclusion-dirty-hint")).toHaveTextContent(/Save or discard/);
+  });
+
+  it("never offers Delete for a row read from the statement", () => {
+    setupWith(makeTransaction(), { onDelete: vi.fn(), onToggleExcluded: vi.fn() });
+    expect(screen.queryByRole("button", { name: "Delete…" })).not.toBeInTheDocument();
+  });
+
+  it("asks before deleting a hand-added row, and Keep it backs out", async () => {
+    const onDelete = vi.fn();
+    setupWith(makeTransaction({ source: "manual" }), { onDelete });
+    await userEvent.click(screen.getByRole("button", { name: "Delete…" }));
+    expect(screen.getByRole("alertdialog", { name: "Delete this transaction?" })).toBeInTheDocument();
+    expect(onDelete).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: "Keep it" }));
+    expect(onDelete).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: "Delete…" }));
+    await userEvent.click(screen.getByRole("button", { name: "Delete transaction" }));
+    expect(onDelete).toHaveBeenCalledTimes(1);
+  });
+
+  it("says original, not imported, for the restore controls of a hand-added row", () => {
+    setupWith(
+      makeTransaction({
+        source: "manual",
+        posted_date: "2026-01-09",
+        corrections: { posted_date: "2026-01-05" },
+      }),
+    );
+    expect(screen.getByText(/^Originally/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Restore original date" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Restore imported date" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/Imported as/)).not.toBeInTheDocument();
+  });
+
+  it("shows a failed delete's sentence in the footer", () => {
+    setupWith(makeTransaction({ source: "manual" }), {
+      onDelete: vi.fn(),
+      saveError: "Rows read from the statement can’t be deleted. Use “Exclude from totals” instead.",
+    });
+    expect(screen.getByRole("alert")).toHaveTextContent("Use “Exclude from totals” instead");
   });
 });

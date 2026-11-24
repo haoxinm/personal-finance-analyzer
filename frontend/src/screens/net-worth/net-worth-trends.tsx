@@ -12,6 +12,13 @@ import {
 
 import type { components } from "@/api/client";
 import { EmptyState } from "@/components/primitives/states";
+import {
+  CHART_AXIS_PROPS,
+  CHART_GRID_PROPS,
+  CHART_LEGEND_STYLE,
+  CHART_LINE_CURSOR,
+  CHART_TOOLTIP_PROPS,
+} from "@/lib/chart-theme";
 import { colorByIndex } from "@/screens/dashboard/chart-colors";
 import { cn } from "@/utils";
 
@@ -34,13 +41,6 @@ export interface NetWorthTrendsProps {
   users: readonly User[];
   currency: string;
 }
-
-const TOOLTIP_STYLE = {
-  background: "hsl(var(--card))",
-  color: "hsl(var(--card-foreground))",
-  border: "1px solid hsl(var(--border))",
-  borderRadius: 6,
-};
 
 interface DotProps {
   cx?: number;
@@ -114,17 +114,12 @@ export function NetWorthTrends({ summary, users, currency }: NetWorthTrendsProps
     );
   }
 
-  const axisProps = {
-    stroke: "hsl(var(--muted-foreground))",
-    tick: { fill: "hsl(var(--muted-foreground))" },
-    fontSize: 12,
-  };
   const common = (
     <>
-      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" />
-      <XAxis dataKey="period" tickFormatter={periodLabel} {...axisProps} />
-      <YAxis tickFormatter={(v: number) => compact(v)} width={72} {...axisProps} />
-      <Legend wrapperStyle={{ fontSize: 12 }} />
+      <CartesianGrid {...CHART_GRID_PROPS} />
+      <XAxis dataKey="period" tickFormatter={periodLabel} {...CHART_AXIS_PROPS} />
+      <YAxis tickFormatter={(v: number) => compact(v)} width={72} {...CHART_AXIS_PROPS} />
+      <Legend wrapperStyle={CHART_LEGEND_STYLE} />
     </>
   );
   const singlePeriod = summary.series.length === 1;
@@ -140,7 +135,8 @@ export function NetWorthTrends({ summary, users, currency }: NetWorthTrendsProps
               <Tooltip
                 formatter={(value: number, name: string) => [format(value), name]}
                 labelFormatter={(label: string) => periodLabel(label)}
-                contentStyle={TOOLTIP_STYLE}
+                {...CHART_TOOLTIP_PROPS}
+                cursor={CHART_LINE_CURSOR}
               />
               {CATEGORIES.map((c) => (
                 <Line
@@ -177,7 +173,8 @@ export function NetWorthTrends({ summary, users, currency }: NetWorthTrendsProps
               <Tooltip
                 formatter={(value: number, name: string) => [format(value), name]}
                 labelFormatter={(label: string) => periodLabel(label)}
-                contentStyle={TOOLTIP_STYLE}
+                {...CHART_TOOLTIP_PROPS}
+                cursor={CHART_LINE_CURSOR}
               />
               {account.keys.map((k, i) => {
                 const color = colorByIndex(i);

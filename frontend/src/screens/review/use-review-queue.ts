@@ -57,6 +57,9 @@ export interface UseReviewQueueResult {
    */
   undo: () => Promise<void>;
   refetch: () => void;
+  /** Puts a server-corrected row (after "Edit details…") back in place; a row the server no longer
+   * flags for review leaves the queue. */
+  replaceRow: (updated: Transaction) => void;
 }
 
 /**
@@ -293,6 +296,18 @@ export function useReviewQueue(userIds?: number[], enabled = true): UseReviewQue
     }
   }, [toast, invalidateClassificationQueries]);
 
+  const replaceRow = React.useCallback(
+    (updated: Transaction) => {
+      setQueue((prev) =>
+        updated.needs_review
+          ? prev.map((t) => (t.id === updated.id ? { ...t, ...updated, candidates: t.candidates } : t))
+          : prev.filter((t) => t.id !== updated.id),
+      );
+      invalidateClassificationQueries();
+    },
+    [invalidateClassificationQueries],
+  );
+
   return {
     status,
     error,
@@ -311,5 +326,6 @@ export function useReviewQueue(userIds?: number[], enabled = true): UseReviewQue
     accept,
     undo,
     refetch: load,
+    replaceRow,
   };
 }

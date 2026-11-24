@@ -43,46 +43,70 @@
     --inflow-foreground: 0 0% 100%;
 
     --radius: 0.5rem;
+
+    /* Chart hues, named by hue so a series keeps its colour in either theme. Light values are
+       the 600-ish Tailwind shades; the .dark block below swaps in lighter 300/400 variants. */
+    --chart-rose: 347 77% 50%;
+    --chart-amber: 32 95% 44%;
+    --chart-lime: 85 85% 35%;
+    --chart-emerald: 161 94% 30%;
+    --chart-cyan: 192 91% 36%;
+    --chart-sky: 200 98% 39%;
+    --chart-violet: 262 83% 58%;
+    --chart-violet-soft: 255 92% 76%;
+    --chart-fuchsia: 292 84% 49%;
+    --chart-indigo: 243 75% 59%;
+    --chart-slate: 215 19% 35%;
+    --chart-slate-soft: 215 16% 47%;
+    --chart-yellow: 41 96% 40%;
+    --chart-pink: 336 74% 42%;
+    --chart-teal: 175 77% 26%;
+
+    color-scheme: light;
   }
 
-  :root[data-theme="dark"],
-  :root:not([data-theme="light"]) {
-    @media (prefers-color-scheme: dark) {
-      --background: 222 24% 8%;
-      --foreground: 210 20% 94%;
+  .dark {
+    --background: 222 24% 8%;
+    --foreground: 210 20% 94%;
+    --card: 222 20% 11%;
+    --card-foreground: 210 20% 94%;
+    --muted: 222 16% 16%;
+    --muted-foreground: 220 10% 65%;
+    --border: 222 14% 22%;
+    --input: 222 14% 22%;
+    --ring: 174 55% 55%;
+    --primary: 174 55% 48%;
+    --primary-foreground: 222 30% 8%;
+    --accent: 174 30% 18%;
+    --accent-foreground: 174 55% 78%;
+    --destructive: 4 62% 55%;
+    --destructive-foreground: 0 0% 100%;
+    --outflow: 14 75% 62%;
+    --outflow-foreground: 12 40% 10%;
+    --inflow: 174 50% 55%;
+    --inflow-foreground: 174 40% 8%;
 
-      --card: 222 20% 11%;
-      --card-foreground: 210 20% 94%;
+    --chart-rose: 351 95% 71%;
+    --chart-amber: 43 96% 56%;
+    --chart-lime: 83 78% 55%;
+    --chart-emerald: 158 64% 52%;
+    --chart-cyan: 188 86% 53%;
+    --chart-sky: 198 93% 60%;
+    --chart-violet: 255 92% 76%;
+    --chart-violet-soft: 252 95% 85%;
+    --chart-fuchsia: 292 91% 73%;
+    --chart-indigo: 234 89% 74%;
+    --chart-slate: 215 20% 65%;
+    --chart-slate-soft: 215 20% 65%;
+    --chart-yellow: 48 96% 53%;
+    --chart-pink: 330 81% 70%;
+    --chart-teal: 172 66% 50%;
 
-      --muted: 222 16% 16%;
-      --muted-foreground: 220 10% 65%;
-
-      --border: 222 14% 22%;
-      --input: 222 14% 22%;
-      --ring: 174 55% 55%;
-
-      --primary: 174 55% 48%;
-      --primary-foreground: 222 30% 8%;
-
-      --accent: 174 30% 18%;
-      --accent-foreground: 174 55% 78%;
-
-      --destructive: 4 62% 55%;
-      --destructive-foreground: 0 0% 100%;
-
-      --outflow: 14 75% 62%;
-      --outflow-foreground: 12 40% 10%;
-      --inflow: 174 50% 55%;
-      --inflow-foreground: 174 40% 8%;
-    }
+    color-scheme: dark;
   }
 
   * {
     @apply border-border;
-  }
-
-  html {
-    color-scheme: light dark;
   }
 
   body {

@@ -67,7 +67,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import cast
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from personal_finance_analyzer.classify.kinds import is_spend as kind_is_spend
@@ -196,8 +196,9 @@ def classify_transactions(
             txn = session.get(Transaction, txn_id)
             done += 1
             since_commit += 1
-            if txn is None or txn.classified_by == USER_CLASSIFIED:
-                # A one-time edit is final: nothing in the cascade may reconsider it.
+            if txn is None or txn.classified_by == USER_CLASSIFIED or txn.excluded:
+                # A one-time edit is final: nothing in the cascade may reconsider it. An
+                # excluded row is not worth any LLM money.
                 continue
             outcome = _classify_deterministic(
                 session, txn, user_rules=user_rules, builtin_rules=builtin_rules
@@ -205,7 +206,8 @@ def classify_transactions(
             if outcome is None:
                 pending_llm.setdefault(txn.merchant_key, []).append(txn.id)
             else:
-                _apply_outcome(session, txn, outcome, cfg=cfg)
+                if not _apply_outcome(session, txn, outcome, cfg=cfg):
+                    continue
                 classified += 1
                 if txn.needs_review:
                     needs_review += 1
@@ -306,10 +308,13 @@ def _run_llm_phase(
                 _write_merchant_map(session, key, outcome, source="llm")
             for txn_id in pending_llm[key]:
                 txn = session.get(Transaction, txn_id)
-                if txn is None or txn.classified_by == USER_CLASSIFIED:
+                if txn is None or txn.classified_by == USER_CLASSIFIED or txn.excluded:
                     # Edited by hand while the model was running: the edit stands.
                     continue
-                _apply_outcome(session, txn, outcome, cfg=cfg, llm_run_id=primary_llm_run_id)
+                if not _apply_outcome(
+                    session, txn, outcome, cfg=cfg, llm_run_id=primary_llm_run_id
+                ):
+                    continue
                 classified += 1
                 if txn.needs_review:
                     needs_review += 1
@@ -988,6 +993,39 @@ def revert_to_automatic(
     )
 
 
+def classify_deterministic(
+    session: Session, transaction_ids: Sequence[int], *, confidence_threshold: float
+) -> list[int]:
+    """Run the **deterministic** cascade (steps 1-6) over the listed rows that are not edited by
+    hand and write the answer; a row nothing answers becomes `others/uncategorized` with
+    `needs_review=True`. Never calls the LLM and writes no `merchant_map` row or hit count
+    (`dry_run`), so a hand-typed row never teaches the merchant cache. Does not commit. Returns
+    the ids written."""
+    user_rules, builtin_rules = _load_rule_sets(session)
+    written: list[int] = []
+    for transaction_id in dict.fromkeys(transaction_ids):
+        txn = session.get(Transaction, transaction_id)
+        if txn is None or txn.classified_by == USER_CLASSIFIED:
+            continue
+        outcome = _classify_deterministic(
+            session, txn, user_rules=user_rules, builtin_rules=builtin_rules, dry_run=True
+        )
+        if outcome is None:
+            outcome = _unplaced_outcome()
+        below_threshold = (
+            outcome.confidence is not None and outcome.confidence < confidence_threshold
+        )
+        _write_outcome(
+            session,
+            txn,
+            outcome,
+            needs_review=outcome.needs_review_override or below_threshold,
+        )
+        written.append(txn.id)
+    session.flush()
+    return written
+
+
 def validate_undo(session: Session, undo: AcceptUndo) -> None:
     """Reject an undo token that could not have come from this server: an unknown kind or
     `classified_by`, a confidence outside 0..1, or a category/subcategory id that does not exist
@@ -1374,7 +1412,26 @@ def _apply_outcome(
     *,
     cfg: LLMConfig,
     llm_run_id: int | None = None,
-) -> None:
+) -> bool:
+    """Write `outcome` onto `txn` unless a hand edit got there first; True if it was written.
+
+    The `classified_by == 'user'` check done when the row was read can be stale by the time we
+    write: a PATCH may commit in between (a classify job runs concurrently with the UI). So claim
+    the row first with a guarded no-op UPDATE. It takes SQLite's write lock, so no edit can
+    commit after it, and matches nothing when the row is already a one-time edit.
+    """
+    claimed = session.execute(
+        update(Transaction)
+        .where(
+            Transaction.id == txn.id,
+            Transaction.classified_by.is_distinct_from(USER_CLASSIFIED),
+        )
+        .values(id=Transaction.id)
+        .execution_options(synchronize_session=False)
+    )
+    if claimed.rowcount == 0:  # type: ignore[attr-defined]
+        session.refresh(txn)
+        return False
     below_threshold = (
         outcome.confidence is not None and outcome.confidence < cfg.confidence_threshold
     )
@@ -1385,6 +1442,7 @@ def _apply_outcome(
         needs_review=outcome.needs_review_override or below_threshold,
         llm_run_id=llm_run_id,
     )
+    return True
 
 
 def _write_outcome(
@@ -1405,7 +1463,13 @@ def _write_outcome(
         )
     ).scalar_one()
 
-    if outcome.kind_override is not None and outcome.kind_override != txn.kind:
+    # A hand-added row's kind is the user's own choice (or was resolved when it was added): a
+    # rule's kind override never rewrites it, same as a one-time edit stays final.
+    if (
+        outcome.kind_override is not None
+        and outcome.kind_override != txn.kind
+        and txn.source != "manual"
+    ):
         txn.kind = outcome.kind_override
         txn.is_spend = kind_is_spend(cast(Kind, outcome.kind_override))
 

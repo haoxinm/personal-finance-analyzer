@@ -8,6 +8,7 @@ import { useJobProgress, type JobEvent } from "@/hooks/use-job-progress";
 import { Money } from "@/components/primitives/money";
 
 import { isSkipConfirmForIssuer, setSkipConfirmForIssuer } from "./storage";
+import { attentionNotes, hasNoTransactions, parseShapeWarnings, statementTransactionsUrl } from "./statement-format";
 import { isConfidentProposal } from "./use-import-queue";
 import type { ImportItem } from "./types";
 
@@ -22,6 +23,17 @@ export interface StatementCardProps {
   picker: React.ReactNode;
   /** Page selection + LLM privacy notice (`PageSelector`), shown under the picker. */
   pages?: React.ReactNode;
+  /** A dropped file that was already imported: open the Re-import flow for that existing
+   * statement (it lives in the "Imported statements" panel). */
+  onReimportExisting?: (statementId: number) => void;
+  /** "Don't ask again for this issuer" was ticked or cleared (already stored). */
+  onSkipConfirmChange?: (checked: boolean) => void;
+  /** A remembered extractor the user's own pick does not match: shown as an offer, never applied
+   * on its own. `text` says what it is; `onUse` applies it. */
+  suggestion?: { text: string; onUse: () => void };
+  /** What the "remember" checkbox remembers, spelled out, and (when the issuer already has a
+   * different remembered extractor) what it would replace. */
+  rememberInfo?: { label: string; note?: string };
 }
 
 const STATUS_LABEL: Record<ImportItem["status"], string> = {
@@ -46,27 +58,21 @@ const STATUS_BADGE_VARIANT: Record<ImportItem["status"], "default" | "secondary"
   error: "destructive",
 };
 
-function parseShapeWarnings(raw: string | null | undefined): string[] {
-  if (!raw) return [];
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed.filter((w): w is string => typeof w === "string") : [];
-  } catch {
-    return [];
-  }
-}
-
 /** The outcome line for a parsed item. A re-dropped file that was already imported says so
  * (its statement's `txn_count` is the earlier import's, not new rows); otherwise "N new", plus
  * how many rows an overlapping statement had already provided. */
 function parsedOutcomeText(item: ImportItem): string {
   const count = item.statement?.txn_count ?? 0;
+  const noRows = hasNoTransactions(item.statement);
   if (item.duplicate) {
+    if (noRows) return "Imported before, but no transactions were found";
     return `Already imported — ${count} transaction${count === 1 ? "" : "s"} on file, nothing new`;
   }
+  if (noRows) return "No transactions were found in this statement";
   const inserted = item.insertedCount ?? count;
   const parts = [`${inserted} new transaction${inserted === 1 ? "" : "s"}`];
   if (item.skippedDuplicates) parts.push(`${item.skippedDuplicates} already present`);
+  if (item.absorbedManual) parts.push(`${item.absorbedManual} hand-added replaced by the bank's copy (totals check may change)`);
   if (item.needsReviewCount !== undefined) parts.push(`${item.needsReviewCount} need review`);
   return parts.join(" · ");
 }
@@ -78,9 +84,13 @@ export function StatementCard({
   item,
   onJobEvent,
   onRememberChange,
+  rememberInfo,
   onConfirm,
   picker,
   pages,
+  onReimportExisting,
+  onSkipConfirmChange,
+  suggestion,
 }: StatementCardProps) {
   const { event } = useJobProgress(item.status === "extracting" ? item.jobId : null);
 
@@ -94,7 +104,10 @@ export function StatementCard({
 
   const canConfirm =
     item.issuerId !== null && item.extractorChoice !== null && item.selectedPages?.length !== 0;
-  const shapeWarnings = parseShapeWarnings(item.statement?.shape_warnings);
+  const noRows = hasNoTransactions(item.statement);
+  // The generic "parsed differently" text is for drift on its own; "no rows" has its own message.
+  const shapeWarnings = noRows ? [] : parseShapeWarnings(item.statement?.shape_warnings);
+  const infoNotes = item.statement ? attentionNotes(item.statement).filter((n) => n.code === "all_duplicates") : [];
   const reconciliationDelta = item.statement?.reconciliation_delta_minor ?? null;
 
   return (
@@ -157,8 +170,24 @@ export function StatementCard({
                 {isConfidentProposal(item) ? " — confident match" : ""}
               </p>
             ) : null}
+            {suggestion ? (
+              <p
+                className="flex flex-wrap items-center gap-2 rounded-md border border-border bg-muted/40 p-2 text-xs text-foreground"
+                data-testid="remembered-suggestion"
+              >
+                <span>{suggestion.text}</span>
+                <Button type="button" size="sm" variant="outline" onClick={suggestion.onUse}>
+                  Use it
+                </Button>
+              </p>
+            ) : null}
             {picker}
             {pages}
+            {rememberInfo?.note ? (
+              <p className="text-xs text-muted-foreground" data-testid="remember-note">
+                {rememberInfo.note}
+              </p>
+            ) : null}
             <div className="flex flex-wrap items-center gap-4">
               <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
                 <input
@@ -166,7 +195,7 @@ export function StatementCard({
                   checked={item.remember}
                   onChange={(event_) => onRememberChange(event_.target.checked)}
                 />
-                Remember this extractor for this issuer
+                {rememberInfo?.label ?? "Remember this extractor for this issuer"}
               </label>
               {item.issuerId !== null ? (
                 <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
@@ -176,6 +205,7 @@ export function StatementCard({
                     onChange={(event_) => {
                       if (item.issuerId !== null) {
                         setSkipConfirmForIssuer(item.issuerId, event_.target.checked);
+                        onSkipConfirmChange?.(event_.target.checked);
                       }
                     }}
                   />
@@ -214,7 +244,22 @@ export function StatementCard({
 
         {item.status === "parsed" ? (
           <div className="flex flex-col gap-1 text-sm">
-            <p className="text-foreground">{parsedOutcomeText(item)}</p>
+            <p
+              className={noRows ? "font-medium text-amber-700 dark:text-amber-400" : "text-foreground"}
+              data-testid="parsed-outcome"
+            >
+              {parsedOutcomeText(item)}
+            </p>
+            {noRows ? (
+              <p className="text-xs text-amber-700 dark:text-amber-400">
+                The wrong extractor or pages were probably used. Re-import it with another extractor or other pages.
+              </p>
+            ) : null}
+            {infoNotes.map((note) => (
+              <p key={note.code} className="text-xs text-muted-foreground">
+                {note.text}
+              </p>
+            ))}
             {reconciliationDelta !== null && reconciliationDelta !== 0 ? (
               <p className="flex items-center gap-1 text-xs text-destructive" role="alert">
                 Reconciliation delta: <Money minorUnits={reconciliationDelta} />
@@ -233,10 +278,23 @@ export function StatementCard({
                 </Button>
               ) : null}
               <Button asChild size="sm" variant="outline">
-                <Link to={`/spending/transactions?statement_id=${item.statementId ?? ""}`}>
-                  View transactions
-                </Link>
+                <Link to={statementTransactionsUrl(item.statementId ?? "")}>View transactions</Link>
               </Button>
+              {(item.duplicate || noRows) && item.statementId !== undefined && onReimportExisting ? (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={noRows ? "default" : "outline"}
+                  onClick={() => onReimportExisting(item.statementId as number)}
+                >
+                  Re-import…
+                </Button>
+              ) : null}
+              {noRows ? (
+                <Button asChild size="sm" variant="outline">
+                  <Link to={`/spending/layout-mapper?statement_id=${item.statementId ?? ""}`}>Map this layout</Link>
+                </Button>
+              ) : null}
             </div>
           </div>
         ) : null}

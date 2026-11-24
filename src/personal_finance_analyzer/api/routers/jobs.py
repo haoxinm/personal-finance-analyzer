@@ -64,6 +64,13 @@ def _job_response(job: Job, session: Session | None = None) -> schemas.Job:
     skipped_duplicates = payload.get("skipped_duplicates")
     restored_edits = payload.get("restored_edits")
     unmatched_edits = payload.get("unmatched_edits")
+    discarded_edits = payload.get("discarded_edits")
+    warnings = payload.get("warnings")
+    layout_drift = payload.get("layout_drift")
+    parsed_count = payload.get("parsed_count")
+    previous_txn_count = payload.get("previous_txn_count")
+    remembered = payload.get("remembered")
+    absorbed_manual = payload.get("absorbed_manual")
 
     return schemas.Job(
         id=job.id,
@@ -80,6 +87,16 @@ def _job_response(job: Job, session: Session | None = None) -> schemas.Job:
         skipped_duplicates=skipped_duplicates if isinstance(skipped_duplicates, int) else None,
         restored_edits=restored_edits if isinstance(restored_edits, int) else None,
         unmatched_edits=unmatched_edits if isinstance(unmatched_edits, int) else None,
+        discarded_edits=discarded_edits if isinstance(discarded_edits, int) else None,
+        error_code=job.error_code,
+        warnings=(
+            [w for w in warnings if isinstance(w, str)] if isinstance(warnings, list) else None
+        ),
+        layout_drift=layout_drift if isinstance(layout_drift, bool) else None,
+        parsed_count=parsed_count if isinstance(parsed_count, int) else None,
+        previous_txn_count=previous_txn_count if isinstance(previous_txn_count, int) else None,
+        remembered=remembered if isinstance(remembered, bool) else None,
+        absorbed_manual=absorbed_manual if isinstance(absorbed_manual, int) else None,
     )
 
 

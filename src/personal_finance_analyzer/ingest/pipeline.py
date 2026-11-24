@@ -20,7 +20,7 @@ PHASE 2 (`confirm_import`, on user confirmation, or automatically when the propo
   -> drift evaluation against the account's previous statement   [A18]
   -> dedupe against existing rows                [ingest.dedupe, §3.5]
   -> persist statement + transactions in one atomic DB transaction
-  -> clean import only: update issuers.default_spec_id / last_used_at   [A23]
+  -> remember + at least one row: update issuers.default_spec_id / default_parser_id [A23]
   -> pair checking-side card payments with their card-side payment      [I11, A26]
   -> return an ImportResult
 ```
@@ -36,26 +36,34 @@ from __future__ import annotations
 
 import contextlib
 import json
+import uuid
+from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
-from sqlalchemy import delete, select
+from sqlalchemy import CursorResult, delete, func, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from personal_finance_analyzer.classify.kinds import is_spend, resolve_kind
 from personal_finance_analyzer.config import Settings, load_settings
 from personal_finance_analyzer.core import documents as docs
-from personal_finance_analyzer.core.errors import ParserError, PfaError, UnsupportedLayoutError
+from personal_finance_analyzer.core.errors import (
+    EmptyReparseError,
+    ParserError,
+    PfaError,
+    UnsupportedLayoutError,
+)
 from personal_finance_analyzer.core.logging import get_logger
 from personal_finance_analyzer.core.paths import ensure_home, staging_dir
 from personal_finance_analyzer.core.pii import merge_entries
 from personal_finance_analyzer.core.types import (
     USER_CLASSIFIED,
     ExtractedDoc,
+    Kind,
     ParsedStatement,
     StatementParser,
 )
@@ -94,6 +102,9 @@ NO_TEXT_LAYER_MESSAGE = (
     "website rather than a photo or scanned copy."
 )
 
+#: The shape warning recorded (and so `layout_drift`) when the extractor returned no rows at all.
+NO_TRANSACTIONS_WARNING = "No transactions were found in the selected pages."
+
 #: A parser must score strictly above this for a proposal to be `confident` (§3.12a).
 CONFIDENT_SCORE_THRESHOLD = 0.8
 
@@ -125,6 +136,8 @@ class ImportProposal:
     layout_spec_id: int | None
     detect_score: float | None
     confident: bool  # issuer matched AND spec/parser resolved AND score >= 0.8
+    #: The extractor is the one the user asked to remember for this issuer.
+    remembered: bool = False
 
 
 @dataclass(frozen=True)
@@ -140,6 +153,17 @@ class ImportResult:
     #: those that could not be attached to exactly one rebuilt row and were therefore dropped.
     restored_edits: int = 0
     unmatched_edits: int = 0
+    #: `reparse(discard_edits=True)` only: hand-edited rows whose edits were deliberately dropped.
+    discarded_edits: int = 0
+    #: Rows the extractor returned, before dedupe (`inserted + skipped_duplicates`).
+    parsed_count: int = 0
+    #: `reparse` only: how many transactions the statement had before the rebuild.
+    previous_txn_count: int | None = None
+    #: `confirm_import(remember=True)` stored this extractor as the issuer's remembered choice.
+    remembered: bool = False
+    #: Hand-added (manual) rows a later import found on the statement: they were merged into the
+    #: parsed row and deleted.
+    absorbed_manual: int = 0
 
 
 # ------------------------------------------------------------------------------------------------
@@ -171,13 +195,13 @@ def _stage_pdf(pdf_path: Path, file_sha256: str) -> Path:
     return dest
 
 
-def _adopt_in_place(statement: Statement, rel: str) -> None:
-    """Record ``rel`` (a file the user put in the documents folder) as the statement's PDF unless
-    the row already keeps a copy that is still on disk."""
+def _in_place_values(statement: Statement, rel: str) -> dict[str, Any]:
+    """Column values recording ``rel`` (a file the user put in the documents folder) as the
+    statement's PDF; empty when the row already keeps a copy that is still on disk."""
     current = docs.resolve(statement.stored_path) if statement.stored_path else None
     if current is None or not current.is_file():
-        statement.stored_path = rel
-        statement.pdf_in_place = True
+        return {"stored_path": rel, "pdf_in_place": True}
+    return {}
 
 
 def _finish_pdf(
@@ -261,18 +285,44 @@ def propose_import(
     )
     if existing is not None:
         retry_after_failure = existing.status in (STATUS_UNSUPPORTED_LAYOUT, STATUS_ERROR)
+        rescored: _Proposed | None = None
         if existing.status != STATUS_PARSED:
+            extra: dict[str, Any] = {}
             if in_place is not None:
-                _adopt_in_place(existing, in_place)
+                extra.update(_in_place_values(existing, in_place))
             else:
                 _stage_pdf(pdf_path, file_sha256)
-            existing.user_id = user_id
+            extra["user_id"] = user_id
+            failed_parser = existing.parser_id if retry_after_failure else None
             if retry_after_failure:
                 # A failed built-in parse is retryable: re-proposing reopens the statement
                 # (the failure message stays in `error_detail` as a warning) and it is never
                 # reported as confident, so nothing auto-confirms the parser that just failed.
-                existing.status = STATUS_AWAITING_EXTRACTOR
+                extra["status"] = STATUS_AWAITING_EXTRACTOR
+            if existing.status == STATUS_AWAITING_EXTRACTOR or retry_after_failure:
+                # Re-score: the issuers, specs and remembered choices may have changed since the
+                # proposal was recorded.
+                rescored = _propose_extractor(
+                    session,
+                    extract(pdf_path),
+                    load_settings(),
+                    # The extractor that just failed is not proposed again.
+                    exclude=frozenset({failed_parser}) if failed_parser else frozenset(),
+                )
+                # Conditional update: the (slow) extraction may have raced a confirm that parsed
+                # this statement meanwhile; then this upload is a plain duplicate of it.
+                if not _apply_proposal_if_pending(session, existing.id, rescored, **extra):
+                    rescored = None
+            else:
+                # Not re-scored (e.g. `no_text_layer`): only refresh the user and the file.
+                session.execute(
+                    update(Statement)
+                    .where(Statement.id == existing.id, Statement.status != STATUS_PARSED)
+                    .values(**extra)
+                    .execution_options(synchronize_session=False)
+                )
             session.commit()
+            session.expire(existing)
         if existing.status == STATUS_PARSED:
             # Nothing to confirm and the kept copy (if any) is already filed under its readable
             # name: the upload that arrived with this duplicate is just a stray hash-named copy.
@@ -286,7 +336,9 @@ def propose_import(
             layout_spec_id=existing.layout_spec_id,
             detect_score=existing.detect_score,
             confident=not retry_after_failure
-            and _is_confident(existing.issuer_id, existing.detect_score, existing.status),
+            and _is_confident(existing.issuer_id, existing.detect_score, existing.status)
+            and (rescored is None or rescored.confident),
+            remembered=rescored is not None and rescored.remembered,
         )
 
     doc = extract(pdf_path)
@@ -325,23 +377,7 @@ def propose_import(
             confident=False,
         )
 
-    table_bands = locate_table_bands(doc)
-    issuer_id = issuer_match.match_issuer(session, doc, table_bands)
-    llm_default = settings.ingest.default_extractor == "llm" and settings.llm.is_configured
-    score: float | None
-    layout_spec_id: int | None
-    if llm_default:
-        # LLM imports are never auto-confirmed: the user picks the pages to send first.
-        from personal_finance_analyzer.llm.statement_parser import LLM_PARSER_ID, LLMStatementParser
-
-        parser_id_value: str = LLM_PARSER_ID
-        parser_version: str = LLMStatementParser.version
-        score = None
-        layout_spec_id = None
-    else:
-        selected, score, layout_spec_id = _select_parser(session, doc, issuer_id)
-        parser_id_value = selected.id
-        parser_version = selected.version
+    proposed = _propose_extractor(session, doc, settings)
 
     statement = Statement(
         user_id=user_id,
@@ -350,28 +386,217 @@ def propose_import(
         stored_path=in_place,
         pdf_in_place=in_place is not None,
         page_count=doc.page_count,
-        issuer_id=issuer_id,
-        layout_spec_id=layout_spec_id,
-        parser_id=parser_id_value,
-        parser_version=parser_version,
-        detect_score=score,
         status=STATUS_AWAITING_EXTRACTOR,
         ingested_at=_utcnow_iso(),
     )
+    _apply_proposal(statement, proposed)
     session.add(statement)
     session.commit()
 
     return ImportProposal(
         statement_id=statement.id,
         status=STATUS_AWAITING_EXTRACTOR,
+        issuer_id=proposed.issuer_id,
+        parser_id=proposed.parser_id,
+        layout_spec_id=proposed.layout_spec_id,
+        detect_score=proposed.detect_score,
+        confident=proposed.confident,
+        remembered=proposed.remembered,
+    )
+
+
+@dataclass(frozen=True)
+class _Proposed:
+    """What `_propose_extractor` decided for a document."""
+
+    issuer_id: int | None
+    parser_id: str
+    parser_version: str
+    detect_score: float | None
+    layout_spec_id: int | None
+    confident: bool
+    #: The extractor is the issuer's remembered choice (`issuers.default_spec_id` /
+    #: `default_parser_id`), not just the best-scoring one.
+    remembered: bool
+
+
+def _propose_extractor(
+    session: Session,
+    doc: ExtractedDoc,
+    settings: Settings,
+    *,
+    exclude: frozenset[str] = frozenset(),
+) -> _Proposed:
+    """Match the issuer and choose the extractor to propose for ``doc``.
+
+    Order: the issuer's remembered choice when it is *confident* for this document (its
+    `detect()` score reaches `CONFIDENT_SCORE_THRESHOLD`), else the configured LLM default, else
+    the best-scoring built-in/spec. A remembered LLM has no score, so it never beats a confident
+    local extractor: it is proposed only when normal scoring is not confident. ``exclude`` holds
+    parser ids that must not be proposed (the extractor that just failed on this statement).
+    Pure: it reads the database but writes nothing (the LLM is never called)."""
+    issuer_id = issuer_match.match_issuer(session, doc, locate_table_bands(doc))
+    selection = _remembered_selection(session, doc, issuer_id, settings, exclude=exclude)
+    if selection is not None and selection[0] != "llm":
+        parser_id, version, score, spec_id = selection
+        return _Proposed(
+            issuer_id=issuer_id,
+            parser_id=parser_id,
+            parser_version=version,
+            detect_score=score,
+            layout_spec_id=spec_id,
+            confident=_is_confident(issuer_id, score, STATUS_AWAITING_EXTRACTOR),
+            remembered=True,
+        )
+    scored = _scored_proposal(session, doc, issuer_id, exclude)
+    if selection is not None:
+        if scored.confident:
+            return scored  # a confident local extractor beats the remembered LLM
+        parser_id, version, score, spec_id = selection
+        return _Proposed(
+            issuer_id=issuer_id,
+            parser_id=parser_id,
+            parser_version=version,
+            detect_score=score,
+            layout_spec_id=spec_id,
+            confident=False,
+            remembered=True,
+        )
+    if settings.ingest.default_extractor == "llm" and settings.llm.is_configured:
+        # LLM imports are never auto-confirmed: the user picks the pages to send first.
+        from personal_finance_analyzer.llm.statement_parser import LLM_PARSER_ID, LLMStatementParser
+
+        return _Proposed(
+            issuer_id=issuer_id,
+            parser_id=LLM_PARSER_ID,
+            parser_version=LLMStatementParser.version,
+            detect_score=None,
+            layout_spec_id=None,
+            confident=False,
+            remembered=False,
+        )
+    return scored
+
+
+def _scored_proposal(
+    session: Session, doc: ExtractedDoc, issuer_id: int | None, exclude: frozenset[str]
+) -> _Proposed:
+    selected, score, layout_spec_id = _select_parser(session, doc, issuer_id, exclude=exclude)
+    return _Proposed(
         issuer_id=issuer_id,
-        parser_id=parser_id_value,
-        layout_spec_id=layout_spec_id,
+        parser_id=selected.id,
+        parser_version=selected.version,
         detect_score=score,
-        confident=(
-            False if llm_default else _is_confident(issuer_id, score, STATUS_AWAITING_EXTRACTOR)
+        layout_spec_id=layout_spec_id,
+        confident=_is_confident(issuer_id, score, STATUS_AWAITING_EXTRACTOR),
+        remembered=False,
+    )
+
+
+def _apply_proposal(statement: Statement, proposed: _Proposed) -> None:
+    """Record a proposal on the statement row (never touches ``selected_pages``)."""
+    statement.issuer_id = proposed.issuer_id
+    statement.layout_spec_id = proposed.layout_spec_id
+    statement.parser_id = proposed.parser_id
+    statement.parser_version = proposed.parser_version
+    statement.detect_score = proposed.detect_score
+
+
+def _apply_proposal_if_pending(
+    session: Session, statement_id: int, proposed: _Proposed, **extra: Any
+) -> bool:
+    """Record ``proposed`` (plus ``extra`` column values) on the statement only while it is still
+    pending (`awaiting_extractor`, `unsupported_layout` or `error`): a concurrent confirm may have
+    parsed it meanwhile and its row must never be overwritten. Returns whether the row was
+    updated. Expires the loaded ORM row either way."""
+    updated = cast(
+        "CursorResult[Any]",
+        session.execute(
+            update(Statement)
+            .where(
+                Statement.id == statement_id,
+                Statement.status.in_(
+                    (STATUS_AWAITING_EXTRACTOR, STATUS_UNSUPPORTED_LAYOUT, STATUS_ERROR)
+                ),
+            )
+            .values(
+                issuer_id=proposed.issuer_id,
+                layout_spec_id=proposed.layout_spec_id,
+                parser_id=proposed.parser_id,
+                parser_version=proposed.parser_version,
+                detect_score=proposed.detect_score,
+                **extra,
+            )
+            .execution_options(synchronize_session=False)
         ),
     )
+    stale = session.get(Statement, statement_id)
+    if stale is not None:
+        session.expire(stale)
+    return updated.rowcount > 0
+
+
+def _newest_approved_version(session: Session, row: LayoutSpec) -> LayoutSpec | None:
+    """The highest approved version of the spec ``row`` belongs to (same name and issuer): a
+    revision approved after the user remembered ``row`` supersedes it."""
+    stmt = (
+        select(LayoutSpec)
+        .where(
+            LayoutSpec.name == row.name,
+            LayoutSpec.approved.is_(True),
+            LayoutSpec.issuer_id.is_(None)
+            if row.issuer_id is None
+            else LayoutSpec.issuer_id == row.issuer_id,
+        )
+        .order_by(LayoutSpec.version.desc())
+    )
+    return session.execute(stmt).scalars().first()
+
+
+def _remembered_selection(
+    session: Session,
+    doc: ExtractedDoc,
+    issuer_id: int | None,
+    settings: Settings,
+    *,
+    exclude: frozenset[str] = frozenset(),
+) -> tuple[str, str, float | None, int | None] | None:
+    """The issuer's remembered extractor as ``(parser_id, version, detect_score, spec_id)``, or
+    ``None`` when there is none or it cannot be used: a spec with no approved version left, a
+    parser that is no longer registered, the LLM when it is not configured, an extractor in
+    ``exclude``, or a spec/parser that is not *confident* for this document (score below
+    `CONFIDENT_SCORE_THRESHOLD`). Selection then falls back to normal scoring. A remembered spec
+    resolves to the newest approved version of the same spec. The LLM has no score and is
+    returned as ``("llm", ..., None, None)``; the caller decides whether it may win."""
+    issuer = session.get(Issuer, issuer_id) if issuer_id is not None else None
+    if issuer is None:
+        return None
+    if issuer.default_spec_id is not None:
+        remembered_row = session.get(LayoutSpec, issuer.default_spec_id)
+        row = _newest_approved_version(session, remembered_row) if remembered_row else None
+        if row is None or row.parser_id in exclude:
+            return None
+        spec_parser = cast(StatementParser, build_parser_for_row(row))
+        score = _detect_score(spec_parser, doc)
+        if score < CONFIDENT_SCORE_THRESHOLD:
+            return None
+        return spec_parser.id, spec_parser.version, score, row.id
+    remembered = issuer.default_parser_id
+    if remembered is None or remembered in exclude:
+        return None
+    if remembered == "llm":
+        if not settings.llm.is_configured:
+            return None
+        from personal_finance_analyzer.llm.statement_parser import LLM_PARSER_ID, LLMStatementParser
+
+        return LLM_PARSER_ID, LLMStatementParser.version, None, None
+    for parser in (*discover_all_parsers(), generic_table):
+        if parser.id == remembered:
+            score = _detect_score(parser, doc)
+            if score < CONFIDENT_SCORE_THRESHOLD:
+                return None
+            return parser.id, parser.version, score, None
+    return None
 
 
 def _is_confident(issuer_id: int | None, score: float | None, status: str) -> bool:
@@ -395,19 +620,27 @@ def _detect_score(parser: StatementParser, doc: ExtractedDoc) -> float:
 
 
 def _select_parser(
-    session: Session, doc: ExtractedDoc, issuer_id: int | None
+    session: Session,
+    doc: ExtractedDoc,
+    issuer_id: int | None,
+    *,
+    exclude: frozenset[str] = frozenset(),
 ) -> tuple[StatementParser, float, int | None]:
     """Score every built-in/entry-point parser plus, when an issuer matched, every approved
     layout spec remembered for that issuer (§2f.1, §2f.2) — for every account type, since the
     account type is not known until parsing runs and a spec's own `account_type` is usually a
     stronger signal than guessing one first. Returns the winning parser, its `detect()` score,
     and the `layout_specs.id` it came from (`None` for a built-in parser)."""
-    candidates: list[StatementParser] = list(discover_all_parsers())
+    candidates: list[StatementParser] = [p for p in discover_all_parsers() if p.id not in exclude]
     spec_by_parser_id: dict[str, LayoutSpec] = {}
     if issuer_id is not None:
         for account_type in ("credit", "checking", "savings"):
             spec_row = resolve_spec(session, issuer_id=issuer_id, account_type=account_type)
-            if spec_row is not None and spec_row.parser_id not in spec_by_parser_id:
+            if (
+                spec_row is not None
+                and spec_row.parser_id not in spec_by_parser_id
+                and spec_row.parser_id not in exclude
+            ):
                 spec_by_parser_id[spec_row.parser_id] = spec_row
                 candidates.append(cast(StatementParser, build_parser_for_row(spec_row)))
 
@@ -447,9 +680,10 @@ def confirm_import(
         parser_id: a built-in parser id to use, or `None` when `layout_spec_id` selects one.
         layout_spec_id: an approved `layout_specs.id` to use, or `None` when `parser_id` selects
             one. Exactly one of `parser_id`/`layout_spec_id` must be given.
-        remember: when `True` and the import reconciles cleanly with no drift, updates
-            `issuers.default_spec_id` (only when a layout spec, not a built-in parser, was used)
-            and `issuers.last_used_at` (A23).
+        remember: when `True` and the extractor returned at least one row, stores it as the
+            issuer's remembered choice (`issuers.default_spec_id` for a layout spec, else
+            `issuers.default_parser_id`; setting one clears the other) and updates
+            `issuers.last_used_at` (A23). `ImportResult.remembered` reports whether it was stored.
         pages: 1-based pages to parse (deduped, sorted, validated against the PDF's page count)
             and saved to `statements.selected_pages`; `None` keeps the saved selection (default:
             all pages). Every parser, template or LLM, sees only the selected pages.
@@ -588,6 +822,18 @@ def _resolve_parser(
     raise UnsupportedLayoutError(f"no parser registered with id={parser_id!r}")
 
 
+def extractor_exists(
+    session: Session, *, parser_id: str | None, layout_spec_id: int | None
+) -> bool:
+    """Whether `_resolve_parser` could resolve this extractor (cheap; builds no parser, makes no
+    LLM call). Lets the API reject an unusable recorded extractor up front."""
+    if layout_spec_id is not None:
+        return session.get(LayoutSpec, layout_spec_id) is not None
+    if parser_id in ("llm", generic_table.id):
+        return True
+    return any(candidate.id == parser_id for candidate in discover_all_parsers())
+
+
 # ------------------------------------------------------------------------------------------------
 # Persistence: normalize, resolve the account, reconcile, evaluate drift, dedupe-insert
 # ------------------------------------------------------------------------------------------------
@@ -604,14 +850,25 @@ def _persist_parsed_statement(
     layout_spec_id: int | None,
     remember: bool,
     commit: bool = True,
+    absorb: bool = True,
+    manual_baseline: Counter[tuple[str, int]] | None = None,
 ) -> ImportResult:
     """Insert `parsed`'s rows and mark `statement` parsed. Commits (twice: the rows, then the
     transfer pairing) unless `commit=False`, which `reparse` uses so the rebuild and the restore of
-    hand edits are one transaction the caller commits or rolls back."""
+    hand edits are one transaction the caller commits or rolls back.
+
+    ``statement.flip_sign`` negates every parsed amount first (before kinds, hashes and the
+    reconciliation); the stated total and the balances are read separately and stay as printed.
+    Hand-added rows already on the account are merged into the parsed rows that now cover them
+    (`_absorb_manual_rows`) unless ``absorb=False`` (`reparse` does that itself, after restoring
+    hand edits); ``manual_baseline`` is the count taken before the rows were (re)built."""
     settings = load_settings()
+    if statement.flip_sign:
+        parsed = _flipped(parsed)
     account_type = parsed.account_hint.account_type or parser.account_type
     mask = parsed.account_hint.mask or ""
     currency = parsed.account_hint.currency or settings.ingest.default_currency
+    # (A new account takes the hint's currency; an existing one keeps the user's.)
 
     issuer = session.get(Issuer, issuer_id)
     if issuer is None:
@@ -663,7 +920,7 @@ def _persist_parsed_statement(
                 "merchant_key": normalized.merchant_key,
                 "issuer_category": raw.issuer_category,
                 "amount_minor": raw.amount_minor,
-                "currency": raw.currency,
+                "currency": account.currency,
                 "fx_amount_minor": raw.fx_amount_minor,
                 "fx_currency": raw.fx_currency,
                 "fx_rate": raw.fx_rate,
@@ -681,13 +938,16 @@ def _persist_parsed_statement(
     )
 
     previous = _previous_statement(session, account.id, exclude_statement_id=statement.id)
+    empty_warning = (NO_TRANSACTIONS_WARNING,) if not parsed.transactions else ()
     layout_drift, shape_warnings = _evaluate_drift(
-        parsed_warnings=parsed.warnings + section_warnings,
+        parsed_warnings=parsed.warnings + section_warnings + empty_warning,
         reconciliation_mismatch=reconciliation_mismatch,
         detect_score=statement.detect_score,
         previous_detect_score=previous.detect_score if previous is not None else None,
     )
 
+    if manual_baseline is None:
+        manual_baseline = _manual_baseline(session, account.id)
     inserted_ids = _insert_transactions(session, rows)
 
     statement.status = STATUS_PARSED
@@ -697,20 +957,30 @@ def _persist_parsed_statement(
     statement.account_id = account.id
     statement.issuer_id = issuer_id
     statement.layout_spec_id = layout_spec_id
-    statement.period_start = parsed.period_start.isoformat() if parsed.period_start else None
-    statement.period_end = parsed.period_end.isoformat() if parsed.period_end else None
+    _apply_parsed_period(statement, parsed)
     statement.txn_count = len(inserted_ids)
+    statement.parsed_row_count = len(parsed.transactions)
     statement.parsed_total_minor = sum(t.amount_minor for t in parsed.transactions)
     statement.stated_total_minor = parsed.stated_total_minor
     statement.opening_balance_minor = parsed.opening_balance_minor
     statement.closing_balance_minor = parsed.closing_balance_minor
     statement.shape_warnings = json.dumps(list(shape_warnings)) if shape_warnings else None
 
-    clean_import = not layout_drift and not reconciliation_mismatch
-    if remember and clean_import:
+    # "Remember" is an explicit decision of the user, so a reconciliation mismatch or drift does
+    # not block it; an extractor that found nothing is not worth remembering.
+    remembered = remember and bool(parsed.transactions)
+    if remembered:
         if layout_spec_id is not None:
             issuer.default_spec_id = layout_spec_id
+            issuer.default_parser_id = None
+        else:
+            issuer.default_parser_id = parser.id
+            issuer.default_spec_id = None
         issuer.last_used_at = _utcnow_iso()
+
+    absorbed = 0
+    if absorb:
+        absorbed = _absorb_manual_rows(session, account.id, manual_baseline, inserted_ids)
 
     if commit:
         session.commit()
@@ -732,6 +1002,218 @@ def _persist_parsed_statement(
         reconciliation_delta_minor=reconciliation_delta,
         layout_drift=layout_drift,
         warnings=shape_warnings,
+        parsed_count=len(rows),
+        remembered=remembered,
+        absorbed_manual=absorbed,
+    )
+
+
+def _flipped(parsed: ParsedStatement) -> ParsedStatement:
+    """`parsed` with every row's amount (and foreign amount) negated: the extractor read the signs
+    the wrong way round. The stated total and the balances stay as printed, so the reconciliation
+    delta stays a direct check of whether the flip was right."""
+    return replace(
+        parsed,
+        transactions=tuple(
+            replace(
+                t,
+                amount_minor=-t.amount_minor,
+                fx_amount_minor=None if t.fx_amount_minor is None else -t.fx_amount_minor,
+            )
+            for t in parsed.transactions
+        ),
+        section_totals=tuple((label, -total) for label, total in parsed.section_totals),
+    )
+
+
+def _apply_parsed_period(statement: Statement, parsed: ParsedStatement) -> None:
+    """Record the parsed period. A period the user corrected stays the live value (the new parse
+    only refreshes the `orig_*` pair), unless the parse now agrees with it."""
+    start = parsed.period_start.isoformat() if parsed.period_start else None
+    end = parsed.period_end.isoformat() if parsed.period_end else None
+    if statement.period_corrected and (start, end) != (
+        statement.period_start,
+        statement.period_end,
+    ):
+        statement.orig_period_start = start
+        statement.orig_period_end = end
+        return
+    statement.period_corrected = False
+    statement.orig_period_start = None
+    statement.orig_period_end = None
+    statement.period_start = start
+    statement.period_end = end
+
+
+# ------------------------------------------------------------------------------------------------
+# Hand-added (manual) rows
+# ------------------------------------------------------------------------------------------------
+
+MANUAL_HASH_PREFIX = "manual:"
+
+
+def add_manual_transaction(
+    session: Session,
+    statement_id: int,
+    *,
+    posted_date: date,
+    description: str,
+    amount_minor: int,
+    kind: Kind | None,
+    notes: str | None,
+) -> int:
+    """Insert a hand-added row on an imported statement and return its id. The account and person
+    come from the statement; the description is normalized and PII-redacted exactly like a parsed
+    one; the hash is ``manual:<uuid>`` (such a row never collides, a later import absorbs it
+    instead, see `_absorb_manual_rows`). Flushes, does not commit.
+
+    Raises:
+        PfaError: the statement was not found or is not imported (no account / not parsed).
+    """
+    statement = session.get(Statement, statement_id)
+    if statement is None:
+        raise PfaError(f"no statement with id={statement_id}")
+    if statement.status != STATUS_PARSED or statement.account_id is None:
+        raise PfaError(f"statement {statement_id} is not imported yet")
+    account = session.get(Account, statement.account_id)
+    if account is None:  # pragma: no cover - FK integrity
+        raise PfaError(f"account {statement.account_id} not found")
+    settings = load_settings()
+    pii_terms = _gather_pii_terms(session, settings, account.user_id)
+    normalized = normalize(description, pii_terms)
+    resolved_kind = kind or resolve_kind(
+        kind_hint=None,
+        description_clean=normalized.description_clean,
+        amount_minor=amount_minor,
+        account_type=account.account_type,
+        issuer_match_terms=_gather_issuer_match_terms(session),
+    )
+    txn = Transaction(
+        statement_id=statement.id,
+        account_id=account.id,
+        user_id=account.user_id,
+        posted_date=posted_date.isoformat(),
+        transaction_date=None,
+        description_raw=description,
+        description_clean=normalized.description_clean,
+        merchant_key=normalized.merchant_key,
+        amount_minor=amount_minor,
+        currency=account.currency,
+        kind=resolved_kind,
+        is_spend=is_spend(resolved_kind),
+        dedupe_hash=MANUAL_HASH_PREFIX + uuid.uuid4().hex,
+        notes=notes,
+        source="manual",
+    )
+    session.add(txn)
+    session.flush()
+    return txn.id
+
+
+def _manual_baseline(session: Session, account_id: int) -> Counter[tuple[str, int]]:
+    """How many parsed rows the account holds per live (posted date, amount), taken before an
+    import inserts or rebuilds rows: the reference `_absorb_manual_rows` counts new finds against.
+    Empty (and free) when the account has no active manual rows."""
+    if not _active_manual_rows(session, account_id):
+        return Counter()
+    return _parsed_counts(session, account_id)
+
+
+def _active_manual_rows(session: Session, account_id: int) -> list[Transaction]:
+    return list(
+        session.execute(
+            select(Transaction)
+            .where(
+                Transaction.account_id == account_id,
+                Transaction.source == "manual",
+                Transaction.excluded.is_(False),
+            )
+            .order_by(Transaction.id)
+        ).scalars()
+    )
+
+
+def _parsed_counts(session: Session, account_id: int) -> Counter[tuple[str, int]]:
+    counts: Counter[tuple[str, int]] = Counter()
+    for posted, amount in session.execute(
+        select(Transaction.posted_date, Transaction.amount_minor).where(
+            Transaction.account_id == account_id, Transaction.source == "parsed"
+        )
+    ):
+        counts[(posted, amount)] += 1
+    return counts
+
+
+def _absorb_manual_rows(
+    session: Session,
+    account_id: int,
+    baseline: Counter[tuple[str, int]],
+    new_ids: Sequence[int],
+    *,
+    budget: int | None = None,
+) -> int:
+    """Merge hand-added rows into the parsed rows an import just found for them.
+
+    Per (posted date, amount) group of the account's active manual rows, ``found_new`` is the
+    number of parsed rows with that date and amount now, minus the ``baseline`` taken before the
+    import. That many manual rows (oldest first) are absorbed, each onto a distinct newly
+    inserted row without a hand edit: the manual row's category lock, kind, notes and exclusion
+    move over (the bank's description and amount win) and the manual row is deleted. Counting
+    finds rather than looking for "any matching row" keeps a re-import that merely re-finds an
+    existing coffee from swallowing the second coffee the user added by hand. Returns the number
+    absorbed. ``budget`` caps the total absorbed (a reparse passes how many more rows the
+    statement now has than before: a rebuild that merely moved rows, e.g. a corrected year, finds
+    nothing new). Flushes, does not commit."""
+    manual = _active_manual_rows(session, account_id)
+    if not manual or not new_ids:
+        return 0
+    after = _parsed_counts(session, account_id)
+    groups: dict[tuple[str, int], list[Transaction]] = {}
+    for row in manual:
+        groups.setdefault((row.posted_date, row.amount_minor), []).append(row)
+    fresh = list(
+        session.execute(
+            select(Transaction)
+            .where(Transaction.id.in_(list(new_ids)), Transaction.source == "parsed")
+            .order_by(Transaction.id)
+        ).scalars()
+    )
+    absorbed = 0
+    for key, rows in groups.items():
+        found_new = after.get(key, 0) - baseline.get(key, 0)
+        if budget is not None:
+            found_new = min(found_new, budget - absorbed)
+        if found_new <= 0:
+            continue
+        candidates = [
+            t
+            for t in fresh
+            if (t.posted_date, t.amount_minor) == key
+            and t.classified_by != USER_CLASSIFIED
+            and not _has_corrections(t)
+            and not t.excluded
+            and (t.notes is None or t.notes.startswith(_MACHINE_NOTES_PREFIX))
+        ]
+        for manual_row, target in zip(rows[:found_new], candidates, strict=False):
+            _apply_user_edit(target, _manual_edit(manual_row))
+            session.delete(manual_row)
+            absorbed += 1
+    if absorbed:
+        session.flush()
+    return absorbed
+
+
+def _manual_edit(txn: Transaction) -> _UserEdit:
+    """What a manual row hands to the parsed row that absorbs it: its category lock, kind, notes
+    and exclusion. No field corrections: the bank's description and amount win."""
+    edit = _user_edit_of(txn)
+    return replace(
+        edit,
+        fix_posted_date=None,
+        fix_amount_minor=None,
+        fix_description_clean=None,
+        locked=txn.classified_by == USER_CLASSIFIED,
+        excluded=False,
     )
 
 
@@ -926,7 +1408,9 @@ def _pair_transfers(
     transfers = (
         session.execute(
             select(Transaction).where(
-                Transaction.id.in_(inserted_ids), Transaction.kind == "transfer"
+                Transaction.id.in_(inserted_ids),
+                Transaction.kind == "transfer",
+                Transaction.excluded.is_(False),
             )
         )
         .scalars()
@@ -959,6 +1443,8 @@ def _pair_transfers(
                     Transaction.posted_date >= window_start,
                     Transaction.posted_date <= window_end,
                     Transaction.notes.is_(None),
+                    Transaction.source == "parsed",
+                    Transaction.excluded.is_(False),
                 )
             )
             .scalars()
@@ -985,6 +1471,9 @@ def reparse(
     parser_id: str | None,
     layout_spec_id: int | None,
     pages: Sequence[int] | None = None,
+    discard_edits: bool = False,
+    allow_empty: bool = False,
+    flip_sign: bool | None = None,
 ) -> ImportResult:
     """Re-run a *previously confirmed* statement with a different extractor, rebuilding its rows
     (the API surface's ``POST /api/statements/{id}/reparse``).
@@ -997,11 +1486,28 @@ def reparse(
 
     Hand edits survive the rebuild where they can be matched to exactly one rebuilt row (see
     `_restore_user_edits`); `ImportResult.restored_edits` / `unmatched_edits` report how many were
-    kept and how many had to be dropped because the match was missing or ambiguous.
+    kept and how many had to be dropped because the match was missing or ambiguous. Field
+    corrections (date, amount, description) are carried over the same way; the correction is
+    dropped when the new parse already equals the corrected value. With ``discard_edits=True``
+    nothing is restored (the rebuilt rows are plain parses) and
+    `ImportResult.discarded_edits` counts the edited rows that were thrown away.
+
+    A re-import that would leave a statement which has rows with none is refused
+    (`EmptyReparseError`, nothing changed) unless ``allow_empty`` says that is intended.
+    `ImportResult.previous_txn_count` is the number of rows the statement had before.
+
+    Only rows read from the statement (`source='parsed'`) are rebuilt: hand-added rows are never
+    deleted (not even with ``discard_edits``). Rows the statement now yields that a hand-added row
+    stood in for absorb it (`ImportResult.absorbed_manual`).
+
+    ``flip_sign`` (None = keep the statement's setting) negates every parsed amount; it is stored
+    on the statement together with the rebuild, and the hand edits are carried onto the flipped
+    rows.
 
     Raises:
         PfaError: the statement was not found, has no account yet (never confirmed), or
             has no PDF copy on disk to re-parse from.
+        EmptyReparseError: the new parse found no transactions and the statement had some.
         ValueError: neither or both of `parser_id`/`layout_spec_id` were given.
     """
     statement = session.get(Statement, statement_id)
@@ -1025,33 +1531,67 @@ def reparse(
     # the file by content when the user moved or renamed it.
     pdf_path = docs.kept_pdf(statement.stored_path, statement.file_sha256)
     if pdf_path is None:
-        raise PfaError(
-            f"the PDF of statement {statement_id} was not found in the documents folder "
-            "(it was moved out or deleted); put it back to reparse"
-        )
+        raise PfaError(_pdf_gone_message(statement))
     full_doc = extract(pdf_path)
-    doc = _apply_page_selection(statement, full_doc, pages)
+    # An already-parsed statement must be left untouched by a failed re-import: neither the page
+    # selection nor status/error_detail is written until the new parse has succeeded (the error
+    # is reported on the job only).
+    new_selection = (
+        dump_pages(validate_pages(pages, full_doc.page_count)) if pages is not None else None
+    )
+    doc = full_doc.select_pages(
+        load_pages(new_selection if new_selection is not None else statement.selected_pages)
+    )
     parser = _resolve_parser(
         session, parser_id=parser_id, layout_spec_id=layout_spec_id, user_id=account.user_id
     )
 
-    try:
-        parsed = parser.parse(doc)
-    except UnsupportedLayoutError as exc:
-        statement.status = STATUS_UNSUPPORTED_LAYOUT
-        statement.error_detail = str(exc)
-        raise
-    except ParserError as exc:
-        statement.status = STATUS_ERROR
-        statement.error_detail = str(exc)
-        raise
+    parsed = parser.parse(doc)  # UnsupportedLayoutError/ParserError propagate; nothing persisted
+    previous_txn_count = (
+        session.scalar(
+            select(func.count())
+            .select_from(Transaction)
+            .where(Transaction.statement_id == statement.id, Transaction.source == "parsed")
+        )
+        or 0
+    )
+    if not parsed.transactions and previous_txn_count > 0 and not allow_empty:
+        raise EmptyReparseError(
+            "The re-import found no transactions, so nothing was changed. "
+            f"Your {previous_txn_count} transactions are kept."
+        )
+    if new_selection is not None:
+        statement.selected_pages = new_selection
 
     # Rebuild: this statement's own rows are cleared first, so the standard dedupe-insert path
     # below only ever collides with *other* statements' rows on the same account (§3.5). A row the
     # user edited by hand is remembered first and restored onto its rebuilt twin afterwards.
-    kept_edits = _user_edits_of_statement(session, statement.id)
-    session.execute(delete(Transaction).where(Transaction.statement_id == statement.id))
+    new_flip = statement.flip_sign if flip_sign is None else flip_sign
+    kept_edits = _user_edits_of_statement(
+        session, statement.id, negate=new_flip != statement.flip_sign
+    )
+    discarded = 0
+    if discard_edits:
+        discarded = len(kept_edits)
+        kept_edits = []
+    baseline = _manual_baseline(session, account.id)
+    if baseline:
+        # Like with like: this statement's own previous rows are about to be rebuilt, possibly
+        # under another sign; express them as the new parse will (so they cancel against it).
+        for posted, amount in session.execute(
+            select(Transaction.posted_date, Transaction.amount_minor).where(
+                Transaction.statement_id == statement.id, Transaction.source == "parsed"
+            )
+        ):
+            baseline[(posted, amount)] -= 1
+            baseline[(posted, -amount if new_flip != statement.flip_sign else amount)] += 1
+    session.execute(
+        delete(Transaction).where(
+            Transaction.statement_id == statement.id, Transaction.source == "parsed"
+        )
+    )
     session.flush()
+    statement.flip_sign = new_flip
 
     result = _persist_parsed_statement(
         session,
@@ -1063,15 +1603,69 @@ def reparse(
         layout_spec_id=layout_spec_id,
         remember=False,  # reparse is an explicit override; it never rewrites the remembered spec
         commit=False,  # rebuild + edit restore are one transaction, committed by the caller
+        absorb=False,  # after the hand edits are back (below)
+        manual_baseline=baseline,
     )
     restored, unmatched = _restore_user_edits(session, statement.id, account.id, kept_edits)
+    absorbed = 0
+    if statement.account_id != account.id and statement.account_id is not None:
+        # The new parse resolved another account: the hand-added rows follow the statement.
+        new_account = session.get(Account, statement.account_id)
+        if new_account is not None:
+            for manual_row in session.execute(
+                select(Transaction).where(
+                    Transaction.statement_id == statement.id, Transaction.source == "manual"
+                )
+            ).scalars():
+                manual_row.account_id = new_account.id
+                manual_row.user_id = new_account.user_id
+                manual_row.currency = new_account.currency
+            session.flush()
+    elif statement.account_id == account.id:
+        new_count = (
+            session.scalar(
+                select(func.count())
+                .select_from(Transaction)
+                .where(Transaction.statement_id == statement.id, Transaction.source == "parsed")
+            )
+            or 0
+        )
+        absorbed = _absorb_manual_rows(
+            session,
+            account.id,
+            baseline,
+            result.transaction_ids,
+            budget=max(0, new_count - previous_txn_count),
+        )
     if unmatched:
         logger.warning(
             "reparse of statement %s dropped %d hand edit(s) it could not match to a rebuilt row",
             statement.id,
             unmatched,
         )
-    return replace(result, restored_edits=restored, unmatched_edits=unmatched)
+    return replace(
+        result,
+        restored_edits=restored,
+        unmatched_edits=unmatched,
+        discarded_edits=discarded,
+        previous_txn_count=previous_txn_count,
+        absorbed_manual=absorbed,
+    )
+
+
+def _pdf_gone_message(statement: Statement) -> str:
+    """Why a kept PDF cannot be found: moved out or deleted, or replaced in place by a file with
+    different content (the folder scan then imports that file as a new statement)."""
+    stored = docs.resolve(statement.stored_path) if statement.stored_path else None
+    if stored is not None and stored.is_file() and sha256_file(stored) != statement.file_sha256:
+        return (
+            f"The file at {statement.stored_path} now holds a different PDF; "
+            "this statement's original is gone."
+        )
+    return (
+        f"the PDF of statement {statement.id} was not found in the documents folder "
+        "(it was moved out or deleted); put it back to reparse"
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -1090,6 +1684,11 @@ class _UserEdit:
     merchant_canonical: str | None
     notes: str | None
     locked: bool = True
+    #: Field corrections (the corrected values; None = not corrected). The identity fields below
+    #: always hold the *imported* values, so a rebuilt row is found by what the parser produced.
+    fix_posted_date: str | None = None
+    fix_amount_minor: int | None = None
+    fix_description_clean: str | None = None
     # Identity (used by `reparse` only).
     dedupe_hash: str = ""
     posted_date: str = ""
@@ -1100,6 +1699,8 @@ class _UserEdit:
     #: How many of the statement's rows shared this row's (date, amount, raw description) before
     #: the rebuild: twins are told apart only by their position, which a rebuild can shift.
     twin_count: int = 1
+    #: The user excluded the row from totals.
+    excluded: bool = False
 
 
 def _user_edit_of(txn: Transaction) -> _UserEdit:
@@ -1113,12 +1714,31 @@ def _user_edit_of(txn: Transaction) -> _UserEdit:
         merchant_canonical=txn.merchant_canonical,
         notes=txn.notes,
         locked=txn.classified_by == USER_CLASSIFIED,
+        fix_posted_date=txn.posted_date if txn.orig_posted_date is not None else None,
+        fix_amount_minor=txn.amount_minor if txn.orig_amount_minor is not None else None,
+        fix_description_clean=(
+            txn.description_clean if txn.orig_description_clean is not None else None
+        ),
         dedupe_hash=txn.dedupe_hash,
-        posted_date=txn.posted_date,
-        amount_minor=txn.amount_minor,
+        posted_date=_imported(txn.orig_posted_date, txn.posted_date),
+        amount_minor=_imported(txn.orig_amount_minor, txn.amount_minor),
         description_raw=txn.description_raw,
-        description_clean=txn.description_clean,
+        description_clean=_imported(txn.orig_description_clean, txn.description_clean),
         merchant_key=txn.merchant_key,
+        excluded=txn.excluded,
+    )
+
+
+def _imported[T](original: T | None, live: T) -> T:
+    """The value the statement was imported with: `orig_X` when the user corrected the field."""
+    return live if original is None else original
+
+
+def _has_corrections(txn: Transaction) -> bool:
+    return (
+        txn.orig_posted_date is not None
+        or txn.orig_amount_minor is not None
+        or txn.orig_description_clean is not None
     )
 
 
@@ -1134,6 +1754,37 @@ def _apply_user_edit(txn: Transaction, edit: _UserEdit) -> None:
         txn.classified_by = USER_CLASSIFIED
     if edit.notes is not None:
         txn.notes = edit.notes
+    if edit.excluded:
+        txn.excluded = True
+    # Corrections: re-applied onto the freshly parsed row, which keeps the newly parsed value as
+    # the "imported" one; a correction the new parse already satisfies is simply not needed.
+    # `dedupe_hash` is never touched. `orig_X` is only ever set when it is None, so the true
+    # imported value is never overwritten.
+    if edit.fix_posted_date is not None and edit.fix_posted_date != txn.posted_date:
+        if txn.orig_posted_date is None:
+            txn.orig_posted_date = txn.posted_date
+        txn.posted_date = edit.fix_posted_date
+    if (
+        edit.fix_description_clean is not None
+        and edit.fix_description_clean != txn.description_clean
+    ):
+        if txn.orig_description_clean is None:
+            txn.orig_description_clean = txn.description_clean
+        txn.description_clean = edit.fix_description_clean
+    if edit.fix_amount_minor is not None and edit.fix_amount_minor != txn.amount_minor:
+        if txn.orig_amount_minor is None:
+            txn.orig_amount_minor = txn.amount_minor
+        txn.amount_minor = edit.fix_amount_minor
+    # A correction that lands back on the imported value is no correction any more.
+    if txn.orig_posted_date is not None and txn.posted_date == txn.orig_posted_date:
+        txn.orig_posted_date = None
+    if (
+        txn.orig_description_clean is not None
+        and txn.description_clean == txn.orig_description_clean
+    ):
+        txn.orig_description_clean = None
+    if txn.orig_amount_minor is not None and txn.amount_minor == txn.orig_amount_minor:
+        txn.orig_amount_minor = None
     txn.updated_at = _utcnow_iso()
 
 
@@ -1142,33 +1793,61 @@ def _apply_user_edit(txn: Transaction, edit: _UserEdit) -> None:
 _MACHINE_NOTES_PREFIX = '{"transfer_pair_id"'
 
 
-def _user_edits_of_statement(session: Session, statement_id: int) -> list[_UserEdit]:
-    """The statement's hand-edited rows: those marked `classified_by='user'`, plus rows that only
-    carry a note the user typed. Each remembers how many twins (same date, amount and raw
-    description) it had, for `_restore_user_edits`' ambiguity check."""
+def _user_edits_of_statement(
+    session: Session, statement_id: int, *, negate: bool = False
+) -> list[_UserEdit]:
+    """The statement's hand-edited parsed rows: those marked `classified_by='user'`, rows that
+    only carry a note the user typed, rows with a field correction and excluded rows (hand-added
+    rows are not rebuilt, so they are not edits). Each remembers how many twins (same date,
+    amount and raw description) it had, for `_restore_user_edits`' ambiguity check.
+
+    ``negate``: the rows are about to be rebuilt with every amount flipped, so each edit's
+    identity amount is negated and its expected `dedupe_hash` recomputed (occurrence indices over
+    the old rows in id order, as `reassign` does). A typed amount correction is an absolute value
+    and stays as it is."""
     rows = list(
         session.execute(
-            select(Transaction).where(Transaction.statement_id == statement_id)
+            select(Transaction)
+            .where(Transaction.statement_id == statement_id, Transaction.source == "parsed")
+            .order_by(Transaction.id)
         ).scalars()
     )
+    flipped_hash: dict[int, str] = {}
+    if negate and rows:
+        keys = [
+            DedupeKey(
+                account_id=t.account_id,
+                posted_date=_imported(t.orig_posted_date, t.posted_date),
+                amount_minor=-_imported(t.orig_amount_minor, t.amount_minor),
+                description_raw=t.description_raw,
+            )
+            for t in rows
+        ]
+        for t, key, index in zip(rows, keys, compute_occurrence_indices(keys), strict=True):
+            flipped_hash[t.id] = compute_dedupe_hash(key, index)
+
+    def twin_key(txn: Transaction) -> tuple[str, int, str]:
+        return (
+            _imported(txn.orig_posted_date, txn.posted_date),
+            _imported(txn.orig_amount_minor, txn.amount_minor),
+            txn.description_raw,
+        )
+
     twins: dict[tuple[str, int, str], int] = {}
     for txn in rows:
-        key = (txn.posted_date, txn.amount_minor, txn.description_raw)
-        twins[key] = twins.get(key, 0) + 1
+        twins[twin_key(txn)] = twins.get(twin_key(txn), 0) + 1
     edits: list[_UserEdit] = []
     for txn in sorted(rows, key=lambda t: t.id):
         is_locked = txn.classified_by == USER_CLASSIFIED
         has_user_note = txn.notes is not None and not txn.notes.startswith(_MACHINE_NOTES_PREFIX)
-        if not is_locked and not has_user_note:
+        if not is_locked and not has_user_note and not _has_corrections(txn) and not txn.excluded:
             continue
         edit = _user_edit_of(txn)
+        if negate:
+            edit = replace(edit, amount_minor=-edit.amount_minor, dedupe_hash=flipped_hash[txn.id])
         if not has_user_note:
             edit = replace(edit, notes=None)
-        edits.append(
-            replace(
-                edit, twin_count=twins[(txn.posted_date, txn.amount_minor, txn.description_raw)]
-            )
-        )
+        edits.append(replace(edit, twin_count=twins[twin_key(txn)]))
     return edits
 
 
@@ -1197,7 +1876,9 @@ def _restore_user_edits(
         return 0, 0
     rebuilt = list(
         session.execute(
-            select(Transaction).where(Transaction.statement_id == statement_id)
+            select(Transaction).where(
+                Transaction.statement_id == statement_id, Transaction.source == "parsed"
+            )
         ).scalars()
     )
     new_twins: dict[tuple[str, int, str], int] = {}
@@ -1210,6 +1891,7 @@ def _restore_user_edits(
         for txn in session.execute(
             select(Transaction).where(
                 Transaction.account_id == account_id,
+                Transaction.source == "parsed",
                 Transaction.dedupe_hash.in_([e.dedupe_hash for e in edits]),
             )
         ).scalars()
@@ -1278,7 +1960,7 @@ def reassign(
 
     # Recompute occurrence_index fresh, in the same (id) order the rows were originally inserted
     # in, per §3.5 — the content has not changed, only the account they belong to.
-    transactions = list(
+    all_rows = list(
         session.execute(
             select(Transaction)
             .where(Transaction.statement_id == statement_id)
@@ -1287,11 +1969,23 @@ def reassign(
         .scalars()
         .all()
     )
+    # Hand-added rows move with the statement as they are (their hash has no account part and
+    # never collides); only the parsed rows are re-hashed and merged.
+    transactions = [t for t in all_rows if t.source == "parsed"]
+    target_account = session.get(Account, account_id)
+    for manual_row in all_rows:
+        if manual_row.source == "manual":
+            manual_row.account_id = account_id
+            manual_row.user_id = user_id
+            if target_account is not None:
+                manual_row.currency = target_account.currency
     keys = [
         DedupeKey(
             account_id=account_id,
-            posted_date=t.posted_date,
-            amount_minor=t.amount_minor,
+            # The *imported* values: `dedupe_hash` identifies the parsed transaction, so a later
+            # hand correction of date/amount must not change it (nor how twins are counted).
+            posted_date=_imported(t.orig_posted_date, t.posted_date),
+            amount_minor=_imported(t.orig_amount_minor, t.amount_minor),
             description_raw=t.description_raw,
         )
         for t in transactions
@@ -1314,20 +2008,241 @@ def reassign(
             .first()
         )
         if collision is not None:
-            if txn.classified_by == USER_CLASSIFIED:
+            if txn.classified_by == USER_CLASSIFIED or _has_corrections(txn) or txn.excluded:
                 # The surviving twin is the same real transaction: it inherits the user's edit
-                # unless it carries one of its own.
+                # and field corrections. A survivor with its own hand edit keeps its category
+                # edit and notes, but still receives this row's field corrections for every
+                # field it has not corrected itself (its own correction wins; nothing is lost).
                 survivor = session.get(Transaction, collision)
-                if survivor is not None and survivor.classified_by != USER_CLASSIFIED:
-                    _apply_user_edit(survivor, _user_edit_of(txn))
+                if survivor is not None:
+                    handed = _user_edit_of(txn)
+                    if txn.classified_by != USER_CLASSIFIED or survivor.classified_by == (
+                        USER_CLASSIFIED
+                    ):
+                        handed = replace(handed, locked=False, notes=None)
+                    if survivor.orig_posted_date is not None:
+                        handed = replace(handed, fix_posted_date=None)
+                    if survivor.orig_amount_minor is not None:
+                        handed = replace(handed, fix_amount_minor=None)
+                    if survivor.orig_description_clean is not None:
+                        handed = replace(handed, fix_description_clean=None)
+                    _apply_user_edit(survivor, handed)
             session.delete(txn)
             duplicates_deleted += 1
             continue
         txn.account_id = account_id
         txn.user_id = user_id
+        if target_account is not None:
+            txn.currency = target_account.currency
         txn.dedupe_hash = new_hash
         rows_moved += 1
 
     statement.account_id = account_id
+    statement.user_id = user_id
     session.flush()
+    if duplicates_deleted:
+        # Deleted duplicates no longer belong to this statement: keep its count truthful.
+        statement.txn_count = (
+            session.scalar(
+                select(func.count())
+                .select_from(Transaction)
+                .where(Transaction.statement_id == statement_id, Transaction.source == "parsed")
+            )
+            or 0
+        )
+        session.flush()
     return rows_moved, duplicates_deleted
+
+
+def resolve_account_for_move(
+    session: Session, statement_id: int, *, user_id: int, issuer_id: int | None = None
+) -> Account:
+    """The account of ``user_id`` that matches the statement's current account (same issuer, type,
+    mask and currency), created when that person has none yet: where "change person" moves it.
+    ``issuer_id`` swaps the bank ("change bank"; the new account is created under that issuer).
+    Flushes (a new account needs its id), does not commit.
+
+    Raises:
+        PfaError: the statement was not found or has no account yet.
+    """
+    statement = session.get(Statement, statement_id)
+    if statement is None:
+        raise PfaError(f"no statement with id={statement_id}")
+    current = session.get(Account, statement.account_id) if statement.account_id else None
+    if current is None:
+        raise PfaError(f"statement {statement_id} has no account yet")
+    target_issuer_id = current.issuer_id if issuer_id is None else issuer_id
+    issuer = session.get(Issuer, target_issuer_id)
+    if issuer is None:
+        raise PfaError(f"no issuers row with id={target_issuer_id}")
+    return _resolve_account(
+        session,
+        user_id=user_id,
+        issuer_id=target_issuer_id,
+        account_type=current.account_type,
+        mask=current.mask,
+        currency=current.currency,
+        issuer_name=issuer.name,
+    )
+
+
+# ------------------------------------------------------------------------------------------------
+# Re-proposing and listing extractors for an existing statement
+# ------------------------------------------------------------------------------------------------
+
+
+def _statement_pdf(statement: Statement) -> Path | None:
+    """The PDF a not-yet-parsed or parsed statement can be re-read from: its kept copy (found by
+    content when moved), else the staged upload."""
+    return docs.kept_pdf(statement.stored_path, statement.file_sha256) or docs.staged_pdf(
+        statement.file_sha256
+    )
+
+
+def repropose(session: Session, statement_id: int) -> ImportProposal:
+    """Re-run issuer matching and extractor scoring for a statement that is not parsed yet
+    (`awaiting_extractor`, `unsupported_layout` or `error`), e.g. after the user remembered an
+    extractor or created an issuer for an earlier statement of the same batch. Updates the row's
+    issuer, extractor and detect score (not the page selection); the status is left as it is.
+    Never calls the LLM. Does not commit.
+
+    Raises:
+        PfaError: the statement was not found, is already parsed, or its PDF is unavailable.
+    """
+    statement = session.get(Statement, statement_id)
+    if statement is None:
+        raise PfaError(f"no statement with id={statement_id}")
+    if statement.status not in (
+        STATUS_AWAITING_EXTRACTOR,
+        STATUS_UNSUPPORTED_LAYOUT,
+        STATUS_ERROR,
+    ):
+        raise PfaError(f"statement {statement_id} is {statement.status}; it cannot be re-proposed")
+    path = _statement_pdf(statement)
+    if path is None:
+        raise PfaError(f"statement {statement_id} has no PDF on disk to re-propose from")
+    # A statement whose import failed is re-proposed without the extractor that just failed.
+    failed_parser = (
+        statement.parser_id
+        if statement.status in (STATUS_UNSUPPORTED_LAYOUT, STATUS_ERROR)
+        else None
+    )
+    proposed = _propose_extractor(
+        session,
+        extract(path),
+        load_settings(),
+        exclude=frozenset({failed_parser}) if failed_parser else frozenset(),
+    )
+    # Conditional update: the (slow) extraction above may have raced a confirm that parsed this
+    # statement meanwhile; never overwrite a parsed statement's extractor.
+    if not _apply_proposal_if_pending(session, statement_id, proposed):
+        session.expire(statement)
+        raise PfaError(f"statement {statement_id} is no longer pending; it cannot be re-proposed")
+    session.expire(statement)
+    return ImportProposal(
+        statement_id=statement.id,
+        status=statement.status,
+        issuer_id=proposed.issuer_id,
+        parser_id=proposed.parser_id,
+        layout_spec_id=proposed.layout_spec_id,
+        detect_score=proposed.detect_score,
+        confident=proposed.confident and statement.status == STATUS_AWAITING_EXTRACTOR,
+        remembered=proposed.remembered,
+    )
+
+
+@dataclass(frozen=True)
+class ExtractorCandidate:
+    """One extractor a statement could be (re-)imported with."""
+
+    kind: str  # 'parser' | 'spec' | 'llm'
+    parser_id: str | None  # the built-in parser id, or 'llm'; None for a spec
+    layout_spec_id: int | None
+    label: str
+    score: float | None  # `detect()` on the statement's selected pages; None for the LLM
+    recorded: bool  # the extractor the statement was imported with
+    remembered: bool  # the issuer's remembered choice
+
+
+def _parser_label(parser_id: str) -> str:
+    """``layout_b_credit`` -> ``Layout B credit``."""
+    words = parser_id.split("_")
+    return " ".join(
+        w.upper() if len(w) == 1 else (w.capitalize() if i == 0 else w) for i, w in enumerate(words)
+    )
+
+
+def extractor_candidates(session: Session, statement_id: int) -> list[ExtractorCandidate]:
+    """Every extractor that could re-import this statement, scored against its saved page
+    selection: each built-in parser (and the generic table parser), every *approved* layout spec
+    of the statement's issuer (every version and account type), and the LLM when configured.
+    Recorded one first, then best score first. Needs the PDF; makes no LLM call.
+
+    Raises:
+        PfaError: the statement was not found or its PDF is unavailable.
+    """
+    statement = session.get(Statement, statement_id)
+    if statement is None:
+        raise PfaError(f"no statement with id={statement_id}")
+    path = _statement_pdf(statement)
+    if path is None:
+        raise PfaError(f"statement {statement_id} has no PDF on disk to score extractors on")
+    doc = extract(path).select_pages(load_pages(statement.selected_pages))
+    issuer = session.get(Issuer, statement.issuer_id) if statement.issuer_id is not None else None
+
+    out: list[ExtractorCandidate] = []
+    for parser in (*discover_all_parsers(), generic_table):
+        out.append(
+            ExtractorCandidate(
+                kind="parser",
+                parser_id=parser.id,
+                layout_spec_id=None,
+                label=_parser_label(parser.id),
+                score=_detect_score(parser, doc),
+                recorded=statement.layout_spec_id is None and statement.parser_id == parser.id,
+                remembered=issuer is not None
+                and issuer.default_spec_id is None
+                and issuer.default_parser_id == parser.id,
+            )
+        )
+    if issuer is not None:
+        rows = session.execute(
+            select(LayoutSpec)
+            .where(LayoutSpec.issuer_id == issuer.id, LayoutSpec.approved.is_(True))
+            .order_by(LayoutSpec.name, LayoutSpec.version.desc())
+        ).scalars()
+        for row in rows:
+            try:
+                spec_score: float | None = _detect_score(
+                    cast(StatementParser, build_parser_for_row(row)), doc
+                )
+            except Exception:  # a spec that no longer builds is listed, just unscored
+                logger.warning("layout spec %s could not be built", row.id, exc_info=True)
+                spec_score = None
+            out.append(
+                ExtractorCandidate(
+                    kind="spec",
+                    parser_id=None,
+                    layout_spec_id=row.id,
+                    label=f"{row.name} (v{row.version})",
+                    score=spec_score,
+                    recorded=statement.layout_spec_id == row.id,
+                    remembered=issuer.default_spec_id == row.id,
+                )
+            )
+    if load_settings().llm.is_configured:
+        out.append(
+            ExtractorCandidate(
+                kind="llm",
+                parser_id="llm",
+                layout_spec_id=None,
+                label="LLM",
+                score=None,
+                recorded=statement.layout_spec_id is None and statement.parser_id == "llm",
+                remembered=issuer is not None
+                and issuer.default_spec_id is None
+                and issuer.default_parser_id == "llm",
+            )
+        )
+    out.sort(key=lambda c: (not c.recorded, -(c.score if c.score is not None else -1.0), c.label))
+    return out

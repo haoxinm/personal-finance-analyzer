@@ -249,7 +249,7 @@ describe("shouldAutoConfirm", () => {
       issuerId: 3,
       extractorChoice: { kind: "parser", parserId: "llm" },
       remember: true,
-      proposal: { issuer_id: 3, parser_id: "llm", layout_spec_id: null, confidence: 1, auto_confirmed: false },
+      proposal: { issuer_id: 3, parser_id: "llm", layout_spec_id: null, confidence: 1, auto_confirmed: false, remembered: false },
     };
     expect(shouldAutoConfirm(item)).toBe(false);
     expect(shouldAutoConfirm({ ...item, extractorChoice: { kind: "parser", parserId: "layout_a_credit" } })).toBe(true);
